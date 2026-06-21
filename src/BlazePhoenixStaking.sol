@@ -46,9 +46,10 @@ import {ReentrancyGuard}            from "@openzeppelin/contracts/utils/Reentran
 ///     • SINGLE-WRITER boost accounting (`_applyBoost`) — no path, including the emergency
 ///       hatch, may desync the global denominators.
 ///     • ZERO BACKDOOR. No admin sweep of principal. Reserve withdrawals go ONLY to an
-///       IMMUTABLE treasury. Emergency is pull-only; the halt itself is GUARDIAN-only (NOT
-///       permissionless), because conservation is already enforced intrinsically per-tx and a
-///       public breaker would only hand attackers a griefing lever.
+///       IMMUTABLE treasury. Emergency is pull-only. Two halt paths: a GUARDIAN discretionary
+///       `declareEmergency`, and a PERMISSIONLESS `tripBreaker` that anyone may call but ONLY when
+///       the chain itself proves insolvency (`_hardBreach`: balance + dust < owed) — an objective,
+///       un-spoofable condition, and reversible by the admin if the reading was transient.
 ///     • DETERMINISTIC EMISSION. Empty-pool intervals advance the clock (emission stays in
 ///       reserve), so a latecomer can never capture a backlog.
 contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
@@ -73,9 +74,14 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
     uint256 public  constant LIQ_BONUS_BPS        = 500;   // 5% surplus -> paid to the gas-payer
     uint256 public  constant RESERVE_FACTOR_BPS   = 300;   // 3%
 
-    // Lock tiers: boost(t) = 10000 + 750t + 250t^2  (t=0 -> 1.00x ... t=6 -> 2.35x)
-    uint8   public  constant MAX_LOCK_TIER        = 6;
-    uint256 public  constant LOCK_PERIOD          = 365 days;
+    // Lock is measured in DAYS, between MIN_LOCK_DAYS and MAX_LOCK_DAYS (== the 7-year emission
+    // window). Boost is continuous in the committed duration:
+    //     boost(d) = 10000 + 750·(d/365) + 250·(d/365)²   [bps]
+    //   d =   90 -> ~1.02x     d = 365 (1y)  -> 1.10x      d = 1825 (5y) -> 2.00x
+    //   d =  730 (2y) -> 1.25x d = 2555 (7y) -> 2.75x
+    uint256 public  constant DAYS_PER_YEAR        = 365;
+    uint16  public  constant MIN_LOCK_DAYS        = 90;
+    uint16  public  constant MAX_LOCK_DAYS        = uint16(7 * 365);   // 2555 == EMISSION_PERIOD in days
     uint256 private constant BOOST_BASE           = 10_000;
     uint256 private constant BOOST_LINEAR         = 750;
     uint256 private constant BOOST_QUAD           = 250;
@@ -153,7 +159,7 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
         uint256 trackedBoostedPure;
         uint64  depositBlock;
         uint64  unlockTime;
-        uint8   lockTier;
+        uint16  lockDays;     // committed lock duration in days (0 = no active lock)
     }
     mapping(address => UserInfo) private _users;
 
@@ -169,9 +175,9 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
     event RewardClaimed      (address indexed user, uint256 amount);
     event PureYieldClaimed   (address indexed user, uint256 amount);
     event ReserveWithdrawn   (address indexed to, uint256 amount);
-    event LockSet            (address indexed user, uint8 tier, uint256 unlockTime, uint256 boostBps);
+    event LockSet            (address indexed user, uint256 lockDays, uint256 unlockTime, uint256 boostBps);
     event LockExpired        (address indexed user);
-    event EmergencyDeclared  (address indexed by, uint256 timestamp);
+    event EmergencyDeclared  (address indexed by, uint256 timestamp, bool permissionless);
     event EmergencyCancelled (address indexed by, uint256 timestamp);
     event EmergencyWithdrawn (address indexed user, uint256 principal);
 
@@ -187,7 +193,9 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
     error Staking__NoDebt();
     error Staking__FlashLoanProtection();
     error Staking__CapExceeded();
-    error Staking__InvalidTier();
+    error Staking__LockTooShort();
+    error Staking__LockTooLong();
+    error Staking__NoLock();
     error Staking__CannotReduceLock();
     error Staking__StillLocked();
     error Staking__NoStake();
@@ -196,6 +204,7 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
     error Staking__EmergencyActive();
     error Staking__EmergencyNotActive();
     error Staking__InvariantBreached();
+    error Staking__NoBreach();
 
     // ── Guards ────────────────────────────────────────────────────────────────────────────
     /// @dev PER-TRANSACTION value conservation (not absolute). Snapshots the real balance and
@@ -205,9 +214,11 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
     ///      books are a few wei off — this removes the DoS-by-invariant risk. Only a transaction
     ///      that itself leaks value (a real bug/theft) fails. This guard — running on every
     ///      value-moving tx — IS the conservation mechanism; it is intrinsic and needs no keeper
-    ///      to trigger it. Absolute solvency is additionally exposed, read-only, via `isSolvent()`
-    ///      / `solvency()` / `auditInvariants()` for off-chain monitors, but observing a breach is
-    ///      never an entry-point: only the GUARDIAN can halt (`declareEmergency`).
+    ///      to trigger it, so the book can never reach an unconservative state through normal flow.
+    ///      Absolute solvency is additionally exposed read-only via `isSolvent()` / `solvency()` /
+    ///      `auditInvariants()`, and if a genuine shortfall ever does exist (e.g. a token-level
+    ///      failure outside this contract) `tripBreaker()` lets anyone halt — but ONLY under that
+    ///      objective on-chain breach, never on healthy state.
     modifier conserves() {
         uint256 balBefore  = ML.rawBalanceOf(bzpx, address(this));
         uint256 owedBefore = _owed();
@@ -237,11 +248,17 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
     // ════════════════════════════════════════════════════════════════════════════════════
     //  BOOST CURVE
     // ════════════════════════════════════════════════════════════════════════════════════
-    function boostByTier(uint8 tier_) public pure returns (uint256 bps) {
-        if (tier_ == 0) return BOOST_BASE;
-        if (tier_ > MAX_LOCK_TIER) tier_ = MAX_LOCK_TIER;
-        uint256 t = uint256(tier_);
-        unchecked { bps = BOOST_BASE + BOOST_LINEAR * t + BOOST_QUAD * t * t; }
+    /// @notice Boost (bps) for a committed lock of `lockDays_` days, continuous in duration.
+    ///         boost(d) = BOOST_BASE + BOOST_LINEAR·(d/365) + BOOST_QUAD·(d/365)², integer-floored.
+    function boostByDays(uint256 lockDays_) public pure returns (uint256 bps) {
+        if (lockDays_ == 0) return BOOST_BASE;
+        if (lockDays_ > MAX_LOCK_DAYS) lockDays_ = MAX_LOCK_DAYS;
+        unchecked {
+            // d ≤ 2555, so every product is far below 2^256 — no overflow.
+            bps = BOOST_BASE
+                + (BOOST_LINEAR * lockDays_) / DAYS_PER_YEAR
+                + (BOOST_QUAD * lockDays_ * lockDays_) / (DAYS_PER_YEAR * DAYS_PER_YEAR);
+        }
     }
 
     // ════════════════════════════════════════════════════════════════════════════════════
@@ -275,19 +292,30 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
     //  EMERGENCY — pull-only, no sweep
     // ════════════════════════════════════════════════════════════════════════════════════
 
-    /// @notice The SOLE halt path: a discretionary emergency the GUARDIAN may declare for an
-    ///         off-chain-discovered issue. It is deliberately NOT permissionless — conservation
-    ///         is already enforced intrinsically by the `conserves` guard on every value-moving
-    ///         transaction, so an unconservative state is unreachable and there is nothing for a
-    ///         third party to "catch and trip". Making the breaker open would instead hand an
-    ///         attacker a griefing lever (a single spurious breach reading would let anyone freeze
-    ///         the protocol). Solvency stays publicly OBSERVABLE via `isSolvent()`/`solvency()`,
-    ///         but only the guardian can ACT on it. Cannot move funds.
+    /// @notice Permissionless circuit-breaker — but ONLY when the blockchain itself proves
+    ///         insolvency. It requires `_hardBreach()` (real BZPX balance + dust < `_owed()`), an
+    ///         objective, on-chain, un-spoofable condition: nobody can lower the contract's balance
+    ///         except through flows that lower `_owed()` by the same amount, and donations only
+    ///         raise the balance. So this can fire only on a genuine shortfall (a real bug/theft),
+    ///         never on healthy state. It is also REVERSIBLE: if the reading was transient, the
+    ///         admin calls `cancelEmergency()` once `_hardBreach()` clears and the protocol
+    ///         resumes — so the worst a spurious trip can do is a temporary, admin-undoable pause,
+    ///         not a permanent freeze. Cannot move funds.
+    function tripBreaker() external {
+        if (emergencyMode) revert Staking__EmergencyActive();
+        if (!_hardBreach()) revert Staking__NoBreach();
+        emergencyMode = true; emergencyTrippedAt = block.timestamp;
+        if (!paused()) _pause();
+        emit EmergencyDeclared(msg.sender, block.timestamp, true);
+    }
+
+    /// @notice Discretionary halt the GUARDIAN may declare for an off-chain-discovered issue,
+    ///         independent of the on-chain breach condition. Cannot move funds.
     function declareEmergency() external onlyRole(ROLE_GUARDIAN) {
         if (emergencyMode) revert Staking__EmergencyActive();
         emergencyMode = true; emergencyTrippedAt = block.timestamp;
         if (!paused()) _pause();
-        emit EmergencyDeclared(msg.sender, block.timestamp);
+        emit EmergencyDeclared(msg.sender, block.timestamp, false);
     }
 
     /// @notice Resume only if the hard invariant currently holds. Contract stays paused;
@@ -412,7 +440,7 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
         if (amount_ == 0) revert Staking__ZeroAmount();
         UserInfo storage u = _users[msg.sender];
         if (block.number <= u.depositBlock + MIN_DEPOSIT_BLOCKS) revert Staking__FlashLoanProtection();
-        if (u.lockTier > 0 && block.timestamp < u.unlockTime)    revert Staking__StillLocked();
+        if (u.lockDays > 0 && block.timestamp < u.unlockTime)    revert Staking__StillLocked();
 
         _updateGlobal();
         _settlePendingRewards(msg.sender);
@@ -487,39 +515,47 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
     // ════════════════════════════════════════════════════════════════════════════════════
     //  LOCK
     // ════════════════════════════════════════════════════════════════════════════════════
-    function lock(uint8 newTier_) external nonReentrant whenNotPaused whenNotEmergency conserves {
-        if (newTier_ == 0 || newTier_ > MAX_LOCK_TIER) revert Staking__InvalidTier();
+    /// @notice Commit your stake for `lockDays_` days (min MIN_LOCK_DAYS, max MAX_LOCK_DAYS) to
+    ///         earn a boost. A decreasing countdown caps the duration at the time remaining until
+    ///         the 7-year emission end, so no lock can ever outlast emission. Commitments can only
+    ///         be EXTENDED (the new unlock must be later than the current one), never shortened.
+    function lock(uint256 lockDays_) external nonReentrant whenNotPaused whenNotEmergency conserves {
+        if (lockDays_ < MIN_LOCK_DAYS) revert Staking__LockTooShort();
+        if (lockDays_ > MAX_LOCK_DAYS) revert Staking__LockTooLong();
         if (block.timestamp >= emissionEnd) revert Staking__EmissionEnded();
 
         UserInfo storage u = _users[msg.sender];
         if (u.staked == 0) revert Staking__NoStake();
         if (block.number <= u.depositBlock + MIN_DEPOSIT_BLOCKS) revert Staking__FlashLoanProtection();
 
-        uint256 maxAllowed = (emissionEnd - block.timestamp) / LOCK_PERIOD;
-        if (maxAllowed > MAX_LOCK_TIER) maxAllowed = MAX_LOCK_TIER;
-        if (uint256(newTier_) > maxAllowed) revert Staking__LockExceedsEmissionEnd();
+        // Decreasing countdown: the lock may never extend past the 7-year emission end.
+        uint256 maxDays = (emissionEnd - block.timestamp) / 1 days;
+        if (maxDays > MAX_LOCK_DAYS) maxDays = MAX_LOCK_DAYS;
+        if (lockDays_ > maxDays) revert Staking__LockExceedsEmissionEnd();
 
         _updateGlobal();
         _settlePendingRewards(msg.sender);
         _settlePendingPureYield(msg.sender);
         _accrueInterestFor(msg.sender);
 
-        if (u.lockTier > 0 && block.timestamp >= u.unlockTime) {
-            u.lockTier = 0; u.unlockTime = 0; emit LockExpired(msg.sender);
+        if (u.lockDays > 0 && block.timestamp >= u.unlockTime) {
+            u.lockDays = 0; u.unlockTime = 0; emit LockExpired(msg.sender);
         }
-        if (newTier_ <= u.lockTier) revert Staking__CannotReduceLock();
 
-        u.lockTier   = newTier_;
-        u.unlockTime = uint64(block.timestamp + uint256(newTier_) * LOCK_PERIOD);
+        uint64 newUnlock = uint64(block.timestamp + lockDays_ * 1 days);
+        if (newUnlock <= u.unlockTime) revert Staking__CannotReduceLock();
+
+        u.lockDays   = uint16(lockDays_);
+        u.unlockTime = newUnlock;
 
         _resync(u);
-        emit LockSet(msg.sender, newTier_, u.unlockTime, boostByTier(newTier_));
+        emit LockSet(msg.sender, lockDays_, u.unlockTime, boostByDays(lockDays_));
         _autoMaintain(msg.sender);
     }
 
     function pokeExpiredLock(address user_) external nonReentrant whenNotEmergency conserves {
         UserInfo storage u = _users[user_];
-        if (u.lockTier == 0) revert Staking__InvalidTier();
+        if (u.lockDays == 0) revert Staking__NoLock();
         if (block.timestamp < u.unlockTime) revert Staking__StillLocked();
         _updateGlobal();
         _settlePendingRewards(user_);
@@ -765,7 +801,7 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
 
     // ── single-writer boost + checkpoint ──────────────────────────────────────────────────
     function _computeBoost(UserInfo storage u) internal view returns (uint256 be, uint256 bp) {
-        uint256 boost = boostByTier(u.lockTier);
+        uint256 boost = boostByDays(u.lockDays);
         uint256 effective = u.staked > u.debt ? u.staked - u.debt : 0;
         be = effective == 0 ? 0 : ML.mulDiv(effective, boost, BOOST_BASE);
         bp = (u.debt == 0 && u.staked > 0) ? ML.mulDiv(u.staked, boost, BOOST_BASE) : 0;
@@ -795,8 +831,8 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
 
     function _processLockExpiry(address user_) internal {
         UserInfo storage u = _users[user_];
-        if (u.lockTier > 0 && block.timestamp >= u.unlockTime) {
-            u.lockTier = 0; u.unlockTime = 0; emit LockExpired(user_);
+        if (u.lockDays > 0 && block.timestamp >= u.unlockTime) {
+            u.lockDays = 0; u.unlockTime = 0; emit LockExpired(user_);
         }
     }
 
@@ -896,7 +932,7 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
         if (rewardReserve > TOTAL_REWARDS) violations |= 1 << 2;
         if (accRewardPerShare < lastAuditedAccReward || accPureYieldPerShare < lastAuditedAccPure)
             violations |= 1 << 3;
-        uint256 maxBoosted = ML.mulDiv(totalStaked, boostByTier(MAX_LOCK_TIER), BOOST_BASE);
+        uint256 maxBoosted = ML.mulDiv(totalStaked, boostByDays(MAX_LOCK_DAYS), BOOST_BASE);
         if (totalBoostedEffective > maxBoosted || totalBoostedPure > maxBoosted) violations |= 1 << 4;
     }
 
@@ -945,16 +981,18 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
         uint256 s = _users[user_].staked;
         return s >= MAX_STAKE_PER_WALLET ? 0 : MAX_STAKE_PER_WALLET - s;
     }
-    function lockInfoOf(address user_) external view returns (uint8 tier, uint256 unlockTime, uint256 boostBps, bool expired) {
+    function lockInfoOf(address user_) external view returns (uint256 lockDays, uint256 unlockTime, uint256 boostBps, bool expired) {
         UserInfo storage u = _users[user_];
-        tier = u.lockTier; unlockTime = uint256(u.unlockTime); boostBps = boostByTier(u.lockTier);
-        expired = (u.lockTier > 0 && block.timestamp >= u.unlockTime);
+        lockDays = u.lockDays; unlockTime = uint256(u.unlockTime); boostBps = boostByDays(u.lockDays);
+        expired = (u.lockDays > 0 && block.timestamp >= u.unlockTime);
     }
-    function maxLockTierAvailable() public view returns (uint8) {
+    /// @notice The longest lock (in days) that may be opened right now — the decreasing countdown:
+    ///         min(MAX_LOCK_DAYS, days remaining until the 7-year emission end).
+    function maxLockDaysAvailable() public view returns (uint256) {
         if (block.timestamp >= emissionEnd) return 0;
-        uint256 m = (emissionEnd - block.timestamp) / LOCK_PERIOD;
-        if (m > MAX_LOCK_TIER) m = MAX_LOCK_TIER;
-        return uint8(m);
+        uint256 d = (emissionEnd - block.timestamp) / 1 days;
+        if (d > MAX_LOCK_DAYS) d = MAX_LOCK_DAYS;
+        return d;
     }
     function emissionProgress() external view returns (uint256) {
         if (block.timestamp >= emissionEnd) return WAD;
@@ -968,14 +1006,14 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
     }
     function timeUntilUnlock(address user_) external view returns (uint256) {
         UserInfo storage u = _users[user_];
-        if (u.lockTier == 0) return 0;
+        if (u.lockDays == 0) return 0;
         return block.timestamp < u.unlockTime ? uint256(u.unlockTime) - block.timestamp : 0;
     }
-    /// @notice Indicative pure-staker APR (bps) at a given tier, from current interest flow.
-    function pureStakerApr(uint8 tier_) external view returns (uint256 aprBps) {
+    /// @notice Indicative pure-staker APR (bps) for a given lock duration, from current interest flow.
+    function pureStakerApr(uint256 lockDays_) external view returns (uint256 aprBps) {
         if (totalBoostedPure == 0) return 0;
         uint256 rate     = _interestRate();
-        uint256 share    = ML.mulDiv(totalDebt, boostByTier(tier_), totalBoostedPure);
+        uint256 share    = ML.mulDiv(totalDebt, boostByDays(lockDays_), totalBoostedPure);
         uint256 grossBps = ML.mulDiv(rate, share, WAD);
         aprBps = ML.mulDiv(grossBps, 10_000 - RESERVE_FACTOR_BPS, 10_000);
     }
@@ -1004,8 +1042,8 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
     function getUserInfo(address user_) external view returns (
         uint256 staked, uint256 debt, uint256 effectiveStake, uint256 maxBorrowAvailable,
         uint256 health, uint256 daysLeft, uint256 stakingRewards, uint256 pureYield,
-        uint256 rateBps, uint8 lockTier, uint256 unlockTime, uint256 boostBps,
-        uint256 remainingCap, uint8 maxTierNow
+        uint256 rateBps, uint256 lockDays, uint256 unlockTime, uint256 boostBps,
+        uint256 remainingCap, uint256 maxDaysNow
     ) {
         UserInfo storage u = _users[user_];
         staked = u.staked; debt = u.debt;
@@ -1015,9 +1053,9 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
         health = (u.staked == 0 || u.debt == 0) ? WAD : u.debt >= u.staked ? 0 : ML.mulDiv(u.staked - u.debt, WAD, u.staked);
         rateBps = _interestRate();
         daysLeft = _daysToLiqInternal(u);
-        lockTier = u.lockTier; unlockTime = uint256(u.unlockTime); boostBps = boostByTier(u.lockTier);
+        lockDays = u.lockDays; unlockTime = uint256(u.unlockTime); boostBps = boostByDays(u.lockDays);
         remainingCap = staked >= MAX_STAKE_PER_WALLET ? 0 : MAX_STAKE_PER_WALLET - staked;
-        maxTierNow = maxLockTierAvailable();
+        maxDaysNow = maxLockDaysAvailable();
 
         if (u.trackedBoostedEffective > 0 && totalBoostedEffective > 0) {
             uint256 t = block.timestamp < emissionEnd ? block.timestamp : emissionEnd;
@@ -1040,7 +1078,7 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
         uint256 totalStaked_, uint256 totalDebt_, uint256 totalBoostedEffective_, uint256 totalBoostedPure_,
         uint256 utilizationWad, uint256 annualRateBps, uint256 rewardReserve_, uint256 protocolReserve_,
         uint256 emissionStart_, uint256 emissionEnd_, uint256 rewardPerSec, uint256 totalLiquidations_,
-        uint256 totalBadDebt_, uint256 totalInterestAccruedGlobal_, uint256 owed_, uint8 maxTierNow
+        uint256 totalBadDebt_, uint256 totalInterestAccruedGlobal_, uint256 owed_, uint256 maxDaysNow
     ) {
         totalStaked_ = totalStaked; totalDebt_ = totalDebt;
         totalBoostedEffective_ = totalBoostedEffective; totalBoostedPure_ = totalBoostedPure;
@@ -1050,7 +1088,7 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
         emissionStart_ = emissionStart; emissionEnd_ = emissionEnd; rewardPerSec = REWARD_PER_SEC;
         totalLiquidations_ = totalLiquidations; totalBadDebt_ = totalBadDebt;
         totalInterestAccruedGlobal_ = totalInterestAccruedGlobal; owed_ = _owed();
-        maxTierNow = maxLockTierAvailable();
+        maxDaysNow = maxLockDaysAvailable();
     }
     function simulateRate(uint256 utilizationWad_) external pure returns (uint256 rateBps) {
         if (utilizationWad_ > WAD) utilizationWad_ = WAD;
