@@ -19,15 +19,33 @@ from v1 re-added.
 ## What v3 keeps from v2 (the security core)
 
 - `conserves` per-transaction value-conservation guard on every value-moving entry-point.
-- `_owed()` Master Conservation Identity; `_hardBreach()`; permissionless `tripBreaker()`.
+- `_owed()` Master Conservation Identity; `_hardBreach()` (read-only solvency check used by views
+  and `cancelEmergency`).
 - Single-writer boost accounting (`_applyBoost` / `_computeBoost` / `_resync` / `_checkpoint`).
 - Permissionless, keeper-incentivised `liquidate(user)`.
 - Immutable `treasury`; `withdrawReserve` cannot pick a destination; **no principal sweep**.
-- Pull-only emergency (`declareEmergency` / `tripBreaker` / `cancelEmergency` /
-  `emergencyWithdraw`); **no `sweepRemaining` backdoor**.
+- Pull-only emergency (`declareEmergency` / `cancelEmergency` / `emergencyWithdraw`);
+  **no `sweepRemaining` backdoor**.
 - CEI settlement (`rewardDebt` written before transfer).
 - Deterministic emission (`tbe == 0` advances the clock).
 - `repay` callable while paused; `withdraw` callable while paused, blocked under emergency.
+
+## Where v3 deliberately DIVERGES from v2
+
+- **Removed the permissionless `tripBreaker()`.** v2 let *anyone* flip the contract into emergency
+  mode whenever `_hardBreach()` read true. That is a griefing lever: any path (rounding drift, a
+  token-level quirk, a transient mis-read) that makes the breach condition true even once would let
+  an attacker freeze the protocol permanently. It also added no real safety, because **conservation
+  is already enforced intrinsically** by the `conserves` guard on every value-moving transaction —
+  an unconservative state is unreachable, so there is nothing for a keeper to "catch". v3 keeps
+  conservation intrinsic and makes the only halt path GUARDIAN-only (`declareEmergency`). Solvency
+  remains publicly *observable* (`isSolvent` / `solvency` / `auditInvariants`) but never *actionable*
+  by third parties. The `Staking__NoBreach` error and the `permissionless` field of
+  `EmergencyDeclared` are removed with it.
+
+  Note: `liquidate(user)` and the autonomous maintenance sweep stay permissionless — that is
+  *liquidation* (keeping positions healthy), not the conservation breaker, and keeper/organic
+  participation there is desirable.
 
 ## What v3 ADDS (the request)
 

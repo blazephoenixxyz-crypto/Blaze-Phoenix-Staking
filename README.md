@@ -38,9 +38,16 @@ This identity is enforced in two complementary ways:
   *unreachable*, not merely observable. Crucially this checks the *delta*, so historical dust
   drift can never DoS a legitimate user.
 
-- **Absolute (detective + circuit-breaker).** `_hardBreach()` checks `balance + dust < owed`
-  outright. `tripBreaker()` lets **anyone** put the contract into emergency mode the instant a
-  real breach exists — objective, permissionless, not a discretionary admin power.
+- **Intrinsic, not keeper-driven.** Conservation is enforced *by the protocol's own
+  transactions* — the `conserves` guard above. It does **not** rely on any external watcher to
+  notice a breach and react. There is deliberately **no permissionless circuit-breaker**: a public
+  "trip on breach" button would be a griefing lever (a single spurious breach reading could let
+  anyone freeze the protocol forever), and it would add no safety the intrinsic guard doesn't
+  already provide. A breach is therefore *unreachable* through normal flow, not something a keeper
+  must race to catch.
+- **Discretionary halt (guardian only).** For an issue discovered off-chain, the **GUARDIAN** —
+  and only the guardian — may call `declareEmergency()` to halt. Solvency stays publicly
+  *observable* by anyone via the views below, but only the guardian can *act* on it.
 
 ### Verify it yourself (no trust required)
 
