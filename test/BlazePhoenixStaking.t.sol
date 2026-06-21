@@ -100,7 +100,7 @@ contract UnitTest is Base {
         staking.withdraw(100e18);
         vm.prank(alice); staking.repay(1000e18);          // clears the ~400 debt
         assertEq(staking.totalDebt(), 0);
-        vm.roll(block.number + 11);                        // flash guard after becoming pure staker
+        vm.roll(30);                                       // absolute: past repay's depositBlock(≤14) + MIN_DEPOSIT_BLOCKS(10)
         (uint256 staked,,,,,,,,,,,,,) = staking.getUserInfo(alice);
         vm.prank(alice); staking.withdraw(staked);
         assertEq(staking.totalStaked(), 0);
