@@ -46,8 +46,9 @@ import {ReentrancyGuard}            from "@openzeppelin/contracts/utils/Reentran
 ///     • SINGLE-WRITER boost accounting (`_applyBoost`) — no path, including the emergency
 ///       hatch, may desync the global denominators.
 ///     • ZERO BACKDOOR. No admin sweep of principal. Reserve withdrawals go ONLY to an
-///       IMMUTABLE treasury. Emergency is pull-only and can be tripped permissionlessly the
-///       instant the hard invariant is breached.
+///       IMMUTABLE treasury. Emergency is pull-only; the halt itself is GUARDIAN-only (NOT
+///       permissionless), because conservation is already enforced intrinsically per-tx and a
+///       public breaker would only hand attackers a griefing lever.
 ///     • DETERMINISTIC EMISSION. Empty-pool intervals advance the clock (emission stays in
 ///       reserve), so a latecomer can never capture a backlog.
 contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
@@ -170,7 +171,7 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
     event ReserveWithdrawn   (address indexed to, uint256 amount);
     event LockSet            (address indexed user, uint8 tier, uint256 unlockTime, uint256 boostBps);
     event LockExpired        (address indexed user);
-    event EmergencyDeclared  (address indexed by, uint256 timestamp, bool permissionless);
+    event EmergencyDeclared  (address indexed by, uint256 timestamp);
     event EmergencyCancelled (address indexed by, uint256 timestamp);
     event EmergencyWithdrawn (address indexed user, uint256 principal);
 
@@ -195,7 +196,6 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
     error Staking__EmergencyActive();
     error Staking__EmergencyNotActive();
     error Staking__InvariantBreached();
-    error Staking__NoBreach();
 
     // ── Guards ────────────────────────────────────────────────────────────────────────────
     /// @dev PER-TRANSACTION value conservation (not absolute). Snapshots the real balance and
@@ -203,9 +203,11 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
     ///      the CHANGE in what the protocol owes, within dust. Any accumulated historical drift
     ///      cancels out, so a legitimate user action is NEVER reverted merely because the global
     ///      books are a few wei off — this removes the DoS-by-invariant risk. Only a transaction
-    ///      that itself leaks value (a real bug/theft) fails. Absolute solvency is separately
-    ///      watched by `_hardBreach()` via the permissionless `tripBreaker()` and the public
-    ///      `solvency()` / `auditInvariants()` monitors — but that watcher never blocks a user.
+    ///      that itself leaks value (a real bug/theft) fails. This guard — running on every
+    ///      value-moving tx — IS the conservation mechanism; it is intrinsic and needs no keeper
+    ///      to trigger it. Absolute solvency is additionally exposed, read-only, via `isSolvent()`
+    ///      / `solvency()` / `auditInvariants()` for off-chain monitors, but observing a breach is
+    ///      never an entry-point: only the GUARDIAN can halt (`declareEmergency`).
     modifier conserves() {
         uint256 balBefore  = ML.rawBalanceOf(bzpx, address(this));
         uint256 owedBefore = _owed();
@@ -273,22 +275,19 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
     //  EMERGENCY — pull-only, no sweep
     // ════════════════════════════════════════════════════════════════════════════════════
 
-    /// @notice Permissionless circuit-breaker: ANYONE may trip it the moment the hard
-    ///         conservation invariant is actually breached (objective, not discretionary).
-    function tripBreaker() external {
-        if (emergencyMode) revert Staking__EmergencyActive();
-        if (!_hardBreach()) revert Staking__NoBreach();
-        emergencyMode = true; emergencyTrippedAt = block.timestamp;
-        if (!paused()) _pause();
-        emit EmergencyDeclared(msg.sender, block.timestamp, true);
-    }
-
-    /// @notice Discretionary halt for an off-chain-discovered issue. Cannot move funds.
+    /// @notice The SOLE halt path: a discretionary emergency the GUARDIAN may declare for an
+    ///         off-chain-discovered issue. It is deliberately NOT permissionless — conservation
+    ///         is already enforced intrinsically by the `conserves` guard on every value-moving
+    ///         transaction, so an unconservative state is unreachable and there is nothing for a
+    ///         third party to "catch and trip". Making the breaker open would instead hand an
+    ///         attacker a griefing lever (a single spurious breach reading would let anyone freeze
+    ///         the protocol). Solvency stays publicly OBSERVABLE via `isSolvent()`/`solvency()`,
+    ///         but only the guardian can ACT on it. Cannot move funds.
     function declareEmergency() external onlyRole(ROLE_GUARDIAN) {
         if (emergencyMode) revert Staking__EmergencyActive();
         emergencyMode = true; emergencyTrippedAt = block.timestamp;
         if (!paused()) _pause();
-        emit EmergencyDeclared(msg.sender, block.timestamp, false);
+        emit EmergencyDeclared(msg.sender, block.timestamp);
     }
 
     /// @notice Resume only if the hard invariant currently holds. Contract stays paused;
