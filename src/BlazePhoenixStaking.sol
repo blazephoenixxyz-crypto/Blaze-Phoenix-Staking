@@ -52,6 +52,10 @@ import {ReentrancyGuard}            from "@openzeppelin/contracts/utils/Reentran
 ///       un-spoofable condition, and reversible by the admin if the reading was transient.
 ///     • DETERMINISTIC EMISSION. Empty-pool intervals advance the clock (emission stays in
 ///       reserve), so a latecomer can never capture a backlog.
+///     • MANDATORY LOCKED STAKING. There is no liquid stake: every deposit commits its funds for
+///       90..2555 days (a decreasing countdown caps it at the time left to the 7-year emission
+///       end). Borrowing is allowed against that collateral, but a position must be FULLY REPAID
+///       (debt == 0) before any stake can be withdrawn — so there is no early-exit and no penalty.
 contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
 
     string  public  constant VERSION              = "3.0.0";
@@ -70,7 +74,6 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
 
     uint256 public  constant MAX_LTV              = 50;
     uint256 public  constant LIQ_THRESHOLD        = 95;
-    uint256 public  constant EARLY_EXIT_FEE_BPS   = 500;
     uint256 public  constant LIQ_BONUS_BPS        = 500;   // 5% surplus -> paid to the gas-payer
     uint256 public  constant RESERVE_FACTOR_BPS   = 300;   // 3%
 
@@ -356,12 +359,27 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
     //  USER ACTIONS — each ends by driving autonomous maintenance
     // ════════════════════════════════════════════════════════════════════════════════════
 
-    function deposit(uint256 amount_)
+    /// @notice Stake `amount_` and commit it for `lockDays_` days. STAKING IS ALWAYS LOCKED:
+    ///         every deposit sets/extends a lock between MIN_LOCK_DAYS and the decreasing
+    ///         countdown cap (days remaining to the 7-year emission end, ≤ MAX_LOCK_DAYS). A
+    ///         top-up may only EXTEND the existing unlock, never shorten it: if the chosen
+    ///         duration would land before the current unlock, the longer existing lock is kept
+    ///         and the new funds simply inherit it. Stake cannot leave before its unlock.
+    function deposit(uint256 amount_, uint256 lockDays_)
         external nonReentrant whenNotPaused whenNotEmergency conserves
     {
         if (amount_ == 0) revert Staking__ZeroAmount();
+        if (lockDays_ < MIN_LOCK_DAYS) revert Staking__LockTooShort();
+        if (lockDays_ > MAX_LOCK_DAYS) revert Staking__LockTooLong();
+        if (block.timestamp >= emissionEnd) revert Staking__EmissionEnded();
+
         UserInfo storage u = _users[msg.sender];
         if (u.staked + amount_ > MAX_STAKE_PER_WALLET) revert Staking__CapExceeded();
+
+        // Decreasing countdown: a lock may never extend past the 7-year emission end.
+        uint256 maxDays = (emissionEnd - block.timestamp) / 1 days;
+        if (maxDays > MAX_LOCK_DAYS) maxDays = MAX_LOCK_DAYS;
+        if (lockDays_ > maxDays) revert Staking__LockExceedsEmissionEnd();
 
         _updateGlobal();
         _settlePendingRewards(msg.sender);
@@ -374,6 +392,14 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
         u.staked      += amount_;
         u.depositBlock = uint64(block.number);
         totalStaked   += amount_;
+
+        // Set or extend the lock — never reduce it.
+        uint64 newUnlock = uint64(block.timestamp + lockDays_ * 1 days);
+        if (newUnlock >= u.unlockTime) {
+            u.unlockTime = newUnlock;
+            u.lockDays   = uint16(lockDays_);
+            emit LockSet(msg.sender, lockDays_, newUnlock, boostByDays(lockDays_));
+        }
 
         _resync(u);
         emit Deposited(msg.sender, amount_, u.staked);
@@ -436,57 +462,30 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
     }
 
     /// @dev withdraw is allowed under pause (exit), blocked under emergency (use emergencyWithdraw).
+    ///      TWO hard preconditions: (1) the lock must have expired, and (2) the position must be
+    ///      DEBT-FREE — a borrower must repay everything before withdrawing any stake. There is no
+    ///      early-exit-with-debt path and therefore no exit penalty.
     function withdraw(uint256 amount_) external nonReentrant whenNotEmergency conserves {
         if (amount_ == 0) revert Staking__ZeroAmount();
         UserInfo storage u = _users[msg.sender];
+        if (u.debt != 0)                                         revert Staking__HasDebt();      // repay everything first
         if (block.number <= u.depositBlock + MIN_DEPOSIT_BLOCKS) revert Staking__FlashLoanProtection();
         if (u.lockDays > 0 && block.timestamp < u.unlockTime)    revert Staking__StillLocked();
 
         _updateGlobal();
         _settlePendingRewards(msg.sender);
         _settlePendingPureYield(msg.sender);
-        _accrueInterestFor(msg.sender);
         _processLockExpiry(msg.sender);
 
         if (u.staked < amount_) revert Staking__InsufficientStake();
 
-        bool hadDebt = (u.debt > 0);
-        uint256 debtCleared;
-        uint256 penalty;
-        uint256 netOut = amount_;
-
-        if (hadDebt) {
-            debtCleared = (amount_ == u.staked) ? u.debt : ML.mulDiv(u.debt, amount_, u.staked);
-            penalty     = ML.mulDiv(debtCleared, EARLY_EXIT_FEE_BPS, 10_000);
-            netOut      = amount_ > debtCleared + penalty ? amount_ - debtCleared - penalty : 0;
-
-            uint256 reserveCut = ML.mulDiv(penalty, RESERVE_FACTOR_BPS, 10_000);
-            uint256 toPool     = penalty - reserveCut;
-            protocolReserve   += reserveCut;
-            if (toPool > 0) {
-                if (totalBoostedPure > 0) {
-                    accPureYieldPerShare   += ML.mulDiv(toPool, WAD, totalBoostedPure);
-                    totalRewardDistributed += toPool;
-                } else {
-                    protocolReserve += toPool;
-                }
-            }
-            totalDebt -= debtCleared;
-            u.debt    -= debtCleared;
-        }
-
         u.staked    -= amount_;
         totalStaked -= amount_;
 
-        if (u.debt > 0 && u.debt * 100 >= u.staked * LIQ_THRESHOLD) revert Staking__LTVExceeded();
-        if (hadDebt && u.debt == 0) { _removeBorrower(msg.sender); if (u.staked > 0) u.depositBlock = uint64(block.number); }
-
         _resync(u);
 
-        if (netOut > 0) {
-            if (!ML.rawTransfer(bzpx, msg.sender, netOut)) revert Staking__TransferFailed();
-        }
-        emit Withdrawn(msg.sender, amount_, debtCleared, penalty, netOut);
+        if (!ML.rawTransfer(bzpx, msg.sender, amount_)) revert Staking__TransferFailed();
+        emit Withdrawn(msg.sender, amount_, 0, 0, amount_);
         _autoMaintain(msg.sender);
     }
 
