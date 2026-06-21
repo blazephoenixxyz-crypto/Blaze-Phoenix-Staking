@@ -17,7 +17,13 @@
   "author": "",
   "license": "ISC",
   "dependencies": {
+    "@ethereumjs/block": "^10.1.2",
+    "@ethereumjs/common": "^10.1.2",
+    "@ethereumjs/tx": "^10.1.2",
+    "@ethereumjs/util": "^10.1.2",
+    "@ethereumjs/vm": "^10.1.2",
     "@openzeppelin/contracts": "^5.1.0",
+    "ethers": "^6.17.0",
     "solc": "^0.8.28"
   }
 }
