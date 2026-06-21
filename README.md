@@ -178,4 +178,7 @@ src/BlazePhoenixStaking.sol   final staking + lending contract  (VERSION "3.0.0"
 src/BlazePhoenixMathLib.sol   512-bit mulDiv + raw token calls   (VERSION "3.0.0-staking")
 ```
 
-> Licence: BUSL-1.1.
+## Licence & Whitepaper
+
+- **Licence:** [BUSL-1.1](./LICENSE) — Change Date 2030-06-01, then GPL-2.0-or-later
+- **Whitepaper:** [docs/WHITEPAPER.md](./docs/WHITEPAPER.md)
