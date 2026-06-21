@@ -1,0 +1,23 @@
+{
+  "name": "blaze-phoenix-staking",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "directories": {
+    "doc": "docs"
+  },
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "http://local_proxy@127.0.0.1:37821/git/blazephoenixxyz-crypto/Blaze-Phoenix-Staking"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "@openzeppelin/contracts": "^5.1.0",
+    "solc": "^0.8.28"
+  }
+}
