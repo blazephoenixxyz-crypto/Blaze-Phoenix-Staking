@@ -101,22 +101,26 @@ the book clean, so liveness never depends on keepers alone.
 
 ---
 
-## 3. Lock commitment (day-based, with a countdown)
+## 3. Staking is always locked (day-based, with a countdown)
 
-Locking is measured in **days**, not year-tiers:
+There is no liquid staking — **every deposit is a locked commitment** measured in days:
 
-- **Minimum 90 days**, **maximum 2555 days (7 years)**.
-- A **decreasing countdown** caps every new lock at the days remaining until the 7-year emission
-  end (`maxLockDaysAvailable()`), so **no lock can ever outlast emission**. Early on you can lock up
-  to the full 7 years; with, say, 2 years left, the max is ~730 days; in the final 90 days locking
-  is unavailable (the floor would cross the end).
+- `deposit(uint256 amount, uint256 lockDays)` — `lockDays` is **min 90, max 2555 (7 years)**.
+- A **decreasing countdown** caps every lock at the days remaining until the 7-year emission end
+  (`maxLockDaysAvailable()`), so **no lock can ever outlast emission**. Early on you can lock up to
+  the full 7 years; with, say, 2 years left, the max is ~730 days; in the final 90 days new
+  deposits/locks are unavailable (the 90-day floor would cross the end).
+- **Top-ups can only extend, never shorten.** If the chosen duration would land *before* your
+  current unlock, the longer existing lock is kept and the new funds inherit it. To push your
+  unlock later, pass a longer `lockDays`.
 - Boost is **continuous** in the committed duration: `boost(d) = 10000 + 750·(d/365) + 250·(d/365)²`
-  bps. Longer commitment ⇒ higher boost, and a longer boost always requires a strictly later unlock.
-- Commitments can only be **extended** — the new unlock must be later than the current one
-  (`Staking__CannotReduceLock`); you can never shorten a commitment you've made.
+  bps (90d ≈ 1.02×, 1y = 1.10×, 7y = 2.75×).
+- **Withdrawal requires the lock to have expired *and* the position to be DEBT-FREE.** A borrower
+  must repay everything before withdrawing any stake (`Staking__HasDebt`). There is no
+  early-exit-with-debt path, and therefore **no exit penalty**.
 
-`lock(uint256 lockDays)`; inspect with `lockInfoOf(user)`, `timeUntilUnlock(user)`,
-`maxLockDaysAvailable()`, and `boostByDays(days)`.
+`lock(uint256 lockDays)` also exists to extend an existing commitment without depositing. Inspect
+with `lockInfoOf(user)`, `timeUntilUnlock(user)`, `maxLockDaysAvailable()`, `boostByDays(days)`.
 
 ---
 
@@ -146,7 +150,7 @@ Locking is measured in **days**, not year-tiers:
 | Max LTV (on effective stake) | 50% |
 | Liquidation threshold | 95% |
 | Liquidation bonus | 5% (paid to the gas-payer) |
-| Early-exit fee | 5% |
+| Withdrawal | requires lock expired **and** debt fully repaid (no exit penalty) |
 | Reserve factor | 3% |
 | Lock duration | **min 90 days, max 2555 days (7 years)**, capped by a decreasing countdown to emission end |
 | Lock boost | `boost(d) = 10000 + 750·(d/365) + 250·(d/365)²` bps → 90d ≈ 1.02×, 1y = 1.10×, 5y = 2.00×, 7y = 2.75× |

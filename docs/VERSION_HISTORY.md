@@ -30,22 +30,37 @@ from v1 re-added.
 - Deterministic emission (`tbe == 0` advances the clock).
 - `repay` callable while paused; `withdraw` callable while paused, blocked under emergency.
 
+## Staking is mandatorily locked; withdraw requires repay-all (changed from v1/v2)
+
+In v1/v2 staking was liquid and the lock was an *optional* boost add-on. v3 makes **all staking a
+locked commitment**, and changes the exit rule:
+
+- **Mandatory lock on deposit.** `deposit(uint256 amount)` → `deposit(uint256 amount, uint256
+  lockDays)`. Every deposit sets/extends a lock; there is no unlocked stake. `lockDays` is **min 90,
+  max 2555 (7 years)**, capped by the decreasing countdown (`maxLockDaysAvailable()`), so no lock
+  outlasts the 7-year emission. Top-ups may only EXTEND: a chosen duration that would land before
+  the current unlock keeps the longer existing lock (new funds inherit it).
+- **Withdraw requires lock-expired AND debt-free.** `withdraw` now reverts with `Staking__HasDebt`
+  unless `debt == 0` — a borrower must repay everything before withdrawing any stake. Lending
+  (`borrow`) is unchanged and allowed against locked collateral.
+- **Removed the early-exit-with-debt path** and its penalty: `EARLY_EXIT_FEE_BPS` is deleted and the
+  `Withdrawn` event's `debtCleared` / `penalty` fields are now always 0 (signature kept).
+
 ## Lock model: day-based with a countdown (changed from v1/v2 tiers)
 
 v1/v2 used discrete year-tiers (`lockTier` 1..6, `boostByTier`). v3 replaces them with a
 **day-denominated** commitment:
 
-- `lock(uint256 lockDays)` — **min 90 days, max 2555 days (7 years)**.
 - A **decreasing countdown** (`maxLockDaysAvailable()`) caps each lock at the days remaining to the
   7-year emission end, so a lock can never outlast emission.
 - Boost is continuous: `boostByDays(d) = 10000 + 750·(d/365) + 250·(d/365)²` bps (90d ≈ 1.02×,
   1y = 1.10×, 7y = 2.75×). Note the **max boost rose from 2.35× (6y tier) to 2.75× (7y)**, since
   the cap is now the full emission window.
-- `UserInfo.lockTier (uint8)` → `UserInfo.lockDays (uint16)`. Commitments may only be extended
-  (new unlock must be strictly later). New errors `Staking__LockTooShort` / `Staking__LockTooLong`
-  / `Staking__NoLock` replace `Staking__InvalidTier`. Views `maxLockTierAvailable()` →
-  `maxLockDaysAvailable()`; `lockInfoOf` / `getUserInfo` / `getGlobalStats` / `pureStakerApr` now
-  speak days; `LockSet` carries `lockDays`.
+- `UserInfo.lockTier (uint8)` → `UserInfo.lockDays (uint16)`. The standalone `lock(uint256
+  lockDays)` remains, for extending a commitment without depositing. Commitments may only be
+  extended. New errors `Staking__LockTooShort` / `Staking__LockTooLong` / `Staking__NoLock` replace
+  `Staking__InvalidTier`. Views `maxLockTierAvailable()` → `maxLockDaysAvailable()`; `lockInfoOf` /
+  `getUserInfo` / `getGlobalStats` / `pureStakerApr` now speak days; `LockSet` carries `lockDays`.
 
 ## Circuit breaker: permissionless, but strictly insolvency-gated
 
