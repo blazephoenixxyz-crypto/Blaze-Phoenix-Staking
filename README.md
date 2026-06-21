@@ -40,14 +40,18 @@ This identity is enforced in two complementary ways:
 
 - **Intrinsic, not keeper-driven.** Conservation is enforced *by the protocol's own
   transactions* — the `conserves` guard above. It does **not** rely on any external watcher to
-  notice a breach and react. There is deliberately **no permissionless circuit-breaker**: a public
-  "trip on breach" button would be a griefing lever (a single spurious breach reading could let
-  anyone freeze the protocol forever), and it would add no safety the intrinsic guard doesn't
-  already provide. A breach is therefore *unreachable* through normal flow, not something a keeper
+  notice a breach and react; a breach is *unreachable* through normal flow, not something a keeper
   must race to catch.
-- **Discretionary halt (guardian only).** For an issue discovered off-chain, the **GUARDIAN** —
-  and only the guardian — may call `declareEmergency()` to halt. Solvency stays publicly
-  *observable* by anyone via the views below, but only the guardian can *act* on it.
+- **Permissionless breaker — but only on proven insolvency.** `tripBreaker()` lets **anyone** halt
+  the protocol, but *only* when the chain itself proves insolvency: it requires `_hardBreach()`
+  (`balance + dust < owed`), an objective, un-spoofable on-chain condition. Nobody can lower the
+  contract's balance except through flows that lower `owed` by the same amount, and donations only
+  raise it — so the breaker can fire **only on a genuine shortfall** (a real bug/theft or a
+  token-level failure), never on healthy state. It is **reversible**: if the reading was transient,
+  the admin calls `cancelEmergency()` once `_hardBreach()` clears, so the worst a spurious trip can
+  do is a temporary, admin-undoable pause — not a permanent freeze.
+- **Discretionary halt (guardian).** Independently, the **GUARDIAN** may call `declareEmergency()`
+  for an issue discovered off-chain (no on-chain breach required).
 
 ### Verify it yourself (no trust required)
 
@@ -97,7 +101,26 @@ the book clean, so liveness never depends on keepers alone.
 
 ---
 
-## 3. Other v2 security properties (retained)
+## 3. Lock commitment (day-based, with a countdown)
+
+Locking is measured in **days**, not year-tiers:
+
+- **Minimum 90 days**, **maximum 2555 days (7 years)**.
+- A **decreasing countdown** caps every new lock at the days remaining until the 7-year emission
+  end (`maxLockDaysAvailable()`), so **no lock can ever outlast emission**. Early on you can lock up
+  to the full 7 years; with, say, 2 years left, the max is ~730 days; in the final 90 days locking
+  is unavailable (the floor would cross the end).
+- Boost is **continuous** in the committed duration: `boost(d) = 10000 + 750·(d/365) + 250·(d/365)²`
+  bps. Longer commitment ⇒ higher boost, and a longer boost always requires a strictly later unlock.
+- Commitments can only be **extended** — the new unlock must be later than the current one
+  (`Staking__CannotReduceLock`); you can never shorten a commitment you've made.
+
+`lock(uint256 lockDays)`; inspect with `lockInfoOf(user)`, `timeUntilUnlock(user)`,
+`maxLockDaysAvailable()`, and `boostByDays(days)`.
+
+---
+
+## 4. Other v2 security properties (retained)
 
 - **Single-writer boost accounting** (`_applyBoost`): the *only* writer of the boosted-total
   denominators. Plain checked subtraction means any desync reverts instead of corrupting state.
@@ -125,7 +148,8 @@ the book clean, so liveness never depends on keepers alone.
 | Liquidation bonus | 5% (paid to the gas-payer) |
 | Early-exit fee | 5% |
 | Reserve factor | 3% |
-| Lock tiers | `boost(t) = 10000 + 750t + 250t²`, t∈[0,6] → 1.00×…2.35× |
+| Lock duration | **min 90 days, max 2555 days (7 years)**, capped by a decreasing countdown to emission end |
+| Lock boost | `boost(d) = 10000 + 750·(d/365) + 250·(d/365)²` bps → 90d ≈ 1.02×, 1y = 1.10×, 5y = 2.00×, 7y = 2.75× |
 | Interest curve | kinked at 80% utilisation (1%→5% base, steep above) |
 
 ---

@@ -19,33 +19,47 @@ from v1 re-added.
 ## What v3 keeps from v2 (the security core)
 
 - `conserves` per-transaction value-conservation guard on every value-moving entry-point.
-- `_owed()` Master Conservation Identity; `_hardBreach()` (read-only solvency check used by views
-  and `cancelEmergency`).
+- `_owed()` Master Conservation Identity; `_hardBreach()` (objective on-chain insolvency check used
+  by `tripBreaker`, `cancelEmergency` and the public views).
 - Single-writer boost accounting (`_applyBoost` / `_computeBoost` / `_resync` / `_checkpoint`).
 - Permissionless, keeper-incentivised `liquidate(user)`.
 - Immutable `treasury`; `withdrawReserve` cannot pick a destination; **no principal sweep**.
-- Pull-only emergency (`declareEmergency` / `cancelEmergency` / `emergencyWithdraw`);
+- Pull-only emergency (`tripBreaker` / `declareEmergency` / `cancelEmergency` / `emergencyWithdraw`);
   **no `sweepRemaining` backdoor**.
 - CEI settlement (`rewardDebt` written before transfer).
 - Deterministic emission (`tbe == 0` advances the clock).
 - `repay` callable while paused; `withdraw` callable while paused, blocked under emergency.
 
-## Where v3 deliberately DIVERGES from v2
+## Lock model: day-based with a countdown (changed from v1/v2 tiers)
 
-- **Removed the permissionless `tripBreaker()`.** v2 let *anyone* flip the contract into emergency
-  mode whenever `_hardBreach()` read true. That is a griefing lever: any path (rounding drift, a
-  token-level quirk, a transient mis-read) that makes the breach condition true even once would let
-  an attacker freeze the protocol permanently. It also added no real safety, because **conservation
-  is already enforced intrinsically** by the `conserves` guard on every value-moving transaction —
-  an unconservative state is unreachable, so there is nothing for a keeper to "catch". v3 keeps
-  conservation intrinsic and makes the only halt path GUARDIAN-only (`declareEmergency`). Solvency
-  remains publicly *observable* (`isSolvent` / `solvency` / `auditInvariants`) but never *actionable*
-  by third parties. The `Staking__NoBreach` error and the `permissionless` field of
-  `EmergencyDeclared` are removed with it.
+v1/v2 used discrete year-tiers (`lockTier` 1..6, `boostByTier`). v3 replaces them with a
+**day-denominated** commitment:
 
-  Note: `liquidate(user)` and the autonomous maintenance sweep stay permissionless — that is
-  *liquidation* (keeping positions healthy), not the conservation breaker, and keeper/organic
-  participation there is desirable.
+- `lock(uint256 lockDays)` — **min 90 days, max 2555 days (7 years)**.
+- A **decreasing countdown** (`maxLockDaysAvailable()`) caps each lock at the days remaining to the
+  7-year emission end, so a lock can never outlast emission.
+- Boost is continuous: `boostByDays(d) = 10000 + 750·(d/365) + 250·(d/365)²` bps (90d ≈ 1.02×,
+  1y = 1.10×, 7y = 2.75×). Note the **max boost rose from 2.35× (6y tier) to 2.75× (7y)**, since
+  the cap is now the full emission window.
+- `UserInfo.lockTier (uint8)` → `UserInfo.lockDays (uint16)`. Commitments may only be extended
+  (new unlock must be strictly later). New errors `Staking__LockTooShort` / `Staking__LockTooLong`
+  / `Staking__NoLock` replace `Staking__InvalidTier`. Views `maxLockTierAvailable()` →
+  `maxLockDaysAvailable()`; `lockInfoOf` / `getUserInfo` / `getGlobalStats` / `pureStakerApr` now
+  speak days; `LockSet` carries `lockDays`.
+
+## Circuit breaker: permissionless, but strictly insolvency-gated
+
+`tripBreaker()` (from v2) is **kept** and is **permissionless**, but fires **only when the chain
+proves insolvency** — it requires `_hardBreach()` (`balance + dust < owed`), an objective,
+un-spoofable condition that is impossible on healthy state (donations only raise balance; nothing
+lowers it except flows that lower `owed` equally). It is **reversible**: the admin's
+`cancelEmergency()` requires `_hardBreach()` to have cleared, so a transient trip is an
+admin-undoable pause, never a permanent freeze. Conservation itself remains enforced *intrinsically*
+by the `conserves` guard on every value-moving tx — the breaker is a backstop for a real shortfall
+(e.g. a token-level failure outside this contract), not the primary mechanism, and it is never
+needed in normal operation. `declareEmergency()` (GUARDIAN, discretionary, off-chain issues) sits
+alongside it. `liquidate(user)` and the autonomous sweep stay permissionless because that is
+*liquidation* (position health), not the conservation breaker.
 
 ## What v3 ADDS (the request)
 
@@ -64,7 +78,7 @@ from v1 re-added.
 - `timeSinceEmissionStart()`
 - `timeUntilEmissionEnd()`
 - `timeUntilUnlock(address)`
-- `pureStakerApr(uint8)`
+- `pureStakerApr(...)` (now takes lock-days instead of a tier)
 - `getBorrowers(offset, limit)` paginated (v2 only had `borrowerAt(i)`)
 
 ## What v1 had that is intentionally NOT in v3 (and why)
