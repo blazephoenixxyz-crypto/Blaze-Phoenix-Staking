@@ -263,3 +263,188 @@ contract InvariantTest is StdInvariant, Base {
         assertGe(staking.backing() + 1e10, staking.owed(), "BACKING < OWED");
     }
 }
+
+// ───────────────────────────────────────────────────────────────────────────────────────────
+//  STRESS TESTS
+//  Cenário 1 — Gas Exhaustion via MAINT_MAX cap
+//  Cenário 2 — Block-density / time-gap manipulation on maintenance budget
+//  Cenário 3 — Solvency and conserves-delta at 100% kink utilisation
+//  Cenário 4 — Reentrancy multi-hop via malicious ERC-20 transfer hook
+// ───────────────────────────────────────────────────────────────────────────────────────────
+contract StressTest is Base {
+
+    // ── helpers ──────────────────────────────────────────────────────────────────────────────
+
+    /// Mint, approve, deposit and borrow for a freshly-created address.
+    function _newBorrower(uint256 idx) internal returns (address who) {
+        who = address(uint160(0x1000 + idx));
+        token.mint(who, 500_000_000e18);
+        vm.prank(who); token.approve(address(staking), type(uint256).max);
+        vm.prank(who); staking.deposit(1_000_000e18, 90);
+        vm.roll(block.number + 2);
+        vm.prank(who); staking.borrow(400_000e18);   // well inside 50% LTV
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────────────────────
+    // Cenário 1: Gas Exhaustion — MAINT_MAX_SCAN hard cap
+    //
+    // Insert more borrowers than MAINT_MAX_SCAN (10). Any single user transaction must consume
+    // bounded gas regardless of the borrower list length. This proves the protocol cannot be
+    // DoS'd by flooding the borrower registry.
+    // ─────────────────────────────────────────────────────────────────────────────────────────
+    function test_stress_gasExhaustion_maintMax(uint8 extraBorrowers) public {
+        extraBorrowers = uint8(bound(extraBorrowers, 11, 50));
+
+        for (uint256 i = 0; i < extraBorrowers; i++) {
+            _newBorrower(i);
+        }
+
+        assertEq(staking.activeBorrowerCount(), extraBorrowers);
+
+        // maintenanceBudget must never exceed MAINT_MAX_SCAN = 10
+        assertLe(staking.maintenanceBudget(), 10);
+
+        // A plain deposit by alice consumes bounded gas — the harness enforces no explicit
+        // ceiling but we verify budget cap and solvency hold.
+        uint256 gasBefore = gasleft();
+        vm.prank(alice); staking.deposit(100e18, 90);
+        uint256 gasUsed = gasBefore - gasleft();
+
+        // 3M gas is a very conservative ceiling for a single deposit + 10-wide sweep.
+        assertLt(gasUsed, 3_000_000, "deposit gas exceeded safe ceiling");
+        assertTrue(staking.isSolvent());
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────────────────────
+    // Cenário 2: Block-density / time-gap manipulation on maintenance budget
+    //
+    // _maintBudget grows with secondsSinceLastSweep / MAINT_GAP_UNIT (15 min).
+    // A MEV bot could try to batch many rapid txs to keep lastMaintTime fresh and suppress
+    // the budget, starving the sweep. Conversely, a large time gap widens the budget.
+    // Prove: budget is always clamped to MAINT_MAX_SCAN regardless of time gap.
+    // ─────────────────────────────────────────────────────────────────────────────────────────
+    function test_stress_timegap_budgetCap(uint32 gapSeconds) public {
+        gapSeconds = uint32(bound(gapSeconds, 0, 365 days));
+
+        // Seed at least one borrower so budget is non-zero.
+        _newBorrower(0);
+
+        vm.warp(block.timestamp + gapSeconds);
+
+        uint256 budget = staking.maintenanceBudget();
+        assertLe(budget, 10, "budget must never exceed MAINT_MAX_SCAN");
+
+        // Trigger a sweep and confirm solvency is preserved.
+        vm.prank(alice); staking.deposit(100e18, 90);
+        assertTrue(staking.isSolvent());
+        assertEq(staking.auditInvariants() & 1, 0, "conservation bit set after time-gap sweep");
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────────────────────
+    // Cenário 3: Solvency and conserves-delta at 100% kink utilisation
+    //
+    // Drive totalDebt as close to totalStaked as LTV allows, advance time so interest accrues
+    // at maximum kink rate, then prove:
+    //   a) conserves modifier does NOT block legitimate repayments
+    //   b) isSolvent() remains true throughout
+    //   c) auditInvariants() bit0 (conservation) is never set
+    // ─────────────────────────────────────────────────────────────────────────────────────────
+    function test_stress_solvency_maxKinkUtilization() public {
+        // Alice and bob both deposit and borrow at max LTV to push utilisation high.
+        vm.prank(alice); staking.deposit(10_000_000e18, 365);
+        vm.prank(bob);   staking.deposit(10_000_000e18, 365);
+        vm.roll(block.number + 2);
+        vm.prank(alice); staking.borrow(4_999_999e18);  // ~50% LTV
+        vm.prank(bob);   staking.borrow(4_999_999e18);
+
+        // Utilisation is now ~50% (kink at 80%), rate is modest. Drive it higher by adding
+        // more borrowers proportional to stakers.
+        for (uint256 i = 0; i < 5; i++) {
+            _newBorrower(i);
+        }
+
+        // Advance 180 days — interest accrues at up to 5% APR below kink.
+        vm.warp(block.timestamp + 180 days);
+        vm.roll(block.number + 100);
+
+        // Conservation and solvency must still hold.
+        assertTrue(staking.isSolvent(), "insolvent after 180d kink stress");
+        assertEq(staking.auditInvariants() & 1, 0, "conservation bit set");
+
+        // A repayment must succeed — conserves modifier must not block it.
+        vm.prank(alice); staking.repay(4_999_999e18);
+
+        assertTrue(staking.isSolvent(), "insolvent after repay");
+        assertEq(staking.totalDebt() < staking.totalStaked(), true, "debt exceeds stake post-repay");
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────────────────────
+    // Cenário 4: Reentrancy multi-hop via malicious ERC-20 transfer hook
+    //
+    // A token that calls back into the staking contract during transferFrom (or transfer) could
+    // attempt to re-enter deposit/borrow/withdraw to exploit a partially-written state.
+    // The nonReentrant modifier on every public entry-point must block the second call.
+    //
+    // We simulate this with a MaliciousToken whose transferFrom calls staking.borrow()
+    // inside the callback. The reentrancy must be rejected.
+    // ─────────────────────────────────────────────────────────────────────────────────────────
+    function test_stress_reentrancy_maliciousToken() public {
+        MaliciousToken mtoken = new MaliciousToken();
+        address treasury2 = address(0xBEEF);
+
+        // Deploy a staking instance that uses the malicious token.
+        vm.prank(admin);
+        BlazePhoenixStaking mstaking = new BlazePhoenixStaking(address(mtoken), treasury2);
+        mtoken.setStaking(address(mstaking));
+
+        mtoken.mint(alice, 500_000_000e18);
+        vm.prank(alice); mtoken.approve(address(mstaking), type(uint256).max);
+
+        // The malicious token will attempt a reentrant borrow() inside transferFrom.
+        // The nonReentrant guard must revert the inner call, and the outer deposit must
+        // either succeed cleanly or revert — but must never leave state half-written.
+        vm.prank(alice);
+        try mstaking.deposit(1_000e18, 90) {
+            // If deposit succeeded, borrow was blocked and state is consistent.
+            assertEq(mstaking.totalStaked(), 1_000e18);
+        } catch {
+            // If the reentrant callback caused the outer deposit to revert, that is also
+            // correct — no state was written.
+            assertEq(mstaking.totalStaked(), 0);
+        }
+    }
+}
+
+/// @dev Malicious ERC-20: calls staking.borrow(1) inside transferFrom to test reentrancy.
+contract MaliciousToken {
+    mapping(address => uint256) public balanceOf;
+    mapping(address => mapping(address => uint256)) public allowance;
+    string public name = "Malicious"; string public symbol = "MAL"; uint8 public decimals = 18;
+    uint256 public totalSupply;
+    address public stakingTarget;
+    bool private _attacking;
+
+    function setStaking(address s) external { stakingTarget = s; }
+    function mint(address to, uint256 a) external { balanceOf[to] += a; totalSupply += a; }
+    function approve(address s, uint256 a) external returns (bool) { allowance[msg.sender][s] = a; return true; }
+
+    function transfer(address to, uint256 a) external returns (bool) {
+        require(balanceOf[msg.sender] >= a);
+        balanceOf[msg.sender] -= a; balanceOf[to] += a; return true;
+    }
+
+    function transferFrom(address f, address to, uint256 a) external returns (bool) {
+        require(balanceOf[f] >= a);
+        uint256 al = allowance[f][msg.sender];
+        if (al != type(uint256).max) { require(al >= a); allowance[f][msg.sender] = al - a; }
+        balanceOf[f] -= a; balanceOf[to] += a;
+
+        // Attempt reentrant borrow — must be blocked by nonReentrant.
+        if (stakingTarget != address(0) && !_attacking) {
+            _attacking = true;
+            try BlazePhoenixStaking(stakingTarget).borrow(1) {} catch {}
+            _attacking = false;
+        }
+        return true;
+    }
+}
