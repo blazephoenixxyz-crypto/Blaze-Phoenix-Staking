@@ -196,8 +196,13 @@ await test('AUTONOMOUS maintenance: another user tx liquidates the underwater bo
 await test('emission: fund once, accrue, claim pays out', async () => {
   const { chain, staking, token, admin, alice } = await setup();
   await staking.send(admin, 'fundEmission', [E18(10_000_000)]);
-  let r = await staking.send(admin, 'fundEmission', [E18(1)]);
-  ok(!r.ok && r.revert === 'Staking__AlreadyFunded', `double fund -> AlreadyFunded (${r.revert})`);
+  // incremental funding is allowed; cumulative is capped at TOTAL_REWARDS
+  let r = await staking.send(admin, 'fundEmission', [E18(5_000_000)]);
+  ok(r.ok, `incremental fund succeeds (${r.revert})`);
+  eq(await staking.call('totalEmissionFunded'), E18(15_000_000), 'totalEmissionFunded accumulates');
+  eq(await staking.call('rewardReserve'), E18(15_000_000), 'rewardReserve accumulates');
+  r = await staking.send(admin, 'fundEmission', [E18(180_000_000)]);
+  ok(!r.ok && r.revert === 'Staking__CapExceeded', `over-cap fund -> CapExceeded (${r.revert})`);
   await staking.send(alice, 'deposit', [E18(1_000_000), 365]);
   chain.warp(30n * DAY); chain.mine(2);
   const pending = await staking.call('pendingRewards', [alice.hex]);

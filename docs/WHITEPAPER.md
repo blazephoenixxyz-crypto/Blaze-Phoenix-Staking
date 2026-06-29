@@ -209,6 +209,13 @@ For each position in the window:
 3. **If not liquidatable** — settle pending emission rewards and pure yield, expire
    stale locks, and resync the boost weight. The global denominators never drift.
 
+Each per-borrower step runs through an internal self-external call (`maintStep`, callable
+only by the contract itself) wrapped in `try/catch`. If a single position cannot be processed —
+for example, if the BZPX token refused to pay a specific borrower — that step is rolled back
+atomically and skipped, the cursor advances so the sweep never stalls, and **the innocent
+user's own transaction still succeeds**. A poisoned position can never become a denial-of-service
+vector against the rest of the protocol. (See §7.7 for the token assumption this defends.)
+
 ### 3.3 Why this is sufficient
 
 A position becomes liquidatable only after interest has eroded `stake` to within
@@ -353,6 +360,11 @@ REWARD_PER_SEC  = TOTAL_REWARDS / EMISSION_PERIOD  ≈ 0.814 BZPX/s
 Rewards are distributed pro-rata to `totalBoostedEffective` (stake × boost,
 net of debt) via the standard accumulator pattern.
 
+`fundEmission` is **incremental**: the admin may call it multiple times, and a running counter
+`totalEmissionFunded` is hard-capped at `TOTAL_REWARDS`. This removes the one-shot deploy risk
+(a wrong first amount is no longer irreversible) while still bounding total emission. Each call is
+conservation-safe — the contract's balance and `rewardReserve` rise by the same amount.
+
 ### 6.2 Deterministic emission (no backlog capture)
 
 When `totalBoostedEffective == 0` (no stakers), the accumulator is not updated
@@ -423,6 +435,23 @@ Both are **pull-only**: `emergencyWithdraw()` returns a user's net equity
 `cancelEmergency()` requires ADMIN role and that `_hardBreach()` is currently
 false. This prevents cancelling while the breach still exists.
 
+### 7.7 Token assumption (deploy invariant)
+
+The protocol assumes BZPX is a **standard, well-behaved ERC-20**:
+
+- **No receiver blacklist / freeze.** A token that can refuse to pay a specific address (USDC-style)
+  could otherwise make a borrower un-liquidatable on the direct keeper path. The autonomous path
+  is already defended (the `maintStep` try/catch isolates such a position — §3.2), but the direct
+  `liquidate(user)` path would revert for the keeper.
+- **No transfer pause that can trap the protocol.**
+- **No fee-on-transfer / rebasing.** The conservation identity assumes the amount sent equals the
+  amount received. A fee-on-transfer token would break the `Δbalance == Δowed` equality.
+- **No reentrancy beyond what `nonReentrant` covers.** Transfer hooks are tolerated (every public
+  entry-point is `nonReentrant`), but a token actively designed to corrupt accounting is out of scope.
+
+Because BZPX is the protocol's own token, these properties hold by construction. They are listed
+here as explicit deploy invariants for any fork or re-deployment against a different asset.
+
 ---
 
 ## 8. Mathematical Notation Summary
@@ -455,7 +484,7 @@ The protocol is tested by two complementary suites:
 
 `test/run.mjs` — runs on Node.js using `@ethereumjs/vm` (no Foundry, no network):
 
-- **77 checks across 18 scenarios**
+- **80 checks across 18 scenarios**
 - Boost curve exact values
 - Mandatory lock (min, max, countdown cap)
 - Extends-only top-up
@@ -478,14 +507,20 @@ The protocol is tested by two complementary suites:
 
 `test/BlazePhoenixStaking.t.sol`:
 
-- **11 unit tests** mirroring the JS suite
+- **12 unit tests** mirroring the JS suite (incl. incremental funding cap)
+- **5 stress tests**:
+  - `test_stress_gasExhaustion_maintMax` — fuzz: budget ≤ `MAINT_MAX_SCAN`, deposit gas bounded
+  - `test_stress_timegap_budgetCap` — fuzz: budget clamped across 0..365-day gaps
+  - `test_stress_solvency_maxKinkUtilization` — solvency + repayability under high utilisation
+  - `test_stress_reentrancy_maliciousToken` — `nonReentrant` blocks a reentrant borrow hook
+  - `test_stress_blacklist_maintenanceResilient` — a blacklisted borrower cannot DoS the sweep
 - **4 invariants** under random action sequences (256 runs × 128,000 calls each):
   - `invariant_solvent` — `isSolvent()` always true
   - `invariant_conservationBit` — bit 0 of `auditInvariants()` never set
   - `invariant_boostBounded` — boosted denominators never exceed `stake × maxBoost / base`
   - `invariant_backingCoversOwed` — `backing + dust ≥ owed` always
 
-**Result: 15/15 Foundry tests pass. 77/77 JS checks pass.**
+**Result: 21/21 Foundry tests pass. 80/80 JS checks pass.**
 
 ---
 
@@ -510,8 +545,8 @@ constructor(address bzpx_, address treasury_)
 After deploy, the admin must:
 1. Call `grantRole(keccak256("GUARDIAN_ROLE"), guardian)` to enable
    `pause()` / `declareEmergency()`
-2. Call `fundEmission(amount)` to seed the reward reserve (max 180,000,000 BZPX,
-   one-time only)
+2. Call `fundEmission(amount)` to seed the reward reserve. This is **incremental** — it may be
+   called multiple times, with cumulative funding hard-capped at 180,000,000 BZPX.
 
 ---
 
