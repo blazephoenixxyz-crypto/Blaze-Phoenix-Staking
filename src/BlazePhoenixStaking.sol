@@ -122,6 +122,7 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
     uint256 public totalDebt;
     uint256 public protocolReserve;
     uint256 public rewardReserve;
+    uint256 public totalEmissionFunded;     // cumulative funded, capped at TOTAL_REWARDS (incremental-safe)
 
     uint256 public totalBoostedEffective;   // denominator: emission rewards
     uint256 public totalBoostedPure;        // denominator: pure-yield (interest)
@@ -191,7 +192,6 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
     error Staking__LTVExceeded();
     error Staking__NotLiquidatable();
     error Staking__TransferFailed();
-    error Staking__AlreadyFunded();
     error Staking__HasDebt();
     error Staking__NoDebt();
     error Staking__FlashLoanProtection();
@@ -267,12 +267,17 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
     // ════════════════════════════════════════════════════════════════════════════════════
     //  ADMIN (bounded; no arbitrary-destination transfers; renounce-able)
     // ════════════════════════════════════════════════════════════════════════════════════
+    /// @notice Seed the emission reserve. INCREMENTAL: may be called multiple times, but the
+    ///         CUMULATIVE funded amount can never exceed TOTAL_REWARDS. This removes the
+    ///         one-shot deploy risk (a wrong first amount is no longer irreversible) while still
+    ///         hard-capping total emission. Conservation-safe: balance and rewardReserve rise by
+    ///         the same amount.
     function fundEmission(uint256 amount_) external nonReentrant onlyRole(ROLE_ADMIN) conserves {
-        if (rewardReserve != 0) revert Staking__AlreadyFunded();
-        if (amount_ == 0)       revert Staking__ZeroAmount();
-        if (amount_ > TOTAL_REWARDS) revert Staking__CapExceeded();
+        if (amount_ == 0) revert Staking__ZeroAmount();
+        if (totalEmissionFunded + amount_ > TOTAL_REWARDS) revert Staking__CapExceeded();
         if (!ML.rawTransferFrom(bzpx, msg.sender, address(this), amount_)) revert Staking__TransferFailed();
-        rewardReserve = amount_;
+        totalEmissionFunded += amount_;
+        rewardReserve       += amount_;
         emit EmissionFunded(msg.sender, amount_);
     }
 
@@ -670,25 +675,47 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
 
             if (who == beneficiary) { unchecked { ++_maintCursor; ++n; } continue; }
 
-            _accrueInterestFor(who);
-            if (_isLiquidatable(_users[who])) {
-                uint256 bonus = _executeLiquidation(who, beneficiary);   // swap-pop removes `who` into idx
-                if (bonus > 0) { if (!ML.rawTransfer(bzpx, beneficiary, bonus)) revert Staking__TransferFailed(); }
-                emit MaintenanceSwept(beneficiary, who, bonus);
-                unchecked { ++totalAutoLiquidations; }
-                // cursor intentionally NOT advanced: the swapped-in borrower now occupies idx
-            } else {
-                // Full poke — identical to `who` touching their own position, so their reward
-                // weight (tracked boost) never goes stale relative to their accrued stake.
-                _settlePendingRewards(who);
-                _settlePendingPureYield(who);
-                _processLockExpiry(who);
-                _resync(_users[who]);
+            // Self-external call so a single poisoned position can NEVER revert the innocent
+            // user's carrying transaction. If BZPX were ever a token that refuses to pay a
+            // particular address (e.g. a blacklist) the settle/liquidation transfer to `who`
+            // would revert; here that step is rolled back atomically and skipped, the cursor
+            // advances so the sweep never stalls, and the user's own action still succeeds.
+            // `maintStep` manages the cursor on its own success paths (held on a liquidation
+            // swap-pop, advanced on a poke); only the failure path advances it here.
+            try this.maintStep(who, beneficiary) {
+            } catch {
                 unchecked { ++_maintCursor; }
             }
             unchecked { ++n; }
         }
         lastMaintTime = block.timestamp;
+    }
+
+    /// @notice One maintenance step on a single borrower. ONLY callable by the contract itself
+    ///         (from `_autoMaintain`), so it is not a public entry-point and carries no
+    ///         nonReentrant of its own — it runs inside the carrying tx's reentrancy lock, while
+    ///         any re-entry attempt by `who`'s token hook into a public function still hits that
+    ///         lock and reverts. Being external lets `_autoMaintain` wrap it in try/catch and
+    ///         isolate a single failing position without aborting the user's transaction.
+    function maintStep(address who, address beneficiary) external {
+        if (msg.sender != address(this)) revert Staking__ZeroAddress();
+
+        _accrueInterestFor(who);
+        if (_isLiquidatable(_users[who])) {
+            uint256 bonus = _executeLiquidation(who, beneficiary);   // swap-pop removes `who` into idx
+            if (bonus > 0) { if (!ML.rawTransfer(bzpx, beneficiary, bonus)) revert Staking__TransferFailed(); }
+            emit MaintenanceSwept(beneficiary, who, bonus);
+            unchecked { ++totalAutoLiquidations; }
+            // cursor intentionally NOT advanced: the swapped-in borrower now occupies idx
+        } else {
+            // Full poke — identical to `who` touching their own position, so their reward
+            // weight (tracked boost) never goes stale relative to their accrued stake.
+            _settlePendingRewards(who);
+            _settlePendingPureYield(who);
+            _processLockExpiry(who);
+            _resync(_users[who]);
+            unchecked { ++_maintCursor; }
+        }
     }
 
     // ── Borrower registry: enables both autonomous maintenance and on-chain keeper discovery ──

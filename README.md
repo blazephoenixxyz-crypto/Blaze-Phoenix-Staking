@@ -95,9 +95,12 @@ So under heavy load or after a quiet period the sweep widens automatically, but 
 gas is always bounded by `MAINT_MAX_SCAN`. Inspect the next budget with `maintenanceBudget()`.
 
 **Safety:** `_autoMaintain` is disabled while paused or in emergency, so a borrower who cannot act
-can never be liquidated by someone else's transaction. The permissionless `liquidate(user)` keeper
-path remains for anyone who wants to target a position directly — bots *and* organic flow both keep
-the book clean, so liveness never depends on keepers alone.
+can never be liquidated by someone else's transaction. Each per-borrower step runs through an
+internal self-external call (`maintStep`) wrapped in `try/catch`, so a single position that cannot
+be processed (e.g. a borrower a blacklist-style token refuses to pay) is rolled back and skipped —
+it can **never** DoS the innocent user whose transaction is carrying maintenance. The permissionless
+`liquidate(user)` keeper path remains for anyone who wants to target a position directly — bots
+*and* organic flow both keep the book clean, so liveness never depends on keepers alone.
 
 ---
 
@@ -138,6 +141,16 @@ with `lockInfoOf(user)`, `timeUntilUnlock(user)`, `maxLockDaysAvailable()`, `boo
   so a latecomer can never capture an accumulated backlog.
 - **Flash-loan guard:** `MIN_DEPOSIT_BLOCKS` between deposit and withdraw/claim/lock.
 - **`repay` works while paused** (a borrower must always be able to de-risk).
+- **Incremental emission funding:** `fundEmission` may be called multiple times, with cumulative
+  funding hard-capped at `TOTAL_REWARDS` (`totalEmissionFunded`). No one-shot deploy risk.
+
+### Token assumption (deploy invariant)
+
+BZPX is assumed to be a **standard, well-behaved ERC-20**: no receiver blacklist/freeze, no
+fee-on-transfer or rebasing (the conservation identity needs `amount sent == amount received`),
+and no transfer pause that can trap the protocol. Transfer hooks are tolerated (every entry-point
+is `nonReentrant`). These hold by construction for BZPX; they are listed as explicit invariants for
+any fork against a different asset.
 
 ---
 

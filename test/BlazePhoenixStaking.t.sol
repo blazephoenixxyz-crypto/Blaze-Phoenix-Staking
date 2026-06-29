@@ -170,6 +170,17 @@ contract UnitTest is Base {
         assertTrue(staking.isSolvent());
     }
 
+    function test_IncrementalFunding() public {
+        vm.startPrank(admin);
+        staking.fundEmission(10_000_000e18);
+        staking.fundEmission(5_000_000e18);              // incremental top-up now allowed
+        assertEq(staking.totalEmissionFunded(), 15_000_000e18);
+        assertEq(staking.rewardReserve(), 15_000_000e18);
+        vm.expectRevert(BlazePhoenixStaking.Staking__CapExceeded.selector);
+        staking.fundEmission(180_000_000e18);            // cumulative cap is TOTAL_REWARDS
+        vm.stopPrank();
+    }
+
     function test_TripBreakerOnlyOnInsolvency() public {
         vm.prank(keeper);
         vm.expectRevert(BlazePhoenixStaking.Staking__NoBreach.selector);
@@ -412,6 +423,74 @@ contract StressTest is Base {
             // correct — no state was written.
             assertEq(mstaking.totalStaked(), 0);
         }
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────────────────────
+    // Cenário 5: Blacklist DoS resilience on autonomous maintenance
+    //
+    // If BZPX were a token that refuses to pay a particular address (a blacklist, like USDC),
+    // the maintenance sweep's settle/liquidation transfer to that borrower would revert. The
+    // self-external maintStep + try/catch must isolate the poisoned position so an innocent
+    // user's transaction still succeeds, the borrower is simply skipped, and solvency holds.
+    // ─────────────────────────────────────────────────────────────────────────────────────────
+    function test_stress_blacklist_maintenanceResilient() public {
+        BlacklistToken btoken = new BlacklistToken();
+        vm.prank(admin);
+        BlazePhoenixStaking bs = new BlazePhoenixStaking(address(btoken), address(0xCAFE));
+
+        btoken.mint(admin, 200_000_000e18);
+        vm.prank(admin); btoken.approve(address(bs), type(uint256).max);
+        vm.prank(admin); bs.fundEmission(50_000_000e18);
+
+        address victim = address(0x5151);
+        btoken.mint(victim, 10_000_000e18);
+        vm.prank(victim); btoken.approve(address(bs), type(uint256).max);
+        btoken.mint(carol, 10_000_000e18);
+        vm.prank(carol); btoken.approve(address(bs), type(uint256).max);
+
+        // victim becomes a tracked borrower and accrues pending emission rewards
+        vm.prank(victim); bs.deposit(1_000_000e18, 365);
+        vm.roll(block.number + 2);
+        vm.prank(victim); bs.borrow(100_000e18);
+        vm.warp(block.timestamp + 30 days); vm.roll(block.number + 5);
+        assertGt(bs.pendingRewards(victim), 0);
+
+        // the token now refuses to pay victim — settling them would revert
+        btoken.setBlocked(victim, true);
+
+        // carol's unrelated deposit MUST still succeed; the poisoned victim is skipped
+        vm.prank(carol); bs.deposit(500_000e18, 90);
+
+        assertEq(bs.totalStaked(), 1_500_000e18);          // both stakes present
+        assertTrue(bs.isTrackedBorrower(victim));          // victim skipped, not removed
+        assertTrue(bs.isSolvent());
+        assertEq(bs.auditInvariants() & 1, 0);             // conservation bit clear
+    }
+}
+
+/// @dev ERC-20 with a per-address blacklist on the receiving side (USDC-style), to test that
+///      autonomous maintenance cannot be DoS'd by a borrower the token refuses to pay.
+contract BlacklistToken {
+    mapping(address => uint256) public balanceOf;
+    mapping(address => mapping(address => uint256)) public allowance;
+    mapping(address => bool) public blocked;
+    string public name = "Blacklist"; string public symbol = "BLK"; uint8 public decimals = 18;
+    uint256 public totalSupply;
+
+    function mint(address to, uint256 a) external { balanceOf[to] += a; totalSupply += a; }
+    function setBlocked(address a, bool b) external { blocked[a] = b; }
+    function approve(address s, uint256 a) external returns (bool) { allowance[msg.sender][s] = a; return true; }
+
+    function transfer(address to, uint256 a) external returns (bool) {
+        require(!blocked[to], "blocked");
+        require(balanceOf[msg.sender] >= a); balanceOf[msg.sender] -= a; balanceOf[to] += a; return true;
+    }
+    function transferFrom(address f, address to, uint256 a) external returns (bool) {
+        require(!blocked[to], "blocked");
+        require(balanceOf[f] >= a);
+        uint256 al = allowance[f][msg.sender];
+        if (al != type(uint256).max) { require(al >= a); allowance[f][msg.sender] = al - a; }
+        balanceOf[f] -= a; balanceOf[to] += a; return true;
     }
 }
 
