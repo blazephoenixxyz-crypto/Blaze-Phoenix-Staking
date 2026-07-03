@@ -206,6 +206,7 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
     error Staking__EmissionEnded();
     error Staking__EmergencyActive();
     error Staking__EmergencyNotActive();
+    error Staking__NotSelf();
     error Staking__InvariantBreached();
     error Staking__NoBreach();
 
@@ -698,7 +699,7 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
     ///         lock and reverts. Being external lets `_autoMaintain` wrap it in try/catch and
     ///         isolate a single failing position without aborting the user's transaction.
     function maintStep(address who, address beneficiary) external {
-        if (msg.sender != address(this)) revert Staking__ZeroAddress();
+        if (msg.sender != address(this)) revert Staking__NotSelf();
 
         _accrueInterestFor(who);
         if (_isLiquidatable(_users[who])) {
