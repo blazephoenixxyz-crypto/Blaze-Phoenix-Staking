@@ -432,6 +432,13 @@ Two halt paths exist:
 Both are **pull-only**: `emergencyWithdraw()` returns a user's net equity
 (`staked − debt`). No admin can sweep funds.
 
+Accrued-but-unpaid rewards are **forfeited** on an emergency exit (the hatch does no reward
+maths by design). The forfeited amount remains inside the `totalRewardDistributed −
+totalRewardsPaid` term of `owed()`, so post-emergency the ledger *overstates* what it owes —
+i.e. the error is in the **conservative direction**: the protocol can only look *less* solvent
+than it really is, never more. The corresponding tokens stay in the contract as unclaimable
+surplus backing.
+
 `cancelEmergency()` requires ADMIN role and that `_hardBreach()` is currently
 false. This prevents cancelling while the breach still exists.
 
