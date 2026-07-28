@@ -202,7 +202,12 @@ contract UnitTest is Base {
         vm.prank(bob);   staking.deposit(P, 730);
         vm.roll(block.number + 11);
 
+        // The contract floors mulDiv PER POSITION and then sums, so flooring first and doubling is
+        // the faithful expectation — reordering to multiply-then-divide would model it WRONGLY.
+        // (Exact either way here: P is 1e24, divisible by 10000.)
+        // forge-lint: disable-next-line(divide-before-multiply)
         assertEq(staking.totalBoostedEffective(), (P * 12500 / 10000) * 2, "committed: 2 x 1.25x");
+        // forge-lint: disable-next-line(divide-before-multiply)
         assertEq(staking.totalBoostedPure(),      (P * 12500 / 10000) * 2, "committed: 2 x 1.25x pure");
 
         vm.warp(block.timestamp + 731 days); vm.roll(block.number + 11);
@@ -472,6 +477,8 @@ contract StressTest is Base {
 
     /// Mint, approve, deposit and borrow for a freshly-created address.
     function _newBorrower(uint256 idx) internal returns (address who) {
+        // casting to 'uint160' is safe because idx is a bounded test index (< 64).
+        // forge-lint: disable-next-line(unsafe-typecast)
         who = address(uint160(0x1000 + idx));
         token.mint(who, 500_000_000e18);
         vm.prank(who); token.approve(address(staking), type(uint256).max);
@@ -666,6 +673,8 @@ contract StressTest is Base {
         vm.prank(admin); staking.fundEmission(50_000_000e18);
 
         for (uint256 i = 0; i < lockers; i++) {
+            // casting to 'uint160' is safe because i is a bounded test index (<= 60).
+            // forge-lint: disable-next-line(unsafe-typecast)
             address who = address(uint160(0x2000 + i));
             token.mint(who, 1_000_000e18);
             vm.prank(who); token.approve(address(staking), type(uint256).max);

@@ -452,9 +452,14 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
         totalStaked   += amount_;
 
         // Set or extend the lock — never reduce it.
+        // casting to 'uint64' is safe because the sum is (now + at most 2555 days) — the emission
+        // horizon ends in 2033, ~2^33 seconds, ten orders of magnitude below uint64.
+        // forge-lint: disable-next-line(unsafe-typecast)
         uint64 newUnlock = uint64(block.timestamp + lockDays_ * 1 days);
         if (newUnlock >= u.unlockTime) {
             u.unlockTime = newUnlock;
+            // casting to 'uint16' is safe because lockDays_ <= MAX_LOCK_DAYS (2555) is enforced above.
+            // forge-lint: disable-next-line(unsafe-typecast)
             u.lockDays   = uint16(lockDays_);
             emit LockSet(msg.sender, lockDays_, newUnlock, boostByDays(lockDays_));
         }
@@ -597,9 +602,13 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
 
         _processLockExpiry(msg.sender);   // an elapsed commitment is cleared (and de-registered) first
 
+        // casting to 'uint64' is safe because the sum is (now + at most 2555 days) — see deposit().
+        // forge-lint: disable-next-line(unsafe-typecast)
         uint64 newUnlock = uint64(block.timestamp + lockDays_ * 1 days);
         if (newUnlock <= u.unlockTime) revert Staking__CannotReduceLock();
 
+        // casting to 'uint16' is safe because lockDays_ <= MAX_LOCK_DAYS (2555) is enforced above.
+        // forge-lint: disable-next-line(unsafe-typecast)
         u.lockDays   = uint16(lockDays_);
         u.unlockTime = newUnlock;
         _addLocker(msg.sender);
