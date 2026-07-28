@@ -12,7 +12,18 @@ import {ReentrancyGuard}            from "@openzeppelin/contracts/utils/Reentran
 ///         oracle exists anywhere — an entire attack surface is absent).
 ///
 /// @dev    v3 — "Autonomous + Provably Solvent". Built on the v2 security core, with two
-///         additions the protocol is designed around:
+///         additions the protocol is designed around.
+///
+///         v3.1 — SECURITY CREDIT. The lock-expiry model below (boost priced against the clock,
+///         plus the locker maintenance window that carries the correction to idle positions) exists
+///         because of BP-2026-001, disclosed 28 July 2026 by **NetGakarot** ("Gakarot"). He found
+///         that `_autoMaintain` swept `_borrowers` only — and a pure staker (debt == 0) is never in
+///         that array — so an idle staker whose lock had expired kept its historical multiplier in
+///         the global reward denominators indefinitely, drawing an oversized share of every ongoing
+///         distribution from the stakers who were still committed. Solvency was never reachable
+///         (boost is a denominator weight, never a claim on value), but the lock had lost its
+///         economic meaning. The root-cause analysis and the real-time expiry check in
+///         `_computeBoost` are his; this version implements them and adds the propagation half.
 ///
 ///     ┌────────────────────────────────────────────────────────────────────────────────┐
 ///     │  THE MASTER CONSERVATION IDENTITY  (the single equation the whole book obeys)    │
@@ -35,13 +46,32 @@ import {ReentrancyGuard}            from "@openzeppelin/contracts/utils/Reentran
 ///
 ///     • 100% AUTONOMOUS MAINTENANCE. There is no keeper requirement and no admin knob.
 ///       Every ordinary user transaction (deposit / borrow / repay / withdraw / claim /
-///       lock / poke) drives `_autoMaintain`, an adaptive, gas-bounded sweep over a
-///       rotating window of borrowers. The window self-sizes with backlog pressure (more
-///       borrowers OR longer since the last sweep ⇒ a wider scan, always ≤ MAINT_MAX_SCAN),
-///       liquidates anything underwater, keeps every position's interest + boost weight
-///       fresh, and pays the seizure surplus to whoever carried the gas. The book cleans
-///       itself from organic flow; the permissionless `liquidate(user)` remains for keepers
-///       who want to target a position directly.
+///       lock / poke) drives `_autoMaintain`, an adaptive, gas-bounded sweep over TWO
+///       rotating windows — one over the borrower registry, one over the locker registry.
+///       Each window self-sizes with backlog pressure (more entries OR longer since the last
+///       sweep ⇒ a wider scan, always ≤ MAINT_MAX_SCAN), liquidates anything underwater,
+///       normalises every expired lock back to the 1.00x baseline, keeps every scanned
+///       position's interest + boost weight fresh, and pays the seizure surplus to whoever
+///       carried the gas. The book cleans itself from organic flow; the permissionless
+///       `liquidate(user)` / `pokeExpiredLock(user)` / `pokeExpiredLocks(users)` remain for
+///       keepers who want to target positions directly.
+///
+///     • BOOST IS THE PRICE OF ILLIQUIDITY, AND IT EXPIRES ON TIME. A lock premium is paid
+///       for committed, non-withdrawable capital. The instant `block.timestamp >= unlockTime`
+///       the capital is liquid again, so the multiplier drops to 1.00x — and it does so on
+///       BOTH axes at once:
+///         (a) DERIVATION: `_computeBoost` reads an EFFECTIVE lock duration that is 0 once the
+///             unlock timestamp has passed, so no code path can ever re-derive a weight from an
+///             expired commitment, whatever the stored `lockDays` still says;
+///         (b) PROPAGATION: pure stakers (debt == 0) are tracked in their own `_lockers`
+///             registry and swept by the same autonomous engine that sweeps borrowers, so the
+///             GLOBAL denominators (`totalBoostedEffective` / `totalBoostedPure`) shed the
+///             expired weight without anybody having to touch the idle position.
+///       Without (b), (a) alone would only re-price a position that somebody already touched —
+///       an idle expired staker would keep an oversized share of every ongoing emission and
+///       interest distribution, diluting the stakers who are still committed. Neither axis can
+///       affect the Master Conservation Identity: boost is a DENOMINATOR WEIGHT only, never a
+///       claim on value, and `_applyBoost` remains the single writer of both totals.
 ///
 ///     • SINGLE-WRITER boost accounting (`_applyBoost`) — no path, including the emergency
 ///       hatch, may desync the global denominators.
@@ -58,7 +88,7 @@ import {ReentrancyGuard}            from "@openzeppelin/contracts/utils/Reentran
 ///       (debt == 0) before any stake can be withdrawn — so there is no early-exit and no penalty.
 contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
 
-    string  public  constant VERSION              = "3.0.0";
+    string  public  constant VERSION              = "3.1.0";
     bytes32 private constant ROLE_ADMIN           = keccak256("ADMIN_ROLE");
     bytes32 private constant ROLE_GUARDIAN        = keccak256("GUARDIAN_ROLE");
 
@@ -110,6 +140,14 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
     uint256 private constant MAINT_DENSITY   = 50;         // +1 scan per 50 tracked borrowers
     uint256 private constant MAINT_GAP_UNIT  = 15 minutes; // +1 scan per gap-unit since last sweep
     uint256 private constant MAINT_MAX_SCAN  = 10;         // hard per-tx ceiling (gas safety)
+    // A locker PROBE is cheap (two slots) but normalising an expired position is not, so the two
+    // are budgeted separately: the probe window rotates the cursor under the shared MAINT_MAX_SCAN
+    // rule, while actual normalisations carry their own, tighter ceiling. A probe that finds work
+    // does not consume probe budget — the cursor holds on a swap-pop, so a CLUSTER of expirations
+    // drains at MAINT_MAX_LOCK_ACTIONS per transaction instead of one, while a registry with
+    // nothing to do still costs almost nothing. Worst case per tx is bounded by
+    // MAINT_MAX_SCAN + MAINT_MAX_LOCK_ACTIONS iterations, unconditionally.
+    uint256 private constant MAINT_MAX_LOCK_ACTIONS = 4;
 
     // ── Immutables ──────────────────────────────────────────────────────────────────────
     address public immutable bzpx;
@@ -138,6 +176,7 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
     uint256 public totalBadDebt;
     uint256 public totalLiquidations;
     uint256 public totalAutoLiquidations;   // subset of totalLiquidations carried by user txs
+    uint256 public totalLockSweeps;         // expired locks normalised by the autonomous engine
 
     // monotonicity snapshots (telemetry)
     uint256 public lastAuditedAccReward;
@@ -152,6 +191,17 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
     mapping(address => uint256) private _borrowerIdx;  // 1-based; 0 = not tracked
     uint256 private _maintCursor;
     uint256 public  lastMaintTime;
+
+    // Locker registry — the second maintenance window. EVERY position holding a live lock is
+    // tracked here, borrower and pure staker alike, precisely because `_borrowers` cannot see a
+    // debt-free position: without this registry an idle pure staker whose lock expired would keep
+    // its historical multiplier in the global denominators forever (a yield misallocation, never
+    // a solvency breach). An entry is created when a lock is set/extended and destroyed the moment
+    // the lock is processed as expired, so the array holds ONLY live commitments plus the expired
+    // ones still waiting for their (bounded, self-driving) sweep.
+    address[] private _lockers;
+    mapping(address => uint256) private _lockerIdx;    // 1-based; 0 = not tracked
+    uint256 private _lockCursor;
 
     struct UserInfo {
         uint256 staked;
@@ -176,6 +226,7 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
     event InterestAccrued    (address indexed user, uint256 interest, uint256 newStake);
     event Liquidated         (address indexed user, address indexed keeper, uint256 seized, uint256 debt, uint256 keeperBonus, uint256 leftover, uint256 uncoveredBadDebt);
     event MaintenanceSwept   (address indexed by, address indexed liquidated, uint256 keeperBonus);
+    event LockSwept          (address indexed by, address indexed user, uint256 releasedBoostedEffective, uint256 releasedBoostedPure);
     event RewardClaimed      (address indexed user, uint256 amount);
     event PureYieldClaimed   (address indexed user, uint256 amount);
     event ReserveWithdrawn   (address indexed to, uint256 amount);
@@ -353,6 +404,7 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
         if (debt > 0) { totalDebt = totalDebt > debt ? totalDebt - debt : 0; _removeBorrower(msg.sender); }
 
         _applyBoost(u, 0, 0);              // single-writer cleanup — no ghost share
+        _removeLocker(msg.sender);         // the position is gone; leave no ghost registry entry
         delete _users[msg.sender];
 
         if (payout > 0) {
@@ -400,14 +452,20 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
         totalStaked   += amount_;
 
         // Set or extend the lock — never reduce it.
+        // casting to 'uint64' is safe because the sum is (now + at most 2555 days) — the emission
+        // horizon ends in 2033, ~2^33 seconds, ten orders of magnitude below uint64.
+        // forge-lint: disable-next-line(unsafe-typecast)
         uint64 newUnlock = uint64(block.timestamp + lockDays_ * 1 days);
         if (newUnlock >= u.unlockTime) {
             u.unlockTime = newUnlock;
+            // casting to 'uint16' is safe because lockDays_ <= MAX_LOCK_DAYS (2555) is enforced above.
+            // forge-lint: disable-next-line(unsafe-typecast)
             u.lockDays   = uint16(lockDays_);
             emit LockSet(msg.sender, lockDays_, newUnlock, boostByDays(lockDays_));
         }
+        _addLocker(msg.sender);   // idempotent: a shorter top-up inherits (and stays under) the live lock
 
-        _resync(u);
+        _resync(msg.sender);
         emit Deposited(msg.sender, amount_, u.staked);
         _autoMaintain(msg.sender);
     }
@@ -434,7 +492,7 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
         u.lastAccrueTime = block.timestamp;
         if (wasZeroDebt) _addBorrower(msg.sender);
 
-        _resync(u);
+        _resync(msg.sender);
 
         if (!ML.rawTransfer(bzpx, msg.sender, amount_)) revert Staking__TransferFailed();
         emit Borrowed(msg.sender, amount_, u.debt, _interestRate());
@@ -462,7 +520,7 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
         totalDebt -= toRepay;
         if (u.debt == 0) { _removeBorrower(msg.sender); if (u.staked > 0) u.depositBlock = uint64(block.number); }
 
-        _resync(u);
+        _resync(msg.sender);
         emit Repaid(msg.sender, toRepay, u.debt);
         _autoMaintain(msg.sender);
     }
@@ -488,7 +546,7 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
         u.staked    -= amount_;
         totalStaked -= amount_;
 
-        _resync(u);
+        _resync(msg.sender);
 
         if (!ML.rawTransfer(bzpx, msg.sender, amount_)) revert Staking__TransferFailed();
         emit Withdrawn(msg.sender, amount_, 0, 0, amount_);
@@ -501,7 +559,7 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
         _settlePendingPureYield(msg.sender);
         _accrueInterestFor(msg.sender);
         _processLockExpiry(msg.sender);
-        _resync(_users[msg.sender]);
+        _resync(msg.sender);
         _autoMaintain(msg.sender);
     }
 
@@ -512,8 +570,7 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
         _updateGlobal();
         _settlePendingRewards(msg.sender);
         _settlePendingPureYield(msg.sender);
-        _processLockExpiry(msg.sender);
-        _resync(u);
+        _resync(msg.sender);
         _autoMaintain(msg.sender);
     }
 
@@ -543,31 +600,59 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
         _settlePendingPureYield(msg.sender);
         _accrueInterestFor(msg.sender);
 
-        if (u.lockDays > 0 && block.timestamp >= u.unlockTime) {
-            u.lockDays = 0; u.unlockTime = 0; emit LockExpired(msg.sender);
-        }
+        _processLockExpiry(msg.sender);   // an elapsed commitment is cleared (and de-registered) first
 
+        // casting to 'uint64' is safe because the sum is (now + at most 2555 days) — see deposit().
+        // forge-lint: disable-next-line(unsafe-typecast)
         uint64 newUnlock = uint64(block.timestamp + lockDays_ * 1 days);
         if (newUnlock <= u.unlockTime) revert Staking__CannotReduceLock();
 
+        // casting to 'uint16' is safe because lockDays_ <= MAX_LOCK_DAYS (2555) is enforced above.
+        // forge-lint: disable-next-line(unsafe-typecast)
         u.lockDays   = uint16(lockDays_);
         u.unlockTime = newUnlock;
+        _addLocker(msg.sender);
 
-        _resync(u);
+        _resync(msg.sender);
         emit LockSet(msg.sender, lockDays_, u.unlockTime, boostByDays(lockDays_));
         _autoMaintain(msg.sender);
     }
 
+    /// @notice Permissionless state resynchronisation: normalise ONE position whose commitment has
+    ///         elapsed, releasing its boost weight from the global denominators. Anyone may call it
+    ///         for anyone, at their own gas cost — nobody has to wait for the rotating window.
+    ///         Routed through the same `lockStep` the autonomous sweep uses, so there is exactly ONE
+    ///         normalisation path in the contract and no chance of the two drifting apart. Unlike
+    ///         the sweep it is NOT wrapped in try/catch: the caller asked for this specific position,
+    ///         so a failure is surfaced rather than silently swallowed.
     function pokeExpiredLock(address user_) external nonReentrant whenNotEmergency conserves {
         UserInfo storage u = _users[user_];
         if (u.lockDays == 0) revert Staking__NoLock();
         if (block.timestamp < u.unlockTime) revert Staking__StillLocked();
         _updateGlobal();
-        _settlePendingRewards(user_);
-        _settlePendingPureYield(user_);
-        _accrueInterestFor(user_);
-        _processLockExpiry(user_);
-        _resync(u);
+        this.lockStep(user_, msg.sender);
+        _autoMaintain(msg.sender);
+    }
+
+    /// @notice Batch form of `pokeExpiredLock`. Entries that are not (or no longer) expired are
+    ///         SKIPPED rather than reverting, so a keeper's batch can never be griefed into failing
+    ///         by one address somebody else normalised first, duplicates are harmless, and a
+    ///         position the token refuses to pay costs the batch that entry and nothing more.
+    ///         Reverts only if NOTHING in the list was actionable, so a no-op batch cannot be
+    ///         passed off as maintenance. The list is caller-supplied and caller-funded, so its
+    ///         length needs no protocol-side bound — the block gas limit is the bound, and it can
+    ///         only ever cost the caller.
+    function pokeExpiredLocks(address[] calldata users_) external nonReentrant whenNotEmergency conserves {
+        _updateGlobal();
+        uint256 swept;
+        for (uint256 i = 0; i < users_.length; ) {
+            UserInfo storage w = _users[users_[i]];
+            if (w.lockDays > 0 && block.timestamp >= w.unlockTime) {
+                try this.lockStep(users_[i], msg.sender) { unchecked { ++swept; } } catch {}
+            }
+            unchecked { ++i; }
+        }
+        if (swept == 0) revert Staking__NoLock();
         _autoMaintain(msg.sender);
     }
 
@@ -617,10 +702,14 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
 
         if (leftover == 0) {
             _applyBoost(u, 0, 0);
+            _removeLocker(user_);
             delete _users[user_];
         } else {
             u.depositBlock = uint64(block.number);   // debt now 0 -> becomes a pure staker
-            _resync(u);
+            // The survivor keeps its lock and its registry entry: it is now a PURE staker, exactly
+            // the class `_borrowers` can no longer see, so `_lockers` is what keeps its weight
+            // honest from here on.
+            _resync(user_);
         }
 
         if (badDebt > 0 && uncovered > 0) { unchecked { totalBadDebt += uncovered; } }
@@ -638,12 +727,12 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
     //  AUTONOMOUS MAINTENANCE — self-driving, gas-bounded, keeper-incentivised
     // ════════════════════════════════════════════════════════════════════════════════════
 
-    /// @notice How many borrowers the NEXT user tx will opportunistically scan. Self-sizes with
-    ///         backlog pressure — more tracked borrowers OR more time since the last sweep widen
-    ///         the window — but is hard-capped at MAINT_MAX_SCAN so per-tx gas is always bounded.
-    ///         No admin, no governance: the schedule is a pure function of on-chain state.
-    function _maintBudget() internal view returns (uint256 c) {
-        uint256 len = _borrowers.length;
+    /// @notice How many entries of a registry of size `len` the NEXT user tx will opportunistically
+    ///         scan. Self-sizes with backlog pressure — more tracked entries OR more time since the
+    ///         last sweep widen the window — but is hard-capped at MAINT_MAX_SCAN so per-tx gas is
+    ///         always bounded. No admin, no governance: the schedule is a pure function of on-chain
+    ///         state. Both maintenance windows (borrowers and lockers) are sized by this one rule.
+    function _windowBudget(uint256 len) internal view returns (uint256 c) {
         if (len == 0) return 0;
         c = MAINT_BASE + len / MAINT_DENSITY;
         uint256 last = lastMaintTime;
@@ -653,6 +742,8 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
         if (c > MAINT_MAX_SCAN) c = MAINT_MAX_SCAN;
         if (c > len) c = len;
     }
+    function _maintBudget() internal view returns (uint256) { return _windowBudget(_borrowers.length); }
+    function _lockBudget()  internal view returns (uint256) { return _windowBudget(_lockers.length); }
 
     /// @notice The autonomous engine. Carried by EVERY ordinary user transaction. Walks a
     ///         rotating window of borrowers from a persistent cursor: liquidates any underwater
@@ -665,9 +756,17 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
     ///         per-tx gas is bounded regardless of how many borrowers exist.
     function _autoMaintain(address beneficiary) internal {
         if (paused() || emergencyMode) return;
-        uint256 budget = _maintBudget();
-        if (budget == 0) return;
+        uint256 bBudget = _maintBudget();
+        uint256 lBudget = _lockBudget();
+        if (bBudget == 0 && lBudget == 0) return;
+        _sweepBorrowers(beneficiary, bBudget);
+        _sweepExpiredLocks(beneficiary, lBudget);
+        lastMaintTime = block.timestamp;
+    }
 
+    /// @dev Window 1 — solvency. Rotating scan of the borrower registry: liquidate anything
+    ///      underwater (surplus to the gas-payer), otherwise fully poke the position.
+    function _sweepBorrowers(address beneficiary, uint256 budget) internal {
         for (uint256 n = 0; n < budget; ) {
             uint256 len = _borrowers.length;
             if (len == 0) break;
@@ -689,7 +788,47 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
             }
             unchecked { ++n; }
         }
-        lastMaintTime = block.timestamp;
+    }
+
+    /// @dev Window 2 — YIELD FAIRNESS. Rotating scan of the locker registry, which is the ONLY
+    ///      window that can see a debt-free position. Any entry whose commitment has elapsed is
+    ///      normalised on the spot: rewards settled at the weight they were actually earned at,
+    ///      then the boost released from the global denominators and the entry de-registered.
+    ///      This is what stops an idle expired staker from silently drawing an oversized share of
+    ///      every ongoing emission and interest distribution.
+    ///
+    ///      Three cursor disciplines, and none of them can stall the rotation:
+    ///        • a normalised position is swap-popped out, so the cursor HOLDS (a new address now
+    ///          occupies the slot) and the array is strictly shorter;
+    ///        • a stale entry (lock already cleared elsewhere) is pruned the same way — the
+    ///          registry is self-healing and can never accumulate dead weight;
+    ///        • a still-locked entry, the beneficiary, or a position the token refuses to pay is
+    ///          simply rotated past.
+    ///      TERMINATION. Every iteration either advances the cursor (consuming probe budget) or
+    ///      shortens the array (consuming action budget), so the loop runs at most
+    ///      `probes + MAINT_MAX_LOCK_ACTIONS` times — no branch can spin.
+    function _sweepExpiredLocks(address beneficiary, uint256 probes) internal {
+        uint256 acted;
+        for (uint256 n = 0; n < probes && acted < MAINT_MAX_LOCK_ACTIONS; ) {
+            uint256 len = _lockers.length;
+            if (len == 0) break;
+            uint256 idx = _lockCursor % len;
+            address who = _lockers[idx];
+            UserInfo storage w = _users[who];
+
+            if (w.lockDays == 0) {
+                _removeLocker(who);                                  // prune; cursor holds
+                unchecked { ++acted; }
+            } else if (who != beneficiary && block.timestamp >= w.unlockTime) {
+                try this.lockStep(who, beneficiary) {                // removes `who`; cursor holds
+                    unchecked { ++acted; }
+                } catch {
+                    unchecked { ++_lockCursor; ++n; }                // poisoned position -> skip
+                }
+            } else {
+                unchecked { ++_lockCursor; ++n; }                    // still committed -> rotate on
+            }
+        }
     }
 
     /// @notice One maintenance step on a single borrower. ONLY callable by the contract itself
@@ -713,10 +852,39 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
             // weight (tracked boost) never goes stale relative to their accrued stake.
             _settlePendingRewards(who);
             _settlePendingPureYield(who);
-            _processLockExpiry(who);
-            _resync(_users[who]);
+            _resync(who);
             unchecked { ++_maintCursor; }
         }
+    }
+
+    /// @notice One lock-normalisation step on a single expired position. ONLY callable by the
+    ///         contract itself (from `_sweepExpiredLocks`), for exactly the same reasons as
+    ///         `maintStep`: it runs inside the carrying transaction's reentrancy lock, and being
+    ///         external is what lets the sweep wrap it in try/catch so one position the token
+    ///         refuses to pay cannot abort an innocent user's transaction.
+    ///
+    ///         It re-checks expiry itself rather than trusting the caller, so it is safe under any
+    ///         future call ordering, and it is guaranteed to de-register `who` on success — which
+    ///         is what makes the cursor-holds discipline in the sweep terminate.
+    function lockStep(address who, address beneficiary) external {
+        if (msg.sender != address(this)) revert Staking__NotSelf();
+        UserInfo storage u = _users[who];
+        if (u.lockDays == 0)                revert Staking__NoLock();
+        if (block.timestamp < u.unlockTime) revert Staking__StillLocked();
+
+        // Settle FIRST: everything earned up to this instant was genuinely earned at the boosted
+        // weight, and is paid at that weight. Only the FUTURE is re-priced.
+        _settlePendingRewards(who);
+        _settlePendingPureYield(who);
+        _accrueInterestFor(who);
+
+        uint256 relBE = u.trackedBoostedEffective;
+        uint256 relBP = u.trackedBoostedPure;
+        _resync(who);   // clears the lock, de-registers `who`, releases the excess weight
+        unchecked { ++totalLockSweeps; }
+        emit LockSwept(beneficiary, who,
+            relBE > u.trackedBoostedEffective ? relBE - u.trackedBoostedEffective : 0,
+            relBP > u.trackedBoostedPure      ? relBP - u.trackedBoostedPure      : 0);
     }
 
     // ── Borrower registry: enables both autonomous maintenance and on-chain keeper discovery ──
@@ -735,10 +903,88 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
         _borrowers.pop();
         _borrowerIdx[who] = 0;
     }
+
+    // ── Locker registry: the window that can see DEBT-FREE positions ─────────────────────────
+    //  `_borrowers` is, by construction, blind to a pure staker (debt == 0) — which is precisely
+    //  the class whose expired lock would otherwise never be normalised without the user acting.
+    //  This registry closes that gap; it holds every position with a live commitment, and an entry
+    //  is destroyed the moment `_processLockExpiry` clears the lock (from ANY path: the user's own
+    //  transaction, a keeper poke, the borrower sweep, or the locker sweep).
+    function _addLocker(address who) internal {
+        if (_lockerIdx[who] == 0) { _lockers.push(who); _lockerIdx[who] = _lockers.length; }
+    }
+    function _removeLocker(address who) internal {
+        uint256 idx = _lockerIdx[who];
+        if (idx == 0) return;
+        uint256 len = _lockers.length;
+        if (idx != len) {
+            address moved = _lockers[len - 1];
+            _lockers[idx - 1] = moved;
+            _lockerIdx[moved] = idx;
+        }
+        _lockers.pop();
+        _lockerIdx[who] = 0;
+    }
+
     function activeBorrowerCount() external view returns (uint256) { return _borrowers.length; }
     function borrowerAt(uint256 i) external view returns (address) { return _borrowers[i]; }
     function isTrackedBorrower(address who) external view returns (bool) { return _borrowerIdx[who] != 0; }
     function maintenanceBudget() external view returns (uint256) { return _maintBudget(); }
+    function activeLockerCount() external view returns (uint256) { return _lockers.length; }
+    function lockerAt(uint256 i) external view returns (address) { return _lockers[i]; }
+    function isTrackedLocker(address who) external view returns (bool) { return _lockerIdx[who] != 0; }
+    function lockSweepBudget() external view returns (uint256) { return _lockBudget(); }
+    function getLockers(uint256 offset, uint256 limit)
+        external view returns (address[] memory out, uint256 total)
+    {
+        total = _lockers.length;
+        if (offset >= total || limit == 0) return (new address[](0), total);
+        uint256 end = offset + limit;
+        if (end > total) end = total;
+        out = new address[](end - offset);
+        for (uint256 i = offset; i < end; ) { out[i - offset] = _lockers[i]; unchecked { ++i; } }
+    }
+
+    /// @notice Bounded scan of the locker registry for commitments that have elapsed but have not
+    ///         been normalised yet — everything a keeper or monitor needs to quantify, and then
+    ///         erase, the stale-boost backlog without any off-chain indexer.
+    /// @param  offset  first registry index to inspect
+    /// @param  limit   how many entries to inspect (page size; the array is unbounded, this is not)
+    /// @return users   the expired-but-unswept positions found in the page — feed straight into
+    ///                 `pokeExpiredLocks`
+    /// @return excessBoostedEffective  emission weight those positions are still carrying ABOVE the
+    ///                 1.00x baseline they are now entitled to
+    /// @return excessBoostedPure       the same excess on the pure-yield (interest) denominator
+    /// @return total   size of the whole registry, for paging
+    function expiredLockScan(uint256 offset, uint256 limit)
+        external view
+        returns (address[] memory users, uint256 excessBoostedEffective, uint256 excessBoostedPure, uint256 total)
+    {
+        total = _lockers.length;
+        if (offset >= total || limit == 0) return (new address[](0), 0, 0, total);
+        uint256 end = offset + limit;
+        if (end > total) end = total;
+
+        address[] memory buf = new address[](end - offset);
+        uint256 n;
+        for (uint256 i = offset; i < end; ) {
+            address who = _lockers[i];
+            UserInfo storage u = _users[who];
+            if (u.lockDays > 0 && block.timestamp >= u.unlockTime) {
+                buf[n] = who;
+                unchecked { ++n; }
+                // `_computeBoost` already prices the expired commitment at 1.00x, so the gap to the
+                // still-tracked weight IS the excess this position is over-earning on.
+                (uint256 be, uint256 bp) = _computeBoost(u);
+                if (u.trackedBoostedEffective > be) excessBoostedEffective += u.trackedBoostedEffective - be;
+                if (u.trackedBoostedPure      > bp) excessBoostedPure      += u.trackedBoostedPure      - bp;
+            }
+            unchecked { ++i; }
+        }
+        users = new address[](n);
+        for (uint256 i = 0; i < n; ) { users[i] = buf[i]; unchecked { ++i; } }
+    }
+
     function getBorrowers(uint256 offset, uint256 limit)
         external view returns (address[] memory out, uint256 total)
     {
@@ -827,8 +1073,21 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
     }
 
     // ── single-writer boost + checkpoint ──────────────────────────────────────────────────
+
+    /// @dev The lock duration a position may actually be PAID for, evaluated against the clock
+    ///      rather than against stored state. Boost is the premium for illiquidity: the instant
+    ///      `block.timestamp >= unlockTime` the capital is withdrawable again, so the effective
+    ///      commitment is 0 days (1.00x) — whatever `lockDays` still holds in storage and whether
+    ///      or not anybody has gotten around to normalising the position yet. Every weight in the
+    ///      protocol is derived through here, so an un-swept expired lock can never be re-priced
+    ///      at its historical multiplier by ANY code path.
+    function _effectiveLockDays(UserInfo storage u) internal view returns (uint256) {
+        if (u.lockDays == 0) return 0;
+        return block.timestamp >= u.unlockTime ? 0 : uint256(u.lockDays);
+    }
+
     function _computeBoost(UserInfo storage u) internal view returns (uint256 be, uint256 bp) {
-        uint256 boost = boostByDays(u.lockDays);
+        uint256 boost = boostByDays(_effectiveLockDays(u));
         uint256 effective = u.staked > u.debt ? u.staked - u.debt : 0;
         be = effective == 0 ? 0 : ML.mulDiv(effective, boost, BOOST_BASE);
         bp = (u.debt == 0 && u.staked > 0) ? ML.mulDiv(u.staked, boost, BOOST_BASE) : 0;
@@ -849,8 +1108,18 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
         u.pureYieldDebt = ML.mulDiv(u.trackedBoostedPure,      accPureYieldPerShare, WAD);
     }
 
-    /// @dev recompute boost from current state, apply via the single writer, re-checkpoint.
-    function _resync(UserInfo storage u) internal {
+    /// @dev Normalise an expired lock in storage, recompute boost from current state, apply via the
+    ///      single writer, re-checkpoint. Folding `_processLockExpiry` in here is what makes stored
+    ///      state and tracked weight structurally UNABLE to diverge: every write of a boost weight
+    ///      in this contract goes through `_resync`, so a position can never end a transaction
+    ///      carrying a weight derived from a commitment that has already elapsed.
+    ///
+    ///      CALLER CONTRACT: `_settlePendingRewards` / `_settlePendingPureYield` MUST have run for
+    ///      `user_` first — `_checkpoint` rebases the reward debts onto the new weight, so anything
+    ///      still unsettled at that moment would be silently repriced.
+    function _resync(address user_) internal {
+        _processLockExpiry(user_);
+        UserInfo storage u = _users[user_];
         (uint256 be, uint256 bp) = _computeBoost(u);
         _applyBoost(u, be, bp);
         _checkpoint(u);
@@ -859,7 +1128,9 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
     function _processLockExpiry(address user_) internal {
         UserInfo storage u = _users[user_];
         if (u.lockDays > 0 && block.timestamp >= u.unlockTime) {
-            u.lockDays = 0; u.unlockTime = 0; emit LockExpired(user_);
+            u.lockDays = 0; u.unlockTime = 0;
+            _removeLocker(user_);
+            emit LockExpired(user_);
         }
     }
 
@@ -1008,10 +1279,31 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
         uint256 s = _users[user_].staked;
         return s >= MAX_STAKE_PER_WALLET ? 0 : MAX_STAKE_PER_WALLET - s;
     }
+    /// @notice Lock state of a position. `lockDays` / `unlockTime` are the COMMITMENT ON RECORD;
+    ///         `boostBps` is what the position is actually paid at RIGHT NOW, so once `expired` is
+    ///         true it reads 10000 (1.00x) even if the stale commitment has not been swept out of
+    ///         storage yet. The view can never flatter a position the maths no longer rewards.
     function lockInfoOf(address user_) external view returns (uint256 lockDays, uint256 unlockTime, uint256 boostBps, bool expired) {
         UserInfo storage u = _users[user_];
-        lockDays = u.lockDays; unlockTime = uint256(u.unlockTime); boostBps = boostByDays(u.lockDays);
+        lockDays = u.lockDays; unlockTime = uint256(u.unlockTime);
+        boostBps = boostByDays(_effectiveLockDays(u));
         expired = (u.lockDays > 0 && block.timestamp >= u.unlockTime);
+    }
+    /// @notice The lock duration the position is PAID for right now — 0 once the unlock has passed.
+    function effectiveLockDaysOf(address user_) external view returns (uint256) {
+        return _effectiveLockDays(_users[user_]);
+    }
+    /// @notice The multiplier (bps) the position is PAID at right now. 10000 == 1.00x.
+    function effectiveBoostOf(address user_) external view returns (uint256) {
+        return boostByDays(_effectiveLockDays(_users[user_]));
+    }
+    /// @notice TRUE when a position still carries boost weight from a commitment that has already
+    ///         elapsed — i.e. it is waiting for the sweep (or a poke) and is over-earning until then.
+    function hasStaleBoost(address user_) external view returns (bool) {
+        UserInfo storage u = _users[user_];
+        if (u.lockDays == 0 || block.timestamp < u.unlockTime) return false;
+        (uint256 be, uint256 bp) = _computeBoost(u);
+        return u.trackedBoostedEffective > be || u.trackedBoostedPure > bp;
     }
     /// @notice The longest lock (in days) that may be opened right now — the decreasing countdown:
     ///         min(MAX_LOCK_DAYS, days remaining until the 7-year emission end).
@@ -1080,7 +1372,10 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
         health = (u.staked == 0 || u.debt == 0) ? WAD : u.debt >= u.staked ? 0 : ML.mulDiv(u.staked - u.debt, WAD, u.staked);
         rateBps = _interestRate();
         daysLeft = _daysToLiqInternal(u);
-        lockDays = u.lockDays; unlockTime = uint256(u.unlockTime); boostBps = boostByDays(u.lockDays);
+        // `lockDays` / `unlockTime` report the commitment on record; `boostBps` reports what is
+        // actually being paid, which drops to 1.00x the instant the unlock passes.
+        lockDays = u.lockDays; unlockTime = uint256(u.unlockTime);
+        boostBps = boostByDays(_effectiveLockDays(u));
         remainingCap = staked >= MAX_STAKE_PER_WALLET ? 0 : MAX_STAKE_PER_WALLET - staked;
         maxDaysNow = maxLockDaysAvailable();
 
