@@ -9,10 +9,88 @@ between them.
 |---|---|---|---|
 | v1 | `1.1.0` | `1.0.0-staking` | Feature-rich; offline audit only; admin sweep + admin liquidation |
 | v2 | `2.1.0` | `2.0.0-staking` | Security core: on-chain conservation guard, permissionless liquidation, no backdoor |
-| **v3 (final)** | **`3.0.0`** | **`3.0.0-staking`** | v2 core **+** fully autonomous maintenance **+** public solvency proofs |
+| v3 | `3.0.0` | `3.0.0-staking` | v2 core **+** fully autonomous maintenance **+** public solvency proofs |
+| **v3.1 (final)** | **`3.1.0`** | **`3.0.0-staking`** | v3 **+** lock expiry priced against the clock **+** the locker maintenance window |
 
 v3 = **v2 base**, with the two requested additions and the useful UX views that v2 had dropped
 from v1 re-added.
+
+---
+
+## v3.1 — BP-2026-001: stale boost persistence in pure stakers
+
+> **Reported by [NetGakarot](https://github.com/NetGakarot) ("Gakarot"), 28 July 2026.**
+> The finding, the root-cause analysis, the game-theoretic argument that boost is strictly the
+> price of illiquidity, and the first half of the remediation (real-time expiry evaluation inside
+> `_computeBoost`) are all his. v3.1 is his report, implemented — with the propagation half added
+> so the correction reaches idle positions too. Full credit to NetGakarot for the disclosure.
+
+### The finding
+
+`_autoMaintain` iterated `_borrowers` and nothing else. A **pure staker** (`debt == 0`) is never in
+that array, so once such a position's lock expired, `_processLockExpiry` was never reached unless the
+user personally transacted or someone paid gas to `pokeExpiredLock` them. Meanwhile `_computeBoost`
+read `u.lockDays` straight from storage without consulting the clock. Result: an idle staker whose
+lock lapsed kept its historical multiplier (e.g. 1.25x) in `totalBoostedEffective` /
+`totalBoostedPure` indefinitely, drawing an oversized share of every ongoing emission and interest
+distribution at the expense of stakers who were still committed.
+
+**Solvency was never affected** — `TOTAL_REWARDS`, `rewardReserve` and the `conserves` guard bound
+every payout, and boost is a *denominator weight*, never a claim on value. The damage was purely
+distributional, and it destroyed the incentive to re-lock: holding liquid tokens retained boosted
+yield, so committing capital bought nothing.
+
+### The correction, on two axes
+
+Either axis alone is insufficient, which is why v3.1 implements both:
+
+**(a) Derivation** — `_effectiveLockDays()` evaluates expiry against `block.timestamp`, and every
+boost in the protocol is derived through it. No code path can re-price an elapsed commitment at its
+historical multiplier, whatever storage still says. *Alone, this only re-prices a position somebody
+already touched — which an idle staker never is.*
+
+**(b) Propagation** — a `_lockers` registry tracks every position holding a live commitment, giving
+the autonomous engine a second gas-bounded rotating window that **can** see debt-free positions. The
+global denominators shed expired weight with nobody touching the idle position. *Alone, this would
+leave the stale multiplier re-derivable in the window between expiry and sweep.*
+
+`_resync` now folds `_processLockExpiry` in, so stored state and tracked weight are structurally
+unable to diverge: every boost write in the contract goes through it.
+
+### Properties preserved (non-negotiable)
+
+- **Master Conservation Identity** — untouched. Boost never appears in `_owed()`; the sweep settles
+  through the same CEI path as any claim, so balance and `_owed()` move together.
+- **Single-writer boost** — `_applyBoost` remains the only writer of both totals.
+- **No confiscation** — the sweep settles the boosted backlog *before* it releases the weight.
+  Everything earned while the commitment was live was earned at the boosted weight and is paid at it;
+  only the future is re-priced.
+- **Bounded gas** — the probe window shares the `MAINT_MAX_SCAN` cap; normalisations carry their own
+  tighter `MAINT_MAX_LOCK_ACTIONS` ceiling. Worst case per tx is
+  `MAINT_MAX_SCAN + MAINT_MAX_LOCK_ACTIONS` iterations, unconditionally.
+- **No new DoS surface** — a poisoned position (a token that refuses to pay it) is isolated by the
+  self-external `lockStep` + try/catch exactly as `maintStep` is, and the cursor rotates past it.
+
+### Surface added
+
+`pokeExpiredLocks(address[])`, `expiredLockScan(offset,limit)`, `hasStaleBoost(user)`,
+`effectiveLockDaysOf(user)`, `effectiveBoostOf(user)`, `activeLockerCount()`, `lockerAt(i)`,
+`isTrackedLocker(who)`, `getLockers(offset,limit)`, `lockSweepBudget()`, `totalLockSweeps()`,
+`lockStep(who,beneficiary)` (self-only), and the `LockSwept` event.
+
+`lockInfoOf().boostBps` and `getUserInfo().boostBps` now report what a position is **paid** at, not
+what its stale storage claims — they read `10000` the instant a lock lapses. `lockDays` / `unlockTime`
+still report the commitment on record.
+
+### Regression coverage
+
+`test/boost.mjs` (B1–B10) pins both axes. **B1 uses only the v3.0.0 ABI**, so it runs verbatim
+against the vulnerable contract, where it fails on the reported divergence itself — idle:active
+yield ratio `12500` (1.25x) and a `2.25M` denominator against the corrected `10000` and `2.0M` —
+rather than on a missing function. The Foundry suite adds fuzzed expiry, a locker-flood stress
+scenario, and three structural invariants, the load-bearing one being
+`invariant_everyLiveCommitmentIsTracked`: a live lock that escapes the registry is a lock the engine
+can never normalise, i.e. the original bug returning.
 
 ---
 

@@ -1,4 +1,4 @@
-# BlazePhoenix Staking — v3 (Autonomous + Provably Solvent)
+# BlazePhoenix Staking — v3.1 (Autonomous + Provably Solvent)
 
 Single-asset staking + lending where **collateral, borrowed asset, and reward token are all the
 same token (BZPX)**. Because there is only one asset, there is **no price oracle anywhere** — an
@@ -74,33 +74,51 @@ totalUncollectedInterest`. A wallet, dashboard, or watchdog can read it in a sin
 
 There is **no keeper requirement and no governance knob**. Every ordinary user transaction
 (`deposit / borrow / repay / withdraw / claimRewards / claimPureYield / lock / pokeExpiredLock`)
-ends by calling `_autoMaintain`, which:
+ends by calling `_autoMaintain`, which drives **two** rotating windows:
 
-- walks a **rotating window** of borrowers from a persistent cursor;
-- **liquidates** anything underwater and pays the seizure surplus to whoever carried the gas;
-- **keeps every scanned position fresh** — accrues its interest, expires stale locks, and resyncs
-  its boost weight — so the global reward denominators never drift from reality.
+**Window 1 — the borrower registry (solvency).** Walks `_borrowers` from a persistent cursor,
+**liquidates** anything underwater (seizure surplus to whoever carried the gas), and otherwise
+**keeps every scanned position fresh** — accrues its interest, expires stale locks, resyncs its
+boost weight.
 
-The window **self-sizes** with backlog pressure via `_maintBudget()` — a *pure function of
+**Window 2 — the locker registry (yield fairness).** `_borrowers` is, by construction, blind to a
+**pure staker** (`debt == 0`) — so before v3.1 an idle staker whose lock had expired kept its
+historical multiplier in the global denominators indefinitely (BP-2026-001, reported by
+NetGakarot). `_lockers` tracks every position holding a live commitment, and this window normalises
+any that has elapsed: rewards settled at the weight they were actually earned at, *then* the boost
+released and the entry de-registered. No keeper, no user action, no off-chain indexer.
+
+Both windows **self-size** with backlog pressure via `_windowBudget()` — a *pure function of
 on-chain state*, no admin input:
 
 ```
 scan = clamp( MAINT_BASE
-            + borrowers / MAINT_DENSITY            // more borrowers  -> wider scan
-            + secondsSinceLastSweep / MAINT_GAP_UNIT,  // longer idle   -> wider scan
+            + entries / MAINT_DENSITY              // more entries    -> wider scan
+            + secondsSinceLastSweep / MAINT_GAP_UNIT,  // longer idle  -> wider scan
             0, MAINT_MAX_SCAN )                    // hard per-tx ceiling -> bounded gas
 ```
 
-So under heavy load or after a quiet period the sweep widens automatically, but per-transaction
-gas is always bounded by `MAINT_MAX_SCAN`. Inspect the next budget with `maintenanceBudget()`.
+A locker *probe* is cheap (two slots) but normalising a position is not, so the two are budgeted
+separately: probes rotate the cursor under the shared cap, while normalisations carry their own,
+tighter `MAINT_MAX_LOCK_ACTIONS` ceiling. A probe that **finds** work does not consume probe
+budget — the cursor holds on the swap-pop — so a *cluster* of expirations drains several per
+transaction while a registry with nothing to do costs almost nothing. Worst case per transaction is
+`MAINT_MAX_SCAN + MAINT_MAX_LOCK_ACTIONS` iterations, unconditionally.
+
+Inspect the next budgets with `maintenanceBudget()` and `lockSweepBudget()`; measure the outstanding
+backlog with `expiredLockScan(offset, limit)` and clear it with `pokeExpiredLock(user)` /
+`pokeExpiredLocks(users)`.
 
 **Safety:** `_autoMaintain` is disabled while paused or in emergency, so a borrower who cannot act
 can never be liquidated by someone else's transaction. Each per-borrower step runs through an
 internal self-external call (`maintStep`) wrapped in `try/catch`, so a single position that cannot
 be processed (e.g. a borrower a blacklist-style token refuses to pay) is rolled back and skipped —
-it can **never** DoS the innocent user whose transaction is carrying maintenance. The permissionless
-`liquidate(user)` keeper path remains for anyone who wants to target a position directly — bots
-*and* organic flow both keep the book clean, so liveness never depends on keepers alone.
+it can **never** DoS the innocent user whose transaction is carrying maintenance. The locker window
+uses the identical discipline (`lockStep` + `try/catch`), and its cursor rotates past a skipped
+position so the sweep picks it back up once the obstruction clears. The permissionless
+`liquidate(user)` / `pokeExpiredLock(user)` keeper paths remain for anyone who wants to target a
+position directly — bots *and* organic flow both keep the book clean, so liveness never depends on
+keepers alone.
 
 ---
 
@@ -118,12 +136,19 @@ There is no liquid staking — **every deposit is a locked commitment** measured
   unlock later, pass a longer `lockDays`.
 - Boost is **continuous** in the committed duration: `boost(d) = 10000 + 750·(d/365) + 250·(d/365)²`
   bps (90d ≈ 1.02×, 1y = 1.10×, 7y = 2.75×).
+- **Boost is strictly the price of illiquidity, and it expires on time.** The instant
+  `block.timestamp >= unlockTime` the capital is withdrawable again, so the multiplier drops to
+  1.00× — evaluated against the *clock*, not against stored state, so no code path can re-price a
+  lapsed commitment at its historical multiplier even before the position has been swept.
+  `lockInfoOf().boostBps` and `getUserInfo().boostBps` therefore report what you are **paid** at;
+  `lockDays` / `unlockTime` report the commitment on record. Re-lock to earn the premium again.
 - **Withdrawal requires the lock to have expired *and* the position to be DEBT-FREE.** A borrower
   must repay everything before withdrawing any stake (`Staking__HasDebt`). There is no
   early-exit-with-debt path, and therefore **no exit penalty**.
 
 `lock(uint256 lockDays)` also exists to extend an existing commitment without depositing. Inspect
-with `lockInfoOf(user)`, `timeUntilUnlock(user)`, `maxLockDaysAvailable()`, `boostByDays(days)`.
+with `lockInfoOf(user)`, `timeUntilUnlock(user)`, `maxLockDaysAvailable()`, `boostByDays(days)`,
+`effectiveBoostOf(user)`, `effectiveLockDaysOf(user)`, `hasStaleBoost(user)`.
 
 ---
 
@@ -187,9 +212,23 @@ forge build                # uses foundry.toml (via_ir = true)
 ## Layout
 
 ```
-src/BlazePhoenixStaking.sol   final staking + lending contract  (VERSION "3.0.0")
+src/BlazePhoenixStaking.sol   final staking + lending contract  (VERSION "3.1.0")
 src/BlazePhoenixMathLib.sol   512-bit mulDiv + raw token calls   (VERSION "3.0.0-staking")
+
+test/run.mjs      integrity + edge-case suite   (real EVM, offline)
+test/attack.mjs   adversarial suite — 16 exploit vectors, all defeated
+test/boost.mjs    stale-boost / lock-expiry suite — BP-2026-001 regression
+test/BlazePhoenixStaking.t.sol   Foundry unit + fuzz + invariant suite
 ```
+
+## Security credits
+
+| ID | Finding | Reporter |
+|---|---|---|
+| BP-2026-001 | Stale boost persistence in pure stakers (yield misallocation; solvency unaffected) | **[NetGakarot](https://github.com/NetGakarot)** ("Gakarot"), 28 Jul 2026 |
+
+Full write-up, including the reporter's own remediation and what v3.1 added on top of it, in
+[docs/VERSION_HISTORY.md](./docs/VERSION_HISTORY.md#v31--bp-2026-001-stale-boost-persistence-in-pure-stakers).
 
 ## Licence & Whitepaper
 
