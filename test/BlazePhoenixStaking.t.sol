@@ -8,7 +8,11 @@ pragma solidity 0.8.28;
 //   forge test -vvv
 //   forge test --match-contract Invariant -vvv
 //
-// The JS harness in test/run.mjs already exercises the same behaviours on a real EVM offline.
+// The JS harness in test/run.mjs already exercises the same behaviours on a real EVM offline;
+// test/boost.mjs is the dedicated stale-boost / lock-expiry suite.
+//
+// The BP-2026-001 tests below (stale boost persistence in pure stakers) exist thanks to NetGakarot
+// ("Gakarot"), who disclosed the finding on 28 July 2026.
 
 import {Test, StdInvariant} from "forge-std/Test.sol";
 import {BlazePhoenixStaking} from "../src/BlazePhoenixStaking.sol";
@@ -187,6 +191,143 @@ contract UnitTest is Base {
         staking.tripBreaker();
     }
 
+    // ── BP-2026-001 (NetGakarot) — stale boost persistence in pure stakers ──────────────────
+    // Two identical debt-free 730-day (1.25x) positions. 731 days later both locks have lapsed;
+    // Bob acts, Alice stays idle. Pre-fix Alice kept her 1.25x weight forever and out-earned Bob
+    // by 25%. Post-fix, Bob's single transaction carries the locker sweep that normalises her.
+    function test_StaleBoost_IdlePureStakerIsNormalisedAutonomously() public {
+        vm.prank(admin); staking.fundEmission(100_000_000e18);
+        uint256 P = 1_000_000e18;
+        vm.prank(alice); staking.deposit(P, 730);
+        vm.prank(bob);   staking.deposit(P, 730);
+        vm.roll(block.number + 11);
+
+        // The contract floors mulDiv PER POSITION and then sums, so flooring first and doubling is
+        // the faithful expectation — reordering to multiply-then-divide would model it WRONGLY.
+        // (Exact either way here: P is 1e24, divisible by 10000.)
+        // forge-lint: disable-next-line(divide-before-multiply)
+        assertEq(staking.totalBoostedEffective(), (P * 12500 / 10000) * 2, "committed: 2 x 1.25x");
+        // forge-lint: disable-next-line(divide-before-multiply)
+        assertEq(staking.totalBoostedPure(),      (P * 12500 / 10000) * 2, "committed: 2 x 1.25x pure");
+
+        vm.warp(block.timestamp + 731 days); vm.roll(block.number + 11);
+        vm.prank(bob); staking.claimRewards();          // bob's tx must normalise BOTH positions
+
+        assertEq(staking.totalBoostedEffective(), P * 2, "expired: un-boosted emission denominator");
+        assertEq(staking.totalBoostedPure(),      P * 2, "expired: un-boosted pure denominator");
+        assertFalse(staking.hasStaleBoost(alice), "idle position normalised without acting");
+        assertEq(staking.activeLockerCount(), 0, "registry holds only live commitments");
+
+        // From here on the two identical positions must earn identically.
+        uint256 a1 = token.balanceOf(alice) + staking.pendingRewards(alice);
+        uint256 b1 = token.balanceOf(bob)   + staking.pendingRewards(bob);
+        vm.warp(block.timestamp + 30 days); vm.roll(block.number + 5);
+        uint256 dA = token.balanceOf(alice) + staking.pendingRewards(alice) - a1;
+        uint256 dB = token.balanceOf(bob)   + staking.pendingRewards(bob)   - b1;
+        assertGt(dA, 0, "still earning");
+        assertEq(dA, dB, "idle staker earns exactly what the active one earns");
+        assertTrue(staking.isSolvent());
+        assertEq(staking.auditInvariants() & 1, 0);
+    }
+
+    /// Boost is the price of illiquidity: it must be refused the instant the capital is free,
+    /// before any transaction has mutated the position's storage.
+    function test_StaleBoost_ExpiryIsPricedAgainstTheClockNotStorage(uint16 lockDays_) public {
+        lockDays_ = uint16(bound(lockDays_, 90, 2555));
+        vm.prank(alice); staking.deposit(1_000_000e18, lockDays_);
+        vm.roll(block.number + 11);
+
+        (, , uint256 liveBoost, bool liveExpired) = staking.lockInfoOf(alice);
+        assertEq(liveBoost, staking.boostByDays(lockDays_), "committed: full multiplier");
+        assertFalse(liveExpired);
+        assertEq(staking.effectiveLockDaysOf(alice), lockDays_);
+
+        vm.warp(block.timestamp + uint256(lockDays_) * 1 days + 1);   // no tx, only the clock
+
+        (uint256 onRecord, , uint256 paidBoost, bool expired) = staking.lockInfoOf(alice);
+        assertEq(onRecord, lockDays_, "the commitment on record is untouched");
+        assertTrue(expired);
+        assertEq(paidBoost, 10000, "but the position is PAID at 1.00x");
+        assertEq(staking.effectiveLockDaysOf(alice), 0);
+        assertEq(staking.effectiveBoostOf(alice), 10000);
+        (, , , , , , , , , , , uint256 uiBoost, , ) = staking.getUserInfo(alice);
+        assertEq(uiBoost, 10000, "getUserInfo agrees");
+    }
+
+    /// Re-pricing the FUTURE must never claw back the PAST: the sweep settles the boosted
+    /// backlog before it touches the weight.
+    function test_StaleBoost_SweepPaysBeforeItReprices() public {
+        vm.prank(admin); staking.fundEmission(100_000_000e18);
+        vm.prank(alice); staking.deposit(1_000_000e18, 730);
+        vm.roll(block.number + 11);
+        vm.warp(block.timestamp + 731 days); vm.roll(block.number + 11);
+
+        uint256 owedToAlice = staking.pendingRewards(alice);
+        uint256 balBefore   = token.balanceOf(alice);
+        assertGt(owedToAlice, 0, "there is a boosted backlog to protect");
+
+        vm.prank(carol); staking.deposit(1_000e18, 90);   // unrelated tx carries the sweep
+
+        assertEq(token.balanceOf(alice) - balBefore, owedToAlice, "paid in full, to the wei");
+        assertFalse(staking.hasStaleBoost(alice), "only then is the weight released");
+        assertTrue(staking.isSolvent());
+    }
+
+    /// The keeper surface: the backlog is measurable on-chain and its own output clears it.
+    function test_StaleBoost_ScanQuantifiesAndPokeClears() public {
+        vm.prank(admin); staking.fundEmission(50_000_000e18);
+        uint256 P = 1_000_000e18;
+        vm.prank(alice); staking.deposit(P, 730);
+        vm.prank(bob);   staking.deposit(P, 730);
+        vm.prank(carol); staking.deposit(P, 2000);        // still committed after 731 days
+        vm.roll(block.number + 11);
+        vm.warp(block.timestamp + 731 days); vm.roll(block.number + 11);
+
+        (address[] memory stale, uint256 xBE, uint256 xBP, uint256 total) = staking.expiredLockScan(0, 100);
+        assertEq(total, 3);
+        assertEq(stale.length, 2, "exactly the two lapsed commitments");
+        uint256 excessEach = (P * 12500 / 10000) - P;
+        assertEq(xBE, excessEach * 2, "excess emission weight is exact");
+        assertEq(xBP, excessEach * 2, "excess pure-yield weight is exact");
+
+        vm.prank(keeper); staking.pokeExpiredLocks(stale);
+        (address[] memory after_, uint256 xBE2, uint256 xBP2, ) = staking.expiredLockScan(0, 100);
+        assertEq(after_.length, 0, "backlog cleared");
+        assertEq(xBE2, 0); assertEq(xBP2, 0);
+        assertTrue(staking.isSolvent());
+        assertEq(staking.auditInvariants() & 1, 0);
+    }
+
+    /// The whole point of the report: committing capital must pay strictly more than not
+    /// committing it, or the lock has no economic meaning.
+    function test_StaleBoost_RelockingStrictlyBeatsIdling() public {
+        vm.prank(admin); staking.fundEmission(100_000_000e18);
+        uint256 P = 1_000_000e18;
+        vm.prank(alice); staking.deposit(P, 730);
+        vm.prank(bob);   staking.deposit(P, 730);
+        vm.roll(block.number + 11);
+        vm.warp(block.timestamp + 731 days); vm.roll(block.number + 11);
+
+        vm.prank(bob); staking.lock(730);                 // bob re-commits; his tx sweeps alice
+        assertEq(staking.totalBoostedEffective(), P + (P * 12500 / 10000), "1.00x idle + 1.25x committed");
+
+        uint256 a1 = token.balanceOf(alice) + staking.pendingRewards(alice);
+        uint256 b1 = token.balanceOf(bob)   + staking.pendingRewards(bob);
+        vm.warp(block.timestamp + 60 days); vm.roll(block.number + 5);
+        uint256 dA = token.balanceOf(alice) + staking.pendingRewards(alice) - a1;
+        uint256 dB = token.balanceOf(bob)   + staking.pendingRewards(bob)   - b1;
+        assertGt(dB, dA, "the re-locked staker out-earns the idle one");
+        assertEq(dB * 10000 / dA, 12500, "by exactly the 1.25x lock premium");
+    }
+
+    /// The new self-external step is not a public entry-point.
+    function test_StaleBoost_LockStepIsSelfOnly() public {
+        vm.prank(alice); staking.deposit(1_000e18, 90);
+        vm.prank(keeper);
+        vm.expectRevert(BlazePhoenixStaking.Staking__NotSelf.selector);
+        staking.lockStep(alice, keeper);
+    }
+
     function test_Emergency() public {
         vm.prank(admin); staking.grantRole(keccak256("GUARDIAN_ROLE"), keeper);
         vm.prank(alice); staking.deposit(1000e18, 365);
@@ -238,9 +379,23 @@ contract Handler is Test {
     function liquidate(uint256 seed, uint256 tseed) public {
         vm.prank(_actor(seed)); try staking.liquidate(_actor(tseed)) {} catch {}
     }
+    function relock(uint256 seed, uint256 lockDays) public {
+        address a = _actor(seed);
+        lockDays = bound(lockDays, 90, 2555);
+        vm.prank(a); try staking.lock(lockDays) {} catch {}
+    }
+    function poke(uint256 seed, uint256 tseed) public {
+        vm.prank(_actor(seed)); try staking.pokeExpiredLock(_actor(tseed)) {} catch {}
+    }
     function passTime(uint256 s) public {
         s = bound(s, 1 hours, 60 days);
         vm.warp(block.timestamp + s); vm.roll(block.number + 30);
+    }
+    /// Wide enough to carry positions PAST their unlock, so lock expiry is inside the fuzzed
+    /// state space rather than a case only the unit tests ever reach.
+    function passLockPeriod(uint256 s) public {
+        s = bound(s, 60 days, 800 days);
+        vm.warp(block.timestamp + s); vm.roll(block.number + 300);
     }
 }
 
@@ -273,6 +428,40 @@ contract InvariantTest is StdInvariant, Base {
     function invariant_backingCoversOwed() public view {
         assertGe(staking.backing() + 1e10, staking.owed(), "BACKING < OWED");
     }
+
+    // ── BP-2026-001 structural invariants ────────────────────────────────────────────────────
+
+    /// NO LIVE COMMITMENT MAY ESCAPE THE REGISTRY. This is the property the whole fix rests on:
+    /// the locker registry is the only window that can see a debt-free position, so a lock that
+    /// is not in it is a lock the autonomous engine can never normalise. If this ever fails, the
+    /// original stale-boost bug is back, whatever the boost derivation says.
+    function invariant_everyLiveCommitmentIsTracked() public view {
+        address[4] memory who = [alice, bob, carol, keeper];
+        for (uint256 i = 0; i < who.length; i++) {
+            (uint256 lockDays, , , ) = staking.lockInfoOf(who[i]);
+            if (lockDays > 0) assertTrue(staking.isTrackedLocker(who[i]), "LIVE COMMITMENT NOT TRACKED");
+        }
+    }
+
+    /// The registry is a set, not a bag: a duplicated entry would let one position's weight be
+    /// released twice and underflow the single-writer subtraction in `_applyBoost`.
+    function invariant_lockRegistryHasNoDuplicates() public view {
+        (address[] memory l, uint256 total) = staking.getLockers(0, 64);
+        assertLe(total, 64, "registry outgrew the invariant page");
+        for (uint256 i = 0; i < l.length; i++) {
+            for (uint256 j = i + 1; j < l.length; j++) assertTrue(l[i] != l[j], "DUPLICATE LOCKER");
+        }
+    }
+
+    /// Whatever stale weight is transiently outstanding between an expiry and its sweep can never
+    /// exceed the total the boost curve could possibly justify — the excess is bounded by the same
+    /// stake * maxBoost envelope as the denominators themselves.
+    function invariant_staleBoostExcessIsBounded() public view {
+        (, uint256 xBE, uint256 xBP, ) = staking.expiredLockScan(0, 64);
+        uint256 envelope = (staking.totalStaked() * staking.boostByDays(2555)) / 10_000;
+        assertLe(xBE, envelope, "STALE EMISSION EXCESS UNBOUNDED");
+        assertLe(xBP, envelope, "STALE PURE EXCESS UNBOUNDED");
+    }
 }
 
 // ───────────────────────────────────────────────────────────────────────────────────────────
@@ -288,6 +477,8 @@ contract StressTest is Base {
 
     /// Mint, approve, deposit and borrow for a freshly-created address.
     function _newBorrower(uint256 idx) internal returns (address who) {
+        // casting to 'uint160' is safe because idx is a bounded test index (< 64).
+        // forge-lint: disable-next-line(unsafe-typecast)
         who = address(uint160(0x1000 + idx));
         token.mint(who, 500_000_000e18);
         vm.prank(who); token.approve(address(staking), type(uint256).max);
@@ -465,6 +656,58 @@ contract StressTest is Base {
         assertTrue(bs.isTrackedBorrower(victim));          // victim skipped, not removed
         assertTrue(bs.isSolvent());
         assertEq(bs.auditInvariants() & 1, 0);             // conservation bit clear
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────────────────────
+    // Cenário 6: Locker-registry flood — the SECOND maintenance window must not become a new
+    // denial-of-service surface.
+    //
+    // BP-2026-001's fix adds a rotating window over every position holding a live lock. If that
+    // window were unbounded, anyone could make ordinary transactions unaffordable by opening a
+    // large number of cheap positions and letting them all expire at once. Prove: the probe
+    // budget stays hard-capped, normalisations per transaction stay capped, an innocent user's
+    // transaction stays cheap against a deep expired backlog, and organic flow alone drains it.
+    // ─────────────────────────────────────────────────────────────────────────────────────────
+    function test_stress_lockerRegistryFlood_boundedAndSelfDraining(uint8 lockers) public {
+        lockers = uint8(bound(lockers, 20, 60));
+        vm.prank(admin); staking.fundEmission(50_000_000e18);
+
+        for (uint256 i = 0; i < lockers; i++) {
+            // casting to 'uint160' is safe because i is a bounded test index (<= 60).
+            // forge-lint: disable-next-line(unsafe-typecast)
+            address who = address(uint160(0x2000 + i));
+            token.mint(who, 1_000_000e18);
+            vm.prank(who); token.approve(address(staking), type(uint256).max);
+            vm.prank(who); staking.deposit(10_000e18, 90);
+        }
+        assertEq(staking.activeLockerCount(), lockers, "every commitment tracked");
+        assertLe(staking.lockSweepBudget(), 10, "probe budget capped at MAINT_MAX_SCAN");
+
+        // Every single one expires at once — the worst case for the sweep.
+        vm.warp(block.timestamp + 400 days); vm.roll(block.number + 11);
+        assertLe(staking.lockSweepBudget(), 10, "still capped after a 400-day backlog");
+
+        uint256 before = staking.activeLockerCount();
+        uint256 gasBefore = gasleft();
+        vm.prank(alice); staking.deposit(1_000e18, 90);
+        uint256 gasUsed = gasBefore - gasleft();
+        uint256 afterCount = staking.activeLockerCount();
+
+        assertLt(gasUsed, 3_000_000, "deposit gas exceeded safe ceiling against a deep backlog");
+        assertLt(afterCount, before, "the sweep made progress in one tx");
+        assertLe(before - afterCount, 4, "bounded work: <= MAINT_MAX_LOCK_ACTIONS per tx");
+
+        // No keeper, no time gap — organic traffic alone must erase the backlog.
+        for (uint256 i = 0; i < lockers; i++) {
+            vm.roll(block.number + 11);
+            vm.prank(alice); staking.claimRewards();
+        }
+        assertEq(staking.activeLockerCount(), 1, "only alice's own live commitment survives");
+        (address[] memory stale, uint256 xBE, , ) = staking.expiredLockScan(0, 100);
+        assertEq(stale.length, 0, "no stale commitment survived");
+        assertEq(xBE, 0, "no excess weight survived");
+        assertTrue(staking.isSolvent());
+        assertEq(staking.auditInvariants() & 1, 0, "conservation bit set after the flood");
     }
 }
 

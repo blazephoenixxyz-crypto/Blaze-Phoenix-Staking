@@ -1,6 +1,13 @@
 # BlazePhoenix Protocol — Technical Whitepaper
 
-**Version 3.0.0 · June 2026**
+**Version 3.1.0 · July 2026**
+
+> **Security credit — BP-2026-001.** §3.3 and §4.2.1 exist because of a finding disclosed on
+> 28 July 2026 by **[NetGakarot](https://github.com/NetGakarot)** ("Gakarot"): the maintenance
+> sweep iterated the borrower registry only, and a pure staker (`debt == 0`) is never in it, so an
+> idle staker whose lock had expired retained its historical boost in the global reward
+> denominators indefinitely. Solvency was never reachable — boost is a denominator weight, never a
+> claim on value — but the distribution was unfair and the incentive to re-lock was destroyed.
 
 ---
 
@@ -209,6 +216,31 @@ For each position in the window:
 3. **If not liquidatable** — settle pending emission rewards and pure yield, expire
    stale locks, and resync the boost weight. The global denominators never drift.
 
+### 3.3 The second window: expired locks on debt-free positions
+
+The borrower registry is, by construction, blind to a **pure staker** (`debt == 0`) — precisely the
+class whose lock expiry nothing else would ever normalise. A second registry, `_lockers`, tracks
+every position holding a live commitment and receives its own rotating, gas-bounded window in the
+same sweep. Any entry whose commitment has elapsed is normalised on the spot:
+
+1. **Settle first** — emission rewards and pure yield are paid at the weight they were actually
+   earned at. Everything accrued while the commitment was live was genuinely earned at the boosted
+   weight; only the *future* is re-priced. The correction never confiscates.
+2. **Release** — `_processLockExpiry` clears the lock, `_resync` recomputes the weight at 1.00×
+   through the single writer, and the entry is de-registered.
+
+A locker *probe* costs two storage slots; a normalisation does not. The two are therefore budgeted
+separately — probes rotate the cursor under the shared `MAINT_MAX_SCAN` cap, normalisations carry
+their own tighter `MAINT_MAX_LOCK_ACTIONS` ceiling — and a probe that finds work does not consume
+probe budget, because the cursor holds on the swap-pop. A *cluster* of simultaneous expirations
+therefore drains several per transaction, while a registry with nothing to do costs almost nothing.
+Worst case per transaction is `MAINT_MAX_SCAN + MAINT_MAX_LOCK_ACTIONS` iterations, unconditionally.
+
+`expiredLockScan(offset, limit)` measures the outstanding backlog on-chain with no indexer;
+`pokeExpiredLock(user)` and `pokeExpiredLocks(users)` let anyone clear it at their own gas cost.
+
+### 3.4 Failure isolation
+
 Each per-borrower step runs through an internal self-external call (`maintStep`, callable
 only by the contract itself) wrapped in `try/catch`. If a single position cannot be processed —
 for example, if the BZPX token refused to pay a specific borrower — that step is rolled back
@@ -267,6 +299,31 @@ boost(d) = 10000 + 750·(d/365) + 250·(d/365)²   [basis points]
 
 The quadratic term accelerates reward for long commitments. The curve is
 continuous — any day count between 90 and 2555 is valid.
+
+#### 4.2.1 Boost is the price of illiquidity, and it expires on time
+
+The multiplier is compensation for capital the holder **cannot withdraw**. The instant
+`block.timestamp >= unlockTime` that capital is liquid again, so the effective commitment is
+0 days and the multiplier is 1.00× — regardless of whether stored state has been updated yet:
+
+```solidity
+function _effectiveLockDays(UserInfo storage u) internal view returns (uint256) {
+    if (u.lockDays == 0) return 0;
+    return block.timestamp >= u.unlockTime ? 0 : uint256(u.lockDays);
+}
+```
+
+Every boost in the protocol is derived through this function, so no code path — present or future —
+can re-price a lapsed commitment at its historical multiplier. The public views agree: 
+`lockInfoOf().boostBps` and `getUserInfo().boostBps` report what a position is **paid** at and read
+`10000` the moment a lock lapses, while `lockDays` / `unlockTime` continue to report the commitment
+on record.
+
+Real-time derivation and the §3.3 sweep are **jointly** necessary. Derivation alone only re-prices a
+position somebody already touched — which an idle staker never is. The sweep alone would leave the
+stale multiplier re-derivable in the window between expiry and normalisation. Together they make
+stored state and tracked weight structurally unable to diverge, since `_resync` — the sole path by
+which any boost weight is ever written — now processes expiry itself.
 
 ### 4.3 Withdrawal requires full repayment
 
@@ -521,13 +578,25 @@ The protocol is tested by two complementary suites:
   - `test_stress_solvency_maxKinkUtilization` — solvency + repayability under high utilisation
   - `test_stress_reentrancy_maliciousToken` — `nonReentrant` blocks a reentrant borrow hook
   - `test_stress_blacklist_maintenanceResilient` — a blacklisted borrower cannot DoS the sweep
-- **4 invariants** under random action sequences (256 runs × 128,000 calls each):
+  - `test_stress_lockerRegistryFlood_boundedAndSelfDraining` — fuzz: a 20..60-deep expired locker
+    backlog keeps per-tx gas bounded and drains from organic flow alone
+- **BP-2026-001 regression** — `test_StaleBoost_*` (Foundry) and `test/boost.mjs` B1..B10 (JS).
+  B1 uses only the v3.0.0 ABI, so it runs verbatim against the vulnerable contract and fails there
+  on the reported divergence itself (idle:active yield ratio 1.25× and a 2.25M denominator, against
+  the corrected 1.00× and 2.0M) rather than on a missing function.
+- **7 invariants** under random action sequences (256 runs × 128,000 calls each):
   - `invariant_solvent` — `isSolvent()` always true
   - `invariant_conservationBit` — bit 0 of `auditInvariants()` never set
   - `invariant_boostBounded` — boosted denominators never exceed `stake × maxBoost / base`
   - `invariant_backingCoversOwed` — `backing + dust ≥ owed` always
+  - `invariant_everyLiveCommitmentIsTracked` — no live lock escapes the locker registry (a lock the
+    engine cannot see is the original stale-boost bug returning)
+  - `invariant_lockRegistryHasNoDuplicates` — the registry is a set, not a bag
+  - `invariant_staleBoostExcessIsBounded` — transiently stale weight stays inside the
+    `stake × maxBoost` envelope
 
-**Result: 21/21 Foundry tests pass. 80/80 JS checks pass.**
+**Result: 330/330 JS checks pass (80 integrity + 76 adversarial + 174 lock-expiry).** The Foundry
+suite is run where Foundry is available; it is not installable in the offline sandbox.
 
 ---
 
