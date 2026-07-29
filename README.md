@@ -225,6 +225,9 @@ test/vectors.mjs  canonical DeFi attack-vector suite — reentrancy via callback
                   extraction, timestamp skew, rounding direction, registry bloat
 test/dimensions.mjs  state-dimension suite — liveness and anti-DoS, privilege
                   boundaries, keeper incentives, and non-standard ERC20 behaviour
+test/reporting.mjs   reporting-surface and deployment-environment suite — every
+                  published figure rebuilt from primitive state, quote-vs-settlement
+                  equality, audit-mask sensitivity, funding gap, long chain silence
 test/BlazePhoenixStaking.t.sol   Foundry unit + fuzz + invariant suite
 ```
 
