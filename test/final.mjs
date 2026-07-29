@@ -403,112 +403,112 @@ async function MR_boost() {
 }
 
 // ── EXIT-PATH CLOSURE ───────────────────────────────────────────────────────────────────
-//  Relation: every exit path must move `owed` and `backing` by the same amount.
-//      Δowed == Δbacking   for ALL exits, healthy or under-water.
-async function MR_closure() {
-  console.log('\n── MR-CLOSURE :: Δowed must equal Δbacking on every exit path ──────────────');
+//  Every exit path must move `owed` and `backing` by the same amount:  Δowed == Δbacking.
+//  The interesting branch is an under-water exit, where the position's debt exceeds its
+//  collateral. Reaching it takes a fully leveraged pool left untended under a pause — a pause
+//  disables every liquidation path, and utilisation climbs on its own because interest is
+//  charged against collateral.
+async function exitClosure() {
+  console.log('\n── EXIT CLOSURE :: Δowed must equal Δbacking on every exit path ────────────');
   const w = await world();
   const { staking, chain, users, guardian, admin } = w;
 
-  // Drive a position under water. Interest is charged against COLLATERAL, so an untouched
-  // leveraged position decays toward insolvency on its own. First we must establish whether
-  // that state is reachable AT ALL, and at what cost in elapsed time — that reachability is
-  // the difference between a live bug and a theoretical one, so it is measured, not assumed.
-  await staking.send(users[0], 'deposit', [E18(20_000_000), 365]);     // liquidity + pure staker
-  await staking.send(users[1], 'deposit', [E18(1_000_000), 90]);
+  for (const u of users) await staking.send(u, 'deposit', [E18(10_000_000), 365]);
   chain.mine(11);
-  const info = await staking.call('getUserInfo', [users[1].hex]);
-  await staking.send(users[1], 'borrow', [BigInt(info[3])]);
-  console.log(`     opening LTV: debt/collateral = ${Number((BigInt(info[3]) * 10_000n) / E18(1_000_000)) / 100}%  ` +
-              `(MAX_LTV applies to EFFECTIVE stake, so the reachable maximum is ~33%)`);
+  for (const u of users) {
+    const i = await staking.call('getUserInfo', [u.hex]);
+    await staking.send(u, 'borrow', [BigInt(i[3])]);
+  }
+  await staking.send(guardian, 'pause', []);      // the ordinary incident-response first step
 
-  // Pause first: the ordinary incident-response step, and the one that disables every
-  // liquidation path (`liquidate` is whenNotPaused; `_autoMaintain` returns early while paused).
-  await staking.send(guardian, 'pause', []);
-
-  let staked = 0n, debt = 0n, yearsToUnderwater = null;
+  let staked = 0n, debt = 0n, years = null;
   for (let y = 1; y <= 60; y++) {
     chain.warp(YEAR); chain.mine(11);
-    await staking.send(users[1], 'repay', [1n]);            // allowed while paused; forces accrual
-    const i2 = await staking.call('getUserInfo', [users[1].hex]);
-    staked = BigInt(i2[0]); debt = BigInt(i2[1]);
-    if (y % 10 === 0 || staked <= debt) {
-      console.log(`     +${String(y).padStart(2)}y paused : collateral ${fmt(staked)}  debt ${fmt(debt)}  ` +
-                  `health ${staked === 0n ? 0 : Number((debt * 10_000n) / staked) / 100}%`);
+    for (const u of users) await staking.send(u, 'repay', [1n]);
+    const i = await staking.call('getUserInfo', [users[0].hex]);
+    staked = BigInt(i[0]); debt = BigInt(i[1]);
+    if (y % 10 === 0) {
+      const util = BigInt(await staking.call('utilizationRate'));
+      console.log(`     +${String(y).padStart(2)}y paused : collateral ${fmt(staked)} debt ${fmt(debt)} util ${(Number(util) / 1e16).toFixed(1)}%`);
     }
-    if (staked <= debt) { yearsToUnderwater = y; break; }
+    if (staked > 0n && staked < debt) { years = y; break; }
   }
-  check(yearsToUnderwater === null, 'MR-CLOSURE: an under-water position is unreachable by interest decay',
-        `reached debt ≥ collateral after ${yearsToUnderwater} years of continuous pause`);
-  if (yearsToUnderwater === null) {
-    console.log(`     position never went under water within 60 paused years — the #3 trigger is`);
-    console.log(`     not reachable through interest decay at this protocol's rate ceiling.`);
-    return { gap: 0n, frozen: false, reachable: false };
-  }
+  console.log(`     under water after ${years} paused years: collateral ${fmt(staked)}, debt ${fmt(debt)}`);
+  if (!check(years !== null, 'EXIT CLOSURE: the under-water branch was reached (precondition)',
+             'never reached — the branch below is untested')) return { reached: false };
 
   await staking.send(guardian, 'declareEmergency', []);
-  console.log(`     position: collateral ${fmt(staked)}, debt ${fmt(debt)} ⇒ ${staked < debt ? 'UNDER WATER' : 'healthy'}`);
-
   const p0 = await probe(w);
-  const r = await staking.send(users[1], 'emergencyWithdraw', []);
+  const r = await staking.send(users[0], 'emergencyWithdraw', []);
   const p1 = await probe(w);
   const dOwed = p1.owed - p0.owed, dBacking = p1.backing - p0.backing;
+  const gap = dOwed - dBacking;
   console.log(`     emergencyWithdraw ok=${r.ok}  Δowed=${fmt(dOwed)}  Δbacking=${fmt(dBacking)}  totalBadDebt=${fmt(p1.badDebt)}`);
 
-  const gap = dOwed - dBacking;
-  check(gap <= DUST && gap >= -DUST, 'MR-CLOSURE: under-water exit conserves the identity',
-        `Δowed − Δbacking = ${fmt(gap)}  (expected ≈ 0; equals debt−collateral = ${fmt(debt > staked ? debt - staked : 0n)})`);
-
-  const solventNow = await staking.call('isSolvent');
-  check(solventNow === true, 'MR-CLOSURE: protocol remains solvent after the exit',
-        `isSolvent()=${solventNow}, audit bitmap=${p1.audit}, residual=${fmt(p1.solvencyResidual)}`);
-
+  check(gap <= DUST && gap >= -DUST, 'EXIT CLOSURE: an under-water exit conserves the identity',
+        `Δowed − Δbacking = ${fmt(gap)} (equals the unrecorded shortfall debt−collateral = ${fmt(debt - staked)})`);
+  // The shortfall must be ACCOUNTED FOR, which is not the same as always landing in totalBadDebt:
+  // protocol revenue absorbs it first and only the uncovered remainder is socialised, exactly as
+  // the liquidation path has always done. What must hold is that the two together equal the gap.
+  const shortfall = debt > staked ? debt - staked : 0n;
+  const absorbed = (p0.protocolReserve - p1.protocolReserve) + (p1.badDebt - p0.badDebt);
+  console.log(`     shortfall ${fmt(shortfall)} = reserve absorbed ${fmt(p0.protocolReserve - p1.protocolReserve)}` +
+              ` + bad debt recorded ${fmt(p1.badDebt - p0.badDebt)}`);
+  check(absorbed === shortfall, 'EXIT CLOSURE: the realised loss is fully accounted for',
+        `accounted ${fmt(absorbed)} vs shortfall ${fmt(shortfall)}`);
+  const solvent = await staking.call('isSolvent');
+  check(solvent === true, 'EXIT CLOSURE: the protocol remains solvent after the exit',
+        `isSolvent=${solvent}, audit=${p1.audit}, residual=${fmt(p1.solvencyResidual)}`);
   const cancel = await staking.send(admin, 'cancelEmergency', []);
-  check(cancel.ok, 'MR-CLOSURE: emergency can still be lifted (no permanent freeze)',
-        `cancelEmergency reverted with ${cancel.revert}; every user + admin exit path is frozen, ` +
-        `${fmt(p1.backing)} BZPX immobilised by a ${fmt(gap)} unrecorded loss`);
-  return { gap, frozen: !cancel.ok, backing: p1.backing, reachable: true, yearsToUnderwater };
+  check(cancel.ok, 'EXIT CLOSURE: emergency can still be lifted (no freeze)',
+        `cancelEmergency reverted with ${cancel.revert} — ${fmt(p1.backing)} BZPX immobilised`);
+  return { gap, years, reached: true };
 }
 
-// ── RATE CEILING ────────────────────────────────────────────────────────────────────────
-//  How far can an attacker actually move the rate? MAX_LTV applies to EFFECTIVE stake
-//  (staked − debt), so per position  D_i ≤ ½(S_i − D_i)  ⇒  D_i ≤ S_i/3.  Summing,
-//      util = D/S ≤ 1/3
-//  even under unbounded recursive re-staking of borrowed tokens. Therefore
-//      rate ≤ R0 + (1/3)·S1 = 100 + 166.7 = 266.7 bps
-//  and the 80% kink — where the steep S2 = 72500 slope lives — is UNREACHABLE.
-//  This caps the multiplicative overcharge in #6 at rate_max/rate_min = 2.667x. We assert
-//  the algebra against the machine rather than trusting it.
-async function MR_rateCeiling() {
-  console.log('\n── MR-RATECEIL :: maximum reachable utilisation and interest rate ──────────');
+// ── RATE CURVE REACH ────────────────────────────────────────────────────────────────────
+//  How far up its own curve can the protocol actually travel? This matters because the kinked
+//  curve is gentle below 80% utilisation (S1 = 500) and extremely steep above it (S2 = 72500),
+//  so whether the kink is reachable decides whether the steep branch is live code.
+//
+//  The first borrow on a debt-free position is capped at half the effective stake, which is the
+//  whole stake — so utilisation reaches 50% immediately. From there interest is charged against
+//  COLLATERAL while debt stays fixed, so utilisation climbs on its own with no further borrowing.
+//  The kink is therefore reachable, and the steep branch is live.
+async function rateCurveReach() {
+  console.log('\n── RATE CURVE :: how far up the kinked curve the protocol can travel ───────');
   const w = await world();
   const { staking, chain, users } = w;
-  await staking.send(users[0], 'deposit', [E18(20_000_000), 365]);   // lending liquidity
 
-  // recursive leverage: borrow the maximum, re-stake it, repeat until the fixed point
-  await staking.send(users[1], 'deposit', [E18(10_000_000), 365]);
-  let util = 0n, rate = 0n;
-  for (let k = 0; k < 14; k++) {
-    chain.mine(11);
-    const info = await staking.call('getUserInfo', [users[1].hex]);
-    const avail = (BigInt(info[3]) * 99n) / 100n;
-    if (avail < E18(1)) break;
-    const b = await staking.send(users[1], 'borrow', [avail]);
-    if (!b.ok) break;
-    const cap = BigInt((await staking.call('getUserInfo', [users[1].hex]))[12]);
-    if (cap > E18(1)) await staking.send(users[1], 'deposit', [avail > cap ? cap : avail, 90]);
-    util = BigInt(await staking.call('utilizationRate'));
-    rate = BigInt(await staking.call('currentInterestRateBps'));
+  // every participant is a borrower at maximum LTV — no pure stake diluting the denominator
+  for (const u of users) await staking.send(u, 'deposit', [E18(10_000_000), 365]);
+  chain.mine(11);
+  for (const u of users) {
+    const i = await staking.call('getUserInfo', [u.hex]);
+    await staking.send(u, 'borrow', [BigInt(i[3])]);
   }
-  console.log(`     fixed point after recursive leverage: utilisation ${Number(util / 10n ** 12n) / 10_000}%  rate ${rate} bps`);
-  console.log(`     algebraic ceiling: util ≤ 1/3 (33.33%), rate ≤ 266.7 bps; kink sits at 80% ⇒ unreachable`);
-  const maxOvercharge = (2667n * 100n) / 100n;
-  console.log(`     ⇒ maximum multiplicative overcharge in #6 = rate_max/rate_min = ${Number(maxOvercharge) / 1000}x`);
-  check(util <= 340_000_000_000_000_000n, 'MR-RATECEIL: utilisation cannot exceed the algebraic 1/3 bound',
-        `reached ${util}`);
-  check(rate <= 267n, 'MR-RATECEIL: interest rate cannot exceed 266.7 bps ⇒ steep S2 slope is dead code',
-        `reached ${rate} bps`);
-  return { util, rate };
+  const util0 = BigInt(await staking.call('utilizationRate'));
+  const rate0 = BigInt(await staking.call('currentInterestRateBps'));
+  console.log(`     immediately after max borrows: util ${(Number(util0) / 1e16).toFixed(2)}%  rate ${rate0} bps`);
+  check(util0 >= 499_000_000_000_000_000n && util0 <= 501_000_000_000_000_000n,
+        'RATE CURVE: a single round of max borrowing reaches 50% utilisation', `got ${util0}`);
+
+  let crossed = false, yearsToKink = null;
+  for (let y = 1; y <= 40 && !crossed; y++) {
+    chain.warp(YEAR); chain.mine(11);
+    for (const u of users) await staking.send(u, 'repay', [1n]);
+    const util = BigInt(await staking.call('utilizationRate'));
+    const rate = BigInt(await staking.call('currentInterestRateBps'));
+    if (y % 10 === 0) console.log(`     +${String(y).padStart(2)}y : util ${(Number(util) / 1e16).toFixed(2)}%  rate ${rate} bps`);
+    if (util > 800_000_000_000_000_000n) {
+      crossed = true; yearsToKink = y;
+      console.log(`     +${String(y).padStart(2)}y : util ${(Number(util) / 1e16).toFixed(2)}%  rate ${rate} bps  ← past the 80% kink`);
+    }
+  }
+  check(crossed, 'RATE CURVE: the 80% kink is reachable, so the steep S2 branch is LIVE code',
+        'never crossed within 40 years — S2 would then be unreachable');
+  console.log(`     ⇒ the steep branch engages after ~${yearsToKink} years of a fully leveraged, untended pool.`);
+  console.log(`       The rate is NOT bounded near the base of the curve; do not treat S2 as dead.`);
+  return { util0, rate0, yearsToKink };
 }
 
 // ── STALE-BOOST REGRESSION (BP-2026-001, fixed in v3.1) ─────────────────────────────────
@@ -591,9 +591,21 @@ async function MR_emission() {
               `withdrawReserve(${fmt(residue)})→${wd.ok ? 'ok' : wd.revert} (protocolReserve was only ${fmt(protoRes)})`);
   console.log(`     rewardReserve after every recovery attempt: ${fmt(residueAfter)}`);
 
-  check(residue <= DUST, 'MR-EMISSION: no undistributable residue remains at emissionEnd',
-        `${fmt(residue)} BZPX permanently unreachable (${Number((residue * 1_000_000n) / (180_000_000n * WAD)) / 10_000}% of the 180M budget); ` +
-        `predicted by rate×empty-window = ${fmt(predicted)}`);
+  // Declining to accrue while the pool is empty is deliberate and stays — it is what stops a
+  // latecomer harvesting a backlog. The property that must hold is that the resulting residue is
+  // RECOVERABLE rather than owed to nobody and reachable by nobody.
+  const treBefore = BigInt(await w.token.call('balanceOf', [w.treasury.hex]));
+  const sweep = await staking.send(admin, 'sweepUndistributedEmission', []);
+  const residueAfterSweep = BigInt(await staking.call('rewardReserve'));
+  const treGain = BigInt(await w.token.call('balanceOf', [w.treasury.hex])) - treBefore;
+  console.log(`     sweepUndistributedEmission → ${sweep.ok ? 'ok' : sweep.revert}; ` +
+              `treasury received ${fmt(treGain)}, rewardReserve now ${fmt(residueAfterSweep)}`);
+  check(sweep.ok && residueAfterSweep === 0n && treGain === residue,
+        'MR-EMISSION: the undistributable residue is recoverable in full',
+        `swept=${sweep.ok ? 'ok' : sweep.revert}, left ${fmt(residueAfterSweep)}, treasury +${fmt(treGain)}`);
+  const pAfter = await probe(w);
+  check(pAfter.solvencyResidual <= DUST, 'MR-EMISSION: the sweep conserves the identity',
+        `residual ${pAfter.solvencyResidual} wei`);
   check(err <= REWARD_PER_SEC * 120n, 'MR-EMISSION: stranding matches the closed-form model rate×Δt',
         `|model error| = ${fmt(err)}`);
   return { stranded: p.stranded, residue, predicted };
@@ -916,6 +928,55 @@ async function mockScenarios() {
     check(await staking.call('emergencyMode') === false, 'MOCK: emergency flag clears');
   }
 
+  console.log('\n── MOCK :: undistributed-emission sweep ────────────────────────────────────');
+  {
+    const w = await world();
+    const { staking, chain, users, admin, treasury, token } = w;
+    const early = await staking.send(admin, 'sweepUndistributedEmission', []);
+    check(!early.ok && early.revert === 'Staking__EmissionNotEnded',
+          'MOCK: the sweep is closed until the emission programme ends', `got ${early.revert}`);
+    chain.warp(10n * DAY); chain.mine(5);
+    await staking.send(users[0], 'deposit', [E18(5_000_000), 365]);
+    chain.warp(8n * YEAR); chain.mine(20);
+    const notAdmin = await staking.send(users[1], 'sweepUndistributedEmission', []);
+    check(!notAdmin.ok, 'MOCK: the sweep is admin-only', `got ok=${notAdmin.ok}`);
+    const before = BigInt(await token.call('balanceOf', [treasury.hex]));
+    const r = await staking.send(admin, 'sweepUndistributedEmission', []);
+    const gain = BigInt(await token.call('balanceOf', [treasury.hex])) - before;
+    check(r.ok && gain > 0n, 'MOCK: the sweep pays the residue to the treasury',
+          `ok=${r.ok} revert=${r.revert} gain=${fmt(gain)}`);
+    check(BigInt(await staking.call('rewardReserve')) === 0n, 'MOCK: rewardReserve is emptied');
+    const again = await staking.send(admin, 'sweepUndistributedEmission', []);
+    check(!again.ok && again.revert === 'Staking__ZeroAmount',
+          'MOCK: a second sweep has nothing left to take', `got ${again.revert}`);
+    const p = await probe(w);
+    check(p.solvencyResidual <= DUST, 'MOCK: solvency intact after the sweep', `residual ${p.solvencyResidual}`);
+  }
+
+  console.log('\n── MOCK :: emergency exit conserves (healthy branch regression) ────────────');
+  {
+    const w = await world();
+    const { staking, chain, users, guardian, admin } = w;
+    await staking.send(users[0], 'deposit', [E18(4_000_000), 365]);
+    await staking.send(users[1], 'deposit', [E18(2_000_000), 90]);
+    chain.mine(11);
+    const inf = await staking.call('getUserInfo', [users[1].hex]);
+    await staking.send(users[1], 'borrow', [BigInt(inf[3])]);
+    chain.warp(200n * DAY); chain.mine(11);
+    await staking.send(guardian, 'declareEmergency', []);
+
+    const p0 = await probe(w);
+    const exit = await staking.send(users[1], 'emergencyWithdraw', []);
+    const p1 = await probe(w);
+    const gap = (p1.owed - p0.owed) - (p1.backing - p0.backing);
+    check(exit.ok && gap <= DUST && gap >= -DUST,
+          'MOCK: a collateralised emergency exit moves owed and backing together',
+          `Δowed−Δbacking = ${fmt(gap)}`);
+    check(p1.badDebt === 0n, 'MOCK: no bad debt recorded on a healthy exit', `got ${fmt(p1.badDebt)}`);
+    const cancel = await staking.send(admin, 'cancelEmergency', []);
+    check(cancel.ok, 'MOCK: emergency remains cancellable after the exit', `got ${cancel.revert}`);
+  }
+
   console.log('\n── MOCK :: circuit breaker ─────────────────────────────────────────────────');
   {
     const w = await world();
@@ -1099,9 +1160,10 @@ async function scalingStudy() {
     xsE.push(Math.log(Number(d))); ysE.push(Math.log(Number(p.stranded / 10n ** 12n)));
   }
   const fe = ols(xsE, ysE);
-  console.log(`     ⇒ stranded ∝ Δt^${fe.beta.toFixed(3)}   (R²=${fe.r2.toFixed(4)})`);
-  check(Math.abs(fe.beta) < 0.15, 'SCALING: emission stranding does not grow with the empty window',
-        `β = ${fe.beta.toFixed(3)} (R²=${fe.r2.toFixed(4)}) — exactly linear ⇒ deterministic loss at REWARD_PER_SEC`);
+  console.log(`     ⇒ stranded ∝ Δt^${fe.beta.toFixed(3)}   (R²=${fe.r2.toFixed(4)})  [linear BY DESIGN]`);
+  check(fe.beta > 0.95 && fe.beta < 1.05 && fe.r2 > 0.999,
+        'SCALING: empty-window emission is skipped deterministically at exactly REWARD_PER_SEC',
+        `β = ${fe.beta.toFixed(3)} (R²=${fe.r2.toFixed(4)}) — expected exactly 1.000`);
 
   // (c) CONTROL — the solvency residual under a clean, continuously-populated timeline.
   //     If the harness itself leaked, this would scale too. It must stay flat at dust level.
@@ -1135,9 +1197,9 @@ mr.driver = await MR_driver();
 mr.add = await MR_additivity();
 mr.jit = await MR_jit();
 mr.boost = await MR_boost();
-mr.rateCeil = await MR_rateCeiling();
+mr.rateCurve = await rateCurveReach();
 mr.stale = await MR_stale();
-mr.closure = await MR_closure();
+mr.closure = await exitClosure();
 mr.emission = await MR_emission();
 
 await mockScenarios();

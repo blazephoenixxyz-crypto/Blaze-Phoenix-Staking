@@ -168,6 +168,14 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
     uint256 public accPureYieldPerShare;
     uint256 public lastRewardTime;
 
+    // Cumulative interest per unit of debt (WAD). Advanced by `_updateInterestIndex` BEFORE any
+    // state change that can move the rate, so each slice of elapsed time is stamped with the rate
+    // that actually prevailed across it. A borrower's charge is then read off the difference
+    // between two checkpoints and cannot be re-priced after the fact by whoever happens to touch
+    // the position.
+    uint256 public accInterestPerDebt;
+    uint256 public lastInterestTime;
+
     uint256 public totalRewardsPaid;
     uint256 public totalRewardDistributed;
     uint256 public totalInterestAccruedGlobal;
@@ -208,6 +216,7 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
         uint256 rewardDebt;
         uint256 pureYieldDebt;
         uint256 lastAccrueTime;
+        uint256 interestIndex;      // checkpoint into accInterestPerDebt
         uint256 trackedBoostedEffective;
         uint256 trackedBoostedPure;
         uint64  depositBlock;
@@ -229,6 +238,7 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
     event RewardClaimed      (address indexed user, uint256 amount);
     event PureYieldClaimed   (address indexed user, uint256 amount);
     event ReserveWithdrawn   (address indexed to, uint256 amount);
+    event UndistributedEmissionSwept(address indexed to, uint256 amount);
     event LockSet            (address indexed user, uint256 lockDays, uint256 unlockTime, uint256 boostBps);
     event LockExpired        (address indexed user);
     event EmergencyDeclared  (address indexed by, uint256 timestamp, bool permissionless);
@@ -259,6 +269,7 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
     error Staking__NotSelf();
     error Staking__InvariantBreached();
     error Staking__NoBreach();
+    error Staking__EmissionNotEnded();
 
     // ── Guards ────────────────────────────────────────────────────────────────────────────
     /// @dev PER-TRANSACTION value conservation (not absolute). Snapshots the real balance and
@@ -294,6 +305,7 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
         emissionStart = block.timestamp;
         emissionEnd   = block.timestamp + EMISSION_PERIOD;
         lastRewardTime = block.timestamp;
+        lastInterestTime = block.timestamp;
         lastMaintTime  = block.timestamp;
         _grantRole(DEFAULT_ADMIN_ROLE, msg.sender);
         _grantRole(ROLE_ADMIN, msg.sender);
@@ -342,6 +354,34 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
         protocolReserve -= amount_;
         if (!ML.rawTransfer(bzpx, treasury, amount_)) revert Staking__TransferFailed();
         emit ReserveWithdrawn(treasury, amount_);
+    }
+
+    /// @notice After the emission programme has ended, return whatever emission could never be
+    ///         distributed to the treasury.
+    ///
+    ///         Emission is a pure function of time and the accumulator deliberately does not
+    ///         advance while nothing is earning — that is what stops a latecomer harvesting a
+    ///         backlog they were never exposed to, and it stays exactly as it is. The consequence
+    ///         is that an empty window leaves `REWARD_PER_SEC x empty_seconds` in `rewardReserve`
+    ///         with no recipient: past `emissionEnd` the accumulator can never advance again,
+    ///         `deposit` is closed, and `withdrawReserve` is bounded by `protocolReserve`. Without
+    ///         this function those tokens are owed to nobody and reachable by nobody, and `_owed()`
+    ///         overstates real liabilities by that amount for the rest of the contract's life —
+    ///         which would distort `collateralRatio()` and `solvency()`, the two interfaces offered
+    ///         as trustless verification.
+    ///
+    ///         `_updateGlobal()` runs first so every token that is still legitimately payable is
+    ///         settled into the accumulator before the remainder is treated as undistributable.
+    function sweepUndistributedEmission()
+        external nonReentrant onlyRole(ROLE_ADMIN) whenNotEmergency conserves
+    {
+        if (block.timestamp < emissionEnd) revert Staking__EmissionNotEnded();
+        _updateGlobal();
+        uint256 residue = rewardReserve;
+        if (residue == 0) revert Staking__ZeroAmount();
+        rewardReserve = 0;
+        if (!ML.rawTransfer(bzpx, treasury, residue)) revert Staking__TransferFailed();
+        emit UndistributedEmissionSwept(treasury, residue);
     }
 
     function pause()   external onlyRole(ROLE_GUARDIAN) { _pause();   }
@@ -393,11 +433,24 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
     ///         contract is in a breached state.
     function emergencyWithdraw() external nonReentrant {
         if (!emergencyMode) revert Staking__EmergencyNotActive();
+        _updateInterestIndex();      // stamp the slice before the ledger terms move
         UserInfo storage u = _users[msg.sender];
         uint256 principal = u.staked;
         if (principal == 0) revert Staking__NoStake();
         uint256 debt   = u.debt;
         uint256 payout = principal > debt ? principal - debt : 0;
+
+        // An under-water exit realises a loss, exactly as a liquidation does. Removing more debt
+        // than collateral shrinks the `− totalDebt` term of `_owed()` with nothing to offset it,
+        // so the shortfall MUST be recorded here for the identity to survive the exit:
+        //     Δowed = −principal − covered + debt − (badDebt − covered) = 0
+        // This mirrors `_executeLiquidation`, which has always handled the same event correctly.
+        if (debt > principal) {
+            uint256 badDebt = debt - principal;
+            uint256 covered = badDebt > protocolReserve ? protocolReserve : badDebt;
+            protocolReserve -= covered;
+            unchecked { totalBadDebt += (badDebt - covered); }
+        }
 
         totalStaked = totalStaked > principal ? totalStaked - principal : 0;
         if (debt > 0) { totalDebt = totalDebt > debt ? totalDebt - debt : 0; _removeBorrower(msg.sender); }
@@ -461,6 +514,21 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
             // forge-lint: disable-next-line(unsafe-typecast)
             u.lockDays   = uint16(lockDays_);
             emit LockSet(msg.sender, lockDays_, newUnlock, boostByDays(lockDays_));
+        } else {
+            // The longer existing lock is kept — that semantics is deliberate and unchanged. What
+            // must NOT survive is the stored duration: boost is the price of illiquidity, so the
+            // multiplier has to describe the commitment that actually remains on the capital, not
+            // one the wallet committed to at some earlier point. Re-keying `lockDays` to the real
+            // remainder is what makes two positions with the same principal and the same unlock
+            // timestamp receive the same multiplier.
+            //
+            // `unlockTime` is untouched, so nothing here shortens anybody's lock. The remainder is
+            // >= lockDays_ >= MIN_LOCK_DAYS (this branch only runs when the existing unlock is the
+            // later one) and <= MAX_LOCK_DAYS, so the uint16 cast cannot truncate.
+            uint256 remainingDays = (uint256(u.unlockTime) - block.timestamp) / 1 days;
+            // forge-lint: disable-next-line(unsafe-typecast)
+            u.lockDays = uint16(remainingDays);
+            emit LockSet(msg.sender, remainingDays, u.unlockTime, boostByDays(remainingDays));
         }
         _addLocker(msg.sender);   // idempotent: a shorter top-up inherits (and stays under) the live lock
 
@@ -542,6 +610,7 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
 
         if (u.staked < amount_) revert Staking__InsufficientStake();
 
+        _updateInterestIndex();      // price the elapsed slice before totalStaked moves the rate
         u.staked    -= amount_;
         totalStaked -= amount_;
 
@@ -1039,14 +1108,50 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
     }
 
     // ── interest ──────────────────────────────────────────────────────────────────────────
-    function _accrueInterestFor(address user_) internal {
-        UserInfo storage u = _users[user_];
-        if (u.debt == 0) { u.lastAccrueTime = block.timestamp; return; }
-        uint256 elapsed = block.timestamp - u.lastAccrueTime;
-        if (elapsed == 0) return;
 
-        uint256 interest = ML.mulDivSafe(ML.mulDivSafe(u.debt, _interestRate(), 10_000), elapsed, SECONDS_PER_YEAR);
+    /// @dev Stamp the elapsed slice with the rate that prevailed across it, then move the clock.
+    ///      Moves no value and touches no balance, so it is conservation-neutral and safe to call
+    ///      from anywhere. It MUST be called before any write to `totalDebt` or `totalStaked`:
+    ///      those are the only inputs to `_interestRate()`, so calling it first is what guarantees
+    ///      the rate being stamped is the one that was actually in force for the whole slice.
+    ///
+    ///      Without this, a whole elapsed backlog would be priced at whatever the rate happened to
+    ///      be at the instant somebody realised it — and since `borrow`, `repay` and `withdraw` all
+    ///      move the rate before sweeping OTHER people's positions, the caller of a single
+    ///      transaction could choose the rate at which months of somebody else's accrued interest
+    ///      was charged against their collateral.
+    ///      `mulDivSafe` throughout, deliberately. Utilisation is NOT bounded near the base of the
+    ///      curve: the first borrow on a debt-free position already reaches 50%, and interest is
+    ///      charged against collateral, so utilisation climbs on its own and can cross the 80%
+    ///      kink into the steep branch. The rate can therefore become very large, and this path
+    ///      sits underneath `deposit`, `borrow`, `repay`, `claim` and the maintenance sweep — it
+    ///      must degrade to charging nothing rather than revert, or those entry points would
+    ///      freeze exactly when the protocol is already under stress. This mirrors the saturating
+    ///      arithmetic the per-user charge has always used.
+    function _updateInterestIndex() internal {
+        uint256 elapsed = block.timestamp - lastInterestTime;
+        if (elapsed == 0) return;
+        lastInterestTime = block.timestamp;
+        uint256 delta = ML.mulDivSafe(ML.mulDivSafe(WAD, _interestRate(), 10_000), elapsed, SECONDS_PER_YEAR);
+        if (delta == 0) return;
+        // Checked on purpose: a wrapped accumulator would silently mis-price every outstanding
+        // position, which is strictly worse than reverting. Reaching uint256 max here needs on the
+        // order of 1e32 accruals, so this is unreachable in practice.
+        accInterestPerDebt += delta;
+    }
+
+    function _accrueInterestFor(address user_) internal {
+        _updateInterestIndex();
+        UserInfo storage u = _users[user_];
+        // A debt-free position simply re-checkpoints: it must never inherit index growth that
+        // accumulated while it owed nothing.
+        if (u.debt == 0) { u.lastAccrueTime = block.timestamp; u.interestIndex = accInterestPerDebt; return; }
+        uint256 idxDelta = accInterestPerDebt - u.interestIndex;
         u.lastAccrueTime = block.timestamp;
+        u.interestIndex  = accInterestPerDebt;
+        if (idxDelta == 0) return;
+
+        uint256 interest = ML.mulDivSafe(u.debt, idxDelta, WAD);
         if (interest == 0) return;
 
         if (interest > u.staked) {
