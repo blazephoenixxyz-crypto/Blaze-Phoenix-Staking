@@ -433,7 +433,7 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
     ///         contract is in a breached state.
     function emergencyWithdraw() external nonReentrant {
         if (!emergencyMode) revert Staking__EmergencyNotActive();
-        _updateInterestIndex();      // stamp the slice before the ledger terms move
+        _accrueInterestFor(msg.sender);   // attribute what this position already owes before exiting
         UserInfo storage u = _users[msg.sender];
         uint256 principal = u.staked;
         if (principal == 0) revert Staking__NoStake();
@@ -1068,6 +1068,9 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
     //  EMISSION ACCUMULATOR — deterministic (empty intervals advance the clock)
     // ════════════════════════════════════════════════════════════════════════════════════
     function _updateGlobal() internal {
+        // Both accumulators advance on the same clock, and this runs first in every entry point,
+        // so no settle or checkpoint can ever observe a half-advanced book.
+        _updateInterestIndex();
         uint256 tbe = totalBoostedEffective;
         if (tbe == 0) { lastRewardTime = block.timestamp; return; } // no backlog capture
         uint256 t       = block.timestamp < emissionEnd ? block.timestamp : emissionEnd;
@@ -1132,12 +1135,37 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
         uint256 elapsed = block.timestamp - lastInterestTime;
         if (elapsed == 0) return;
         lastInterestTime = block.timestamp;
+        uint256 debtNow = totalDebt;
+        if (debtNow == 0) return;
+
         uint256 delta = ML.mulDivSafe(ML.mulDivSafe(WAD, _interestRate(), 10_000), elapsed, SECONDS_PER_YEAR);
         if (delta == 0) return;
         // Checked on purpose: a wrapped accumulator would silently mis-price every outstanding
         // position, which is strictly worse than reverting. Reaching uint256 max here needs on the
         // order of 1e32 accruals, so this is unreachable in practice.
         accInterestPerDebt += delta;
+
+        // The slice of interest the whole book generated over `elapsed`, settled NOW against the
+        // denominators that existed NOW. Distribution and collection move together, so the ledger
+        // never claims more than it holds:
+        //     Δowed = −slice + reserveCut + toPool = 0,   Δbalance = 0
+        uint256 slice = ML.mulDivSafe(debtNow, delta, WAD);
+        if (slice == 0) return;
+        if (slice > totalStaked) slice = totalStaked;
+        totalStaked -= slice;
+
+        uint256 reserveCut = ML.mulDiv(slice, RESERVE_FACTOR_BPS, 10_000);
+        uint256 toPool     = slice - reserveCut;
+        protocolReserve   += reserveCut;
+        if (toPool > 0) {
+            if (totalBoostedPure > 0) {
+                accPureYieldPerShare   += ML.mulDiv(toPool, WAD, totalBoostedPure);
+                totalRewardDistributed += toPool;
+            } else {
+                protocolReserve += toPool;
+            }
+        }
+        unchecked { totalInterestAccruedGlobal += slice; }
     }
 
     function _accrueInterestFor(address user_) internal {
@@ -1158,21 +1186,10 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
             unchecked { totalUncollectedInterest += (interest - u.staked); }
             interest = u.staked;
         }
-        u.staked    -= interest;
-        totalStaked -= interest;
-
-        uint256 reserveCut = ML.mulDiv(interest, RESERVE_FACTOR_BPS, 10_000);
-        uint256 toPool     = interest - reserveCut;
-        protocolReserve   += reserveCut;
-        if (toPool > 0) {
-            if (totalBoostedPure > 0) {
-                accPureYieldPerShare   += ML.mulDiv(toPool, WAD, totalBoostedPure);
-                totalRewardDistributed += toPool;
-            } else {
-                protocolReserve += toPool;
-            }
-        }
-        unchecked { totalInterestAccruedGlobal += interest; }
+        // ATTRIBUTION ONLY. The global side — totalStaked, the reserve cut and the pure-staker
+        // credit — was already settled by `_updateInterestIndex` at the moment the interest
+        // economically accrued. Touching them again here would double-count.
+        u.staked -= interest;
         emit InterestAccrued(user_, interest, u.staked);
     }
 
