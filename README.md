@@ -265,6 +265,8 @@ bug bounty programme.
 
 Full write-up of the v3.1 remediation in
 [docs/VERSION_HISTORY.md](./docs/VERSION_HISTORY.md#v31--bp-2026-001-stale-boost-persistence-in-pure-stakers).
+What the findings had in common, and the design rules drawn from them, in
+[docs/INVARIANTS_AND_TIME.md](./docs/INVARIANTS_AND_TIME.md).
 
 ## Licence & Whitepaper
 
