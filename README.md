@@ -231,15 +231,15 @@ protocol's invariant suite. Severity is ours, assigned after reproduction and re
 | ID | Finding | Severity | Status | Reporter |
 |---|---|---|---|---|
 | BP-2026-001 | Expired lock boost persists for idle pure stakers — yield misallocation | **High** | Fixed in v3.1.0 | **[NetGakarot](https://github.com/NetGakarot)** ("Gakarot") |
-| BP-2026-002 | JIT stakers capture previously accrued borrower interest | **Medium** | Open | **[NetGakarot](https://github.com/NetGakarot)** ("Gakarot") |
+| BP-2026-002 | JIT stakers capture previously accrued borrower interest | **Medium** | Fixed | **[NetGakarot](https://github.com/NetGakarot)** ("Gakarot") |
 | BP-2026-003 | Stale committed lock duration in `deposit()` grants an unearned multiplier | **High** | Fixed | **[amitbhakar](https://github.com/amitbhakar)** |
 | BP-2026-004 | `emergencyWithdraw()` does not record bad debt on an under-water exit | **Medium** | Fixed | **[amitbhakar](https://github.com/amitbhakar)** |
 | BP-2026-005 | Borrower interest priced at a rate the caller sets in the same transaction | **High** | Fixed | **[AmanDara1](https://github.com/AmanDara1)** |
 | BP-2026-006 | Emission accrued while the pool is empty is never redistributed | **Medium** | Fixed | **[AmanDara1](https://github.com/AmanDara1)** |
 
-BP-2026-002 remains open: its remediation requires distributing borrower interest continuously
-rather than in lumps at realisation, which restructures how the conservation identity is
-maintained. It is being handled as its own piece of work rather than rushed alongside the rest.
+All six are now closed. The last one, BP-2026-002, needed borrower interest to be distributed
+continuously rather than in lumps at realisation — the same treatment emission already had — so
+that a share of a distribution can only ever reach participants who were present while it accrued.
 
 **A note on what all six have in common.** Every one of them lives on the time axis. When this
 protocol was built around a Master Conservation Identity, the working assumption was explicit:

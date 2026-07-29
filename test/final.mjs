@@ -977,6 +977,91 @@ async function mockScenarios() {
     check(cancel.ok, 'MOCK: emergency remains cancellable after the exit', `got ${cancel.revert}`);
   }
 
+  console.log('\n── ADVERSARIAL :: no double-counting of interest ───────────────────────────');
+  {
+    const w = await world();
+    const { staking, chain, users } = w;
+    await staking.send(users[0], 'deposit', [E18(15_000_000), 365]);
+    for (let i = 1; i <= 3; i++) {
+      await staking.send(users[i], 'deposit', [E18(10_000_000), 365]); chain.mine(11);
+      const inf = await staking.call('getUserInfo', [users[i].hex]);
+      await staking.send(users[i], 'borrow', [BigInt(inf[3])]);
+    }
+    const col0 = []; for (let i = 1; i <= 3; i++) col0.push(BigInt((await staking.call('getUserInfo', [users[i].hex]))[0]));
+    const p0 = await probe(w);
+    chain.warp(300n * DAY); chain.mine(11);
+    // touch every borrower repeatedly: a position swept twice must not be charged twice
+    for (let k = 0; k < 3; k++) for (let i = 1; i <= 3; i++) await staking.send(users[i], 'repay', [1n]);
+    let charged = 0n;
+    for (let i = 1; i <= 3; i++) charged += col0[i - 1] - BigInt((await staking.call('getUserInfo', [users[i].hex]))[0]);
+    const p1 = await probe(w);
+    const globalDrop = p0.totalStaked - p1.totalStaked;
+    console.log(`     attributed to borrowers ${fmt(charged)} | global totalStaked drop ${fmt(globalDrop)}`);
+    const diff = charged > globalDrop ? charged - globalDrop : globalDrop - charged;
+    check(diff <= E18(2), 'ADVERSARIAL: per-borrower attribution matches the global reduction',
+          `attributed ${fmt(charged)} vs global ${fmt(globalDrop)} (Δ ${fmt(diff)})`);
+    check(p1.solvencyResidual <= DUST, 'ADVERSARIAL: repeated sweeps keep the identity',
+          `residual ${p1.solvencyResidual}`);
+  }
+
+  console.log('\n── ADVERSARIAL :: no phantom collateral, exits always clear ────────────────');
+  {
+    const w = await world();
+    const { staking, chain, users } = w;
+    await staking.send(users[0], 'deposit', [E18(20_000_000), 90]);   // debt-free
+    await staking.send(users[1], 'deposit', [E18(10_000_000), 365]); chain.mine(11);
+    const inf = await staking.call('getUserInfo', [users[1].hex]);
+    await staking.send(users[1], 'borrow', [BigInt(inf[3])]);
+    chain.warp(400n * DAY); chain.mine(11);                           // lock lapsed, interest piled up
+    const mine = BigInt((await staking.call('getUserInfo', [users[0].hex]))[0]);
+    const ts = BigInt(await staking.call('totalStaked'));
+    console.log(`     debt-free balance ${fmt(mine)} vs totalStaked ${fmt(ts)}`);
+    check(ts >= mine, 'ADVERSARIAL: totalStaked never falls below a single honest balance',
+          `totalStaked ${fmt(ts)} < balance ${fmt(mine)} would DoS the exit`);
+    const r = await staking.send(users[0], 'withdraw', [mine]);
+    check(r.ok, 'ADVERSARIAL: an untouched debt-free staker can always withdraw in full',
+          `withdraw reverted with ${r.revert}`);
+  }
+
+  console.log('\n── ADVERSARIAL :: JIT entering ahead of someone ELSE\'s transaction ────────');
+  {
+    // Harder than the self-triggered case: the newcomer does not drive the realisation at all.
+    const w = await world();
+    const { staking, chain, users } = w;
+    await staking.send(users[0], 'deposit', [E18(15_000_000), 365]);
+    await staking.send(users[1], 'deposit', [E18(10_000_000), 365]); chain.mine(11);
+    const inf = await staking.call('getUserInfo', [users[1].hex]);
+    await staking.send(users[1], 'borrow', [BigInt(inf[3])]);
+    chain.warp(60n * DAY); chain.mine(11);
+    await staking.send(users[4], 'deposit', [E18(30_000_000), 90]);   // JIT enters, drives nothing
+    const jitAtEntry = BigInt(await staking.call('pendingPureYield', [users[4].hex]));
+    await staking.send(users[2], 'deposit', [E18(1_000), 90]);        // SOMEONE ELSE realises
+    const jitAfter = BigInt(await staking.call('pendingPureYield', [users[4].hex]));
+    console.log(`     JIT pending at entry ${fmt(jitAtEntry)} → after a third party's tx ${fmt(jitAfter)}`);
+    check(jitAtEntry === 0n, 'ADVERSARIAL: a newcomer holds zero historical yield on entry',
+          `held ${fmt(jitAtEntry)}`);
+    check(jitAfter < E18(1), 'ADVERSARIAL: a third-party transaction cannot back-pay the newcomer',
+          `newcomer gained ${fmt(jitAfter)} from a window it was absent for`);
+  }
+
+  console.log('\n── ADVERSARIAL :: direct token donation ────────────────────────────────────');
+  {
+    const w = await world();
+    const { staking, token, users, admin } = w;
+    await staking.send(users[0], 'deposit', [E18(5_000_000), 365]);
+    const p0 = await probe(w);
+    await token.send(admin, 'transfer', [staking.addr.toString(), E18(1_000_000)]);
+    const p1 = await probe(w);
+    console.log(`     donated 1,000,000 → backing ${fmt(p0.backing)}→${fmt(p1.backing)}, owed ${fmt(p0.owed)}→${fmt(p1.owed)}`);
+    check(p1.owed === p0.owed, 'ADVERSARIAL: a donation does not inflate what the protocol owes',
+          `owed moved by ${fmt(p1.owed - p0.owed)}`);
+    check(p1.solvencyResidual < p0.solvencyResidual || p1.solvencyResidual <= 0n,
+          'ADVERSARIAL: a donation can only improve the solvency margin');
+    const stillOk = await staking.send(users[0], 'claimRewards', []);
+    check(stillOk.ok, 'ADVERSARIAL: the protocol keeps working after an unsolicited transfer',
+          `reverted with ${stillOk.revert}`);
+  }
+
   console.log('\n── MOCK :: circuit breaker ─────────────────────────────────────────────────');
   {
     const w = await world();
