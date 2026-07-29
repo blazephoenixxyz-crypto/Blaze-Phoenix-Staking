@@ -223,6 +223,8 @@ test/final.mjs    time-axis regression suite — randomised campaign, paired-exe
 test/vectors.mjs  canonical DeFi attack-vector suite — reentrancy via callback token,
                   dust-weight inflation, sweep starvation, Sybil split, liquidation
                   extraction, timestamp skew, rounding direction, registry bloat
+test/dimensions.mjs  state-dimension suite — liveness and anti-DoS, privilege
+                  boundaries, keeper incentives, and non-standard ERC20 behaviour
 test/BlazePhoenixStaking.t.sol   Foundry unit + fuzz + invariant suite
 ```
 
