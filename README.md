@@ -218,16 +218,47 @@ src/BlazePhoenixMathLib.sol   512-bit mulDiv + raw token calls   (VERSION "3.0.0
 test/run.mjs      integrity + edge-case suite   (real EVM, offline)
 test/attack.mjs   adversarial suite — 16 exploit vectors, all defeated
 test/boost.mjs    stale-boost / lock-expiry suite — BP-2026-001 regression
+test/final.mjs    time-axis regression suite — randomised campaign, paired-execution
+                  properties, scaling study, and mock-token behavioural coverage
+test/vectors.mjs  canonical DeFi attack-vector suite — reentrancy via callback token,
+                  dust-weight inflation, sweep starvation, Sybil split, liquidation
+                  extraction, timestamp skew, rounding direction, registry bloat
 test/BlazePhoenixStaking.t.sol   Foundry unit + fuzz + invariant suite
 ```
 
-## Security credits
+## 🏆 Security Hall of Fame
 
-| ID | Finding | Reporter |
-|---|---|---|
-| BP-2026-001 | Stale boost persistence in pure stakers (yield misallocation; solvency unaffected) | **[NetGakarot](https://github.com/NetGakarot)** ("Gakarot"), 28 Jul 2026 |
+Every finding below was disclosed responsibly, reproduced on our side, and triaged against the
+protocol's invariant suite. Severity is ours, assigned after reproduction and reachability testing.
 
-Full write-up, including the reporter's own remediation and what v3.1 added on top of it, in
+| ID | Finding | Severity | Status | Reporter |
+|---|---|---|---|---|
+| BP-2026-001 | Expired lock boost persists for idle pure stakers — yield misallocation | **High** | Fixed in v3.1.0 | **[NetGakarot](https://github.com/NetGakarot)** ("Gakarot") |
+| BP-2026-002 | JIT stakers capture previously accrued borrower interest | **Medium** | Fixed | **[NetGakarot](https://github.com/NetGakarot)** ("Gakarot") |
+| BP-2026-003 | Stale committed lock duration in `deposit()` grants an unearned multiplier | **High** | Fixed | **[amitbhakar](https://github.com/amitbhakar)** |
+| BP-2026-004 | `emergencyWithdraw()` does not record bad debt on an under-water exit | **Medium** | Fixed | **[amitbhakar](https://github.com/amitbhakar)** |
+| BP-2026-005 | Borrower interest priced at a rate the caller sets in the same transaction | **High** | Fixed | **[AmanDara1](https://github.com/AmanDara1)** |
+| BP-2026-006 | Emission accrued while the pool is empty is never redistributed | **Medium** | Fixed | **[AmanDara1](https://github.com/AmanDara1)** |
+| BP-2026-007 | A dust position alone in the pool absorbs the whole emission schedule | **Medium** | Fixed | internal |
+
+All six are now closed. The last one, BP-2026-002, needed borrower interest to be distributed
+continuously rather than in lumps at realisation — the same treatment emission already had — so
+that a share of a distribution can only ever reach participants who were present while it accrued.
+
+**A note on what all six have in common.** Every one of them lives on the time axis. When this
+protocol was built around a Master Conservation Identity, the working assumption was explicit:
+conservation invariants pin down *how much* value exists, but they say nothing about *when* it was
+earned or *who was present while it accrued*. A ledger can balance to the wei on every single block
+and still hand the wrong person the money. That is exactly the seam these researchers worked, and
+every finding here redistributes value between participants without ever breaking the books — which
+is precisely why the conservation guard never fired.
+
+To each of the researchers above: **thank you.** This is genuinely good work, clearly written and
+reproducible, and the protocol is materially better for it. Please email
+**contact@blazephoenix.xyz** with your GitHub handle so we can add you to the list for the upcoming
+bug bounty programme.
+
+Full write-up of the v3.1 remediation in
 [docs/VERSION_HISTORY.md](./docs/VERSION_HISTORY.md#v31--bp-2026-001-stale-boost-persistence-in-pure-stakers).
 
 ## Licence & Whitepaper
