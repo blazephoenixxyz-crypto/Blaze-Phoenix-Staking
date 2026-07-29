@@ -14,16 +14,15 @@ import {ReentrancyGuard}            from "@openzeppelin/contracts/utils/Reentran
 /// @dev    v3 — "Autonomous + Provably Solvent". Built on the v2 security core, with two
 ///         additions the protocol is designed around.
 ///
-///         v3.1 — SECURITY CREDIT. The lock-expiry model below (boost priced against the clock,
-///         plus the locker maintenance window that carries the correction to idle positions) exists
-///         because of BP-2026-001, disclosed 28 July 2026 by **NetGakarot** ("Gakarot"). He found
-///         that `_autoMaintain` swept `_borrowers` only — and a pure staker (debt == 0) is never in
-///         that array — so an idle staker whose lock had expired kept its historical multiplier in
-///         the global reward denominators indefinitely, drawing an oversized share of every ongoing
+///         v3.1 — the lock-expiry model below (boost priced against the clock, plus the locker
+///         maintenance window that carries the correction to idle positions) closes BP-2026-001:
+///         `_autoMaintain` swept `_borrowers` only — and a pure staker (debt == 0) is never in that
+///         array — so an idle staker whose lock had expired kept its historical multiplier in the
+///         global reward denominators indefinitely, drawing an oversized share of every ongoing
 ///         distribution from the stakers who were still committed. Solvency was never reachable
 ///         (boost is a denominator weight, never a claim on value), but the lock had lost its
-///         economic meaning. The root-cause analysis and the real-time expiry check in
-///         `_computeBoost` are his; this version implements them and adds the propagation half.
+///         economic meaning. Reporter credit for every disclosed finding is kept in the Hall of
+///         Fame in README.md, not in this file.
 ///
 ///     ┌────────────────────────────────────────────────────────────────────────────────┐
 ///     │  THE MASTER CONSERVATION IDENTITY  (the single equation the whole book obeys)    │
