@@ -347,6 +347,11 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
     function fundEmission(uint256 amount_) external nonReentrant onlyRole(ROLE_ADMIN) conserves {
         if (amount_ == 0) revert Staking__ZeroAmount();
         if (totalEmissionFunded + amount_ > TOTAL_REWARDS) revert Staking__CapExceeded();
+        // Settle the clock against the PRE-funding reserve. `_updateGlobal` caps each slice at
+        // whatever `rewardReserve` holds, so a window that ran with nothing behind it accrues
+        // nothing — but only if it is settled before the new funding lands. Without this, topping
+        // the reserve up later retroactively pays out a window the protocol could not have paid.
+        _updateGlobal();
         if (!ML.rawTransferFrom(bzpx, msg.sender, address(this), amount_)) revert Staking__TransferFailed();
         totalEmissionFunded += amount_;
         rewardReserve       += amount_;
@@ -558,9 +563,7 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
         _processLockExpiry(msg.sender);
 
         UserInfo storage u = _users[msg.sender];
-        uint256 effective = u.staked > u.debt ? u.staked - u.debt : 0; // LTV on EFFECTIVE stake
-        uint256 maxBorrow = ML.mulDiv(effective, MAX_LTV, 100);
-        if (u.debt + amount_ > maxBorrow) revert Staking__LTVExceeded();
+        if (u.debt + amount_ > _ltvCap(u)) revert Staking__LTVExceeded();   // LTV on EFFECTIVE stake
 
         bool wasZeroDebt = (u.debt == 0);
         u.debt          += amount_;
@@ -1219,7 +1222,7 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
 
     function _computeBoost(UserInfo storage u) internal view returns (uint256 be, uint256 bp) {
         uint256 boost = boostByDays(_effectiveLockDays(u));
-        uint256 effective = u.staked > u.debt ? u.staked - u.debt : 0;
+        uint256 effective = _effective(u);
         be = effective == 0 ? 0 : ML.mulDiv(effective, boost, BOOST_BASE);
         bp = (u.debt == 0 && u.staked > 0) ? ML.mulDiv(u.staked, boost, BOOST_BASE) : 0;
     }
@@ -1373,18 +1376,29 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
     // ════════════════════════════════════════════════════════════════════════════════════
     //  VIEWS
     // ════════════════════════════════════════════════════════════════════════════════════
-    function effectiveStakeOf(address user_) external view returns (uint256) {
-        UserInfo storage u = _users[user_];
+    /// @dev SINGLE SOURCE. `borrow` and every view that publishes a borrowing limit or a health
+    ///      reading route through these, so a quoted maximum can never be a figure the borrow
+    ///      path would reject.
+    function _effective(UserInfo storage u) internal view returns (uint256) {
         return u.staked > u.debt ? u.staked - u.debt : 0;
+    }
+    function _ltvCap(UserInfo storage u) internal view returns (uint256) {
+        return ML.mulDiv(_effective(u), MAX_LTV, 100);
+    }
+    function _health(UserInfo storage u) internal view returns (uint256) {
+        if (u.staked == 0 || u.debt == 0) return WAD;
+        if (u.debt >= u.staked)           return 0;
+        return ML.mulDiv(u.staked - u.debt, WAD, u.staked);
+    }
+
+    function effectiveStakeOf(address user_) external view returns (uint256) {
+        return _effective(_users[user_]);
     }
     function totalEffectiveStaked() external view returns (uint256) {
         return totalStaked > totalDebt ? totalStaked - totalDebt : 0;
     }
     function healthFactor(address user_) external view returns (uint256) {
-        UserInfo storage u = _users[user_];
-        if (u.staked == 0 || u.debt == 0) return WAD;
-        if (u.debt >= u.staked)           return 0;
-        return ML.mulDiv(u.staked - u.debt, WAD, u.staked);
+        return _health(_users[user_]);
     }
     function _daysToLiqInternal(UserInfo storage u) internal view returns (uint256) {
         if (u.debt == 0 || u.staked == 0)             return type(uint256).max;
@@ -1402,8 +1416,7 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
     }
     function maxBorrowOf(address user_) external view returns (uint256) {
         UserInfo storage u = _users[user_];
-        uint256 effective = u.staked > u.debt ? u.staked - u.debt : 0;
-        uint256 cap = ML.mulDiv(effective, MAX_LTV, 100);
+        uint256 cap = _ltvCap(u);
         return cap > u.debt ? cap - u.debt : 0;
     }
     function remainingStakeCapacity(address user_) external view returns (uint256) {
@@ -1468,26 +1481,43 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
         aprBps = ML.mulDiv(grossBps, 10_000 - RESERVE_FACTOR_BPS, 10_000);
     }
     function pendingRewards(address user_) external view returns (uint256) {
-        UserInfo storage u = _users[user_];
-        if (u.trackedBoostedEffective == 0) return 0;
-        uint256 acc = accRewardPerShare;
-        if (totalBoostedEffective > 0) {
-            uint256 t = block.timestamp < emissionEnd ? block.timestamp : emissionEnd;
-            uint256 elapsed = t > lastRewardTime ? t - lastRewardTime : 0;
-            if (elapsed > 0) {
-                uint256 r = REWARD_PER_SEC * elapsed;
-                if (r > rewardReserve) r = rewardReserve;
-                acc += ML.mulDiv(r, WAD, totalBoostedEffective);
-            }
-        }
-        uint256 gross = ML.mulDiv(u.trackedBoostedEffective, acc, WAD);
-        return gross > u.rewardDebt ? gross - u.rewardDebt : 0;
+        return _pendingReward(_users[user_]);
     }
-    function pendingPureYield(address user_) external view returns (uint256) {
-        UserInfo storage u = _users[user_];
+    /// @dev SINGLE SOURCE. Every view that publishes an entitlement routes through these two, so
+    ///      the aggregate report and the standalone getters are structurally unable to disagree.
+    ///      Both project the un-settled slice, so a quote read in a block equals what a claim in
+    ///      that same block pays.
+    function _pendingReward(UserInfo storage u) internal view returns (uint256) {
+        if (u.trackedBoostedEffective == 0 || totalBoostedEffective == 0) return 0;
+        uint256 acc = accRewardPerShare;
+        uint256 t = block.timestamp < emissionEnd ? block.timestamp : emissionEnd;
+        uint256 elapsed = t > lastRewardTime ? t - lastRewardTime : 0;
+        if (elapsed > 0 && totalBoostedEffective >= MIN_EMISSION_WEIGHT) {
+            uint256 r = REWARD_PER_SEC * elapsed;
+            if (r > rewardReserve) r = rewardReserve;
+            acc += ML.mulDiv(r, WAD, totalBoostedEffective);
+        }
+        uint256 g = ML.mulDiv(u.trackedBoostedEffective, acc, WAD);
+        return g > u.rewardDebt ? g - u.rewardDebt : 0;
+    }
+
+    function _pendingPure(UserInfo storage u) internal view returns (uint256) {
         if (u.trackedBoostedPure == 0) return 0;
-        uint256 gross = ML.mulDiv(u.trackedBoostedPure, accPureYieldPerShare, WAD);
+        uint256 acc = accPureYieldPerShare;
+        uint256 elapsed = block.timestamp - lastInterestTime;
+        if (elapsed > 0 && totalDebt > 0 && totalBoostedPure > 0) {
+            uint256 d = ML.mulDivSafe(ML.mulDivSafe(WAD, _interestRate(), 10_000), elapsed, SECONDS_PER_YEAR);
+            uint256 slice = ML.mulDivSafe(totalDebt, d, WAD);
+            if (slice > totalStaked) slice = totalStaked;
+            uint256 toPool = slice - ML.mulDiv(slice, RESERVE_FACTOR_BPS, 10_000);
+            if (toPool > 0) acc += ML.mulDiv(toPool, WAD, totalBoostedPure);
+        }
+        uint256 gross = ML.mulDiv(u.trackedBoostedPure, acc, WAD);
         return gross > u.pureYieldDebt ? gross - u.pureYieldDebt : 0;
+    }
+
+    function pendingPureYield(address user_) external view returns (uint256) {
+        return _pendingPure(_users[user_]);
     }
     function getUserInfo(address user_) external view returns (
         uint256 staked, uint256 debt, uint256 effectiveStake, uint256 maxBorrowAvailable,
@@ -1497,10 +1527,10 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
     ) {
         UserInfo storage u = _users[user_];
         staked = u.staked; debt = u.debt;
-        effectiveStake = u.staked > u.debt ? u.staked - u.debt : 0;
-        uint256 cap = ML.mulDiv(effectiveStake, MAX_LTV, 100);
+        effectiveStake = _effective(u);
+        uint256 cap = _ltvCap(u);
         maxBorrowAvailable = cap > u.debt ? cap - u.debt : 0;
-        health = (u.staked == 0 || u.debt == 0) ? WAD : u.debt >= u.staked ? 0 : ML.mulDiv(u.staked - u.debt, WAD, u.staked);
+        health = _health(u);
         rateBps = _interestRate();
         daysLeft = _daysToLiqInternal(u);
         // `lockDays` / `unlockTime` report the commitment on record; `boostBps` reports what is
@@ -1510,22 +1540,8 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
         remainingCap = staked >= MAX_STAKE_PER_WALLET ? 0 : MAX_STAKE_PER_WALLET - staked;
         maxDaysNow = maxLockDaysAvailable();
 
-        if (u.trackedBoostedEffective > 0 && totalBoostedEffective > 0) {
-            uint256 t = block.timestamp < emissionEnd ? block.timestamp : emissionEnd;
-            uint256 elapsed = t > lastRewardTime ? t - lastRewardTime : 0;
-            uint256 acc = accRewardPerShare;
-            if (elapsed > 0) {
-                uint256 r = REWARD_PER_SEC * elapsed;
-                if (r > rewardReserve) r = rewardReserve;
-                acc += ML.mulDiv(r, WAD, totalBoostedEffective);
-            }
-            uint256 g = ML.mulDiv(u.trackedBoostedEffective, acc, WAD);
-            stakingRewards = g > u.rewardDebt ? g - u.rewardDebt : 0;
-        }
-        if (u.trackedBoostedPure > 0) {
-            uint256 g = ML.mulDiv(u.trackedBoostedPure, accPureYieldPerShare, WAD);
-            pureYield = g > u.pureYieldDebt ? g - u.pureYieldDebt : 0;
-        }
+        stakingRewards = _pendingReward(u);
+        pureYield      = _pendingPure(u);
     }
     function getGlobalStats() external view returns (
         uint256 totalStaked_, uint256 totalDebt_, uint256 totalBoostedEffective_, uint256 totalBoostedPure_,
