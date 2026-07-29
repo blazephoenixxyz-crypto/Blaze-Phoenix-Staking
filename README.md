@@ -220,6 +220,9 @@ test/attack.mjs   adversarial suite — 16 exploit vectors, all defeated
 test/boost.mjs    stale-boost / lock-expiry suite — BP-2026-001 regression
 test/final.mjs    time-axis regression suite — randomised campaign, paired-execution
                   properties, scaling study, and mock-token behavioural coverage
+test/vectors.mjs  canonical DeFi attack-vector suite — reentrancy via callback token,
+                  dust-weight inflation, sweep starvation, Sybil split, liquidation
+                  extraction, timestamp skew, rounding direction, registry bloat
 test/BlazePhoenixStaking.t.sol   Foundry unit + fuzz + invariant suite
 ```
 
@@ -236,6 +239,7 @@ protocol's invariant suite. Severity is ours, assigned after reproduction and re
 | BP-2026-004 | `emergencyWithdraw()` does not record bad debt on an under-water exit | **Medium** | Fixed | **[amitbhakar](https://github.com/amitbhakar)** |
 | BP-2026-005 | Borrower interest priced at a rate the caller sets in the same transaction | **High** | Fixed | **[AmanDara1](https://github.com/AmanDara1)** |
 | BP-2026-006 | Emission accrued while the pool is empty is never redistributed | **Medium** | Fixed | **[AmanDara1](https://github.com/AmanDara1)** |
+| BP-2026-007 | A dust position alone in the pool absorbs the whole emission schedule | **Medium** | Fixed | internal |
 
 All six are now closed. The last one, BP-2026-002, needed borrower interest to be distributed
 continuously rather than in lumps at realisation — the same treatment emission already had — so

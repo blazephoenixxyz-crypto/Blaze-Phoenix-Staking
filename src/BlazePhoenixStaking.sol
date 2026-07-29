@@ -101,6 +101,15 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
 
     uint256 public  constant MAX_STAKE_PER_WALLET = 30_000_000e18;
 
+    // Emission does not flow to a degenerate pool. The accumulator already declines to advance
+    // when nothing is earning, so that a latecomer cannot harvest a backlog they were never
+    // exposed to; a pool holding a single dust position is the same situation wearing a disguise.
+    // Without this floor, one wei staked alone absorbs the ENTIRE schedule for as long as it is
+    // the only position — 30 days of solitude is 1.17% of the whole 180,000,000 budget, bought
+    // for one wei. The skipped emission is not lost: it stays in `rewardReserve` and is
+    // recoverable by `sweepUndistributedEmission` once the programme ends.
+    uint256 public  constant MIN_EMISSION_WEIGHT  = 1_000e18;
+
     uint256 public  constant MAX_LTV              = 50;
     uint256 public  constant LIQ_THRESHOLD        = 95;
     uint256 public  constant LIQ_BONUS_BPS        = 500;   // 5% surplus -> paid to the gas-payer
@@ -1072,7 +1081,8 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
         // so no settle or checkpoint can ever observe a half-advanced book.
         _updateInterestIndex();
         uint256 tbe = totalBoostedEffective;
-        if (tbe == 0) { lastRewardTime = block.timestamp; return; } // no backlog capture
+        // Below the floor the pool is treated as empty: the clock advances, nothing accrues.
+        if (tbe < MIN_EMISSION_WEIGHT) { lastRewardTime = block.timestamp; return; } // no backlog capture
         uint256 t       = block.timestamp < emissionEnd ? block.timestamp : emissionEnd;
         uint256 elapsed = t > lastRewardTime ? t - lastRewardTime : 0;
         if (elapsed == 0) return;
