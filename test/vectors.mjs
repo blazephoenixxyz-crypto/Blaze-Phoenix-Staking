@@ -12,7 +12,7 @@ import { Chain, E18 } from './lib.mjs';
 import { ethers } from 'ethers';
 
 const DAY = 86400n, YEAR = 365n * DAY, MAX_UINT = (1n << 256n) - 1n;
-const DUST = 10n ** 10n;
+const DUST = 10n ** 10n, WAD = 10n ** 18n;
 const art = compileAll();
 
 let PASS = 0, FAIL = 0; const FAILURES = [];
@@ -86,8 +86,14 @@ console.log('\n── V2 :: first-depositor and dust-weight inflation ───�
   const dustRw = BigInt(await staking.call('pendingRewards', [users[0].hex]));
   const whaleRw = BigInt(await staking.call('pendingRewards', [users[1].hex]));
   console.log(`     1-wei first depositor pending: ${fmt(dustRw)}   whale pending: ${fmt(whaleRw)}`);
-  check(dustRw === 0n, 'V2: a dust-only pool accrues nothing, so nothing can be captured',
-        `dust position holds ${fmt(dustRw)} — it absorbed the schedule while alone`);
+  // The property is proportionality, not a hard zero. Emission below the throttle mark is scaled
+  // by weight, so a dust position earns dust rather than the whole schedule. Measured against the
+  // counterfactual it would have captured unthrottled.
+  const unthrottled = (180_000_000n * WAD / (7n * 365n * DAY)) * (30n * DAY);
+  console.log(`     unthrottled, that solitary window would have been worth ${fmt(unthrottled)}`);
+  console.log(`     dust actually captured ${dustRw} wei — a factor of ${dustRw === 0n ? '∞' : (Number(unthrottled / dustRw)).toExponential(2)} less`);
+  check(dustRw * 1_000_000_000_000n < unthrottled, 'V2: a dust position captures a negligible fraction of the schedule',
+        `dust took ${fmt(dustRw)} of a ${fmt(unthrottled)} window`);
   check(await solvent(staking) === true, 'V2: solvency intact');
 }
 

@@ -120,6 +120,18 @@ and the divergence was found only because a test rebuilt the number independentl
 duplicates also *reduced* the deployed bytecode, taking the contract from 243 bytes under the
 EIP-170 limit to 617. **Deduplication is a security measure, not a tidiness measure.**
 
+**R6 — Never express a guard as a cliff.**
+A predicate over a continuous quantity — *below this line, nothing; above it, everything* — hands
+a lever to anyone who can move the quantity across the line. Our own anti-dust guard was written
+that way, and it meant a large holder could stop emission for every remaining staker simply by
+leaving. The same protection expressed as a ramp, scaling the rate by `weight / mark` below the
+mark, removes the lever entirely: it is continuous, monotone, and has no point of leverage
+anywhere on its domain. A dust position earns dust, a small pool earns proportionally, and
+nobody's exit is anybody else's cliff edge.
+
+> Hard thresholds are brittle by construction. Wherever a guard must bound behaviour, prefer a
+> function that bends over a rule that snaps.
+
 ---
 
 ## 5. The dimension map
@@ -179,6 +191,13 @@ branch of the interest-rate curve. It survived only because we measured before d
 arithmetic in the interest path. Given that the rate can genuinely explode, that would have frozen
 `deposit`, `borrow`, `repay`, `claim` and the maintenance sweep precisely when the protocol was
 already under stress — a liveness failure introduced by a correctness fix.
+
+**A remediation that opened a fresh hole.** The anti-dust guard above was one of ours, and the
+griefing lever it created was found by attacking our own fixes rather than the original code. A
+separate disclosed finding was likewise a hole opened by an earlier remediation. Both point the
+same way: **a fix is a state change, and it deserves the scrutiny given to the code it replaced.**
+Regression suites usually ask whether old behaviour still works; the more valuable question is
+what surface the repair itself introduced.
 
 **Apparent defects that were not.** Several results that first read as protocol bugs turned out to
 be faults in how they were measured. Not one of them survived investigation.
