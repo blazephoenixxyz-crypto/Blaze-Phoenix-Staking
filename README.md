@@ -246,7 +246,7 @@ protocol's invariant suite. Severity is ours, assigned after reproduction and re
 | BP-2026-006 | Emission accrued while the pool is empty is never redistributed | **Medium** | Fixed | **[AmanDara1](https://github.com/AmanDara1)** |
 | BP-2026-007 | A dust position alone in the pool absorbs the whole emission schedule | **Medium** | Fixed | internal |
 
-All six are now closed. The last one, BP-2026-002, needed borrower interest to be distributed
+All eight are now closed. The last one, BP-2026-002, needed borrower interest to be distributed
 continuously rather than in lumps at realisation — the same treatment emission already had — so
 that a share of a distribution can only ever reach participants who were present while it accrued.
 

@@ -907,7 +907,12 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
             if (w.lockDays == 0) {
                 _removeLocker(who);                                  // prune; cursor holds
                 unchecked { ++acted; }
-            } else if (who != beneficiary && block.timestamp >= w.unlockTime) {
+            // NO self-exclusion here, deliberately. The borrower window excludes the beneficiary
+            // because liquidating your own position would pay you the keeper bonus. Normalising
+            // your own elapsed commitment pays nothing — it only releases weight you are no longer
+            // entitled to — so excluding the beneficiary here would let a position survive its own
+            // maintenance traffic indefinitely and keep drawing an oversized share.
+            } else if (block.timestamp >= w.unlockTime) {
                 try this.lockStep(who, beneficiary) {                // removes `who`; cursor holds
                     unchecked { ++acted; }
                 } catch {
