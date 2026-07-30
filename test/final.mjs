@@ -421,6 +421,75 @@ async function MR_boost() {
   return { aBoost, bBoost, remainingDays };
 }
 
+// ── SELF-MAINTENANCE ────────────────────────────────────────────────────────────────────
+//  A position must not be able to survive its own maintenance traffic. The autonomous engine
+//  runs on the back of ordinary transactions, so if the carrier of a sweep is excluded from it,
+//  the busiest participant is the one least likely ever to be normalised — the exact inverse of
+//  what the mechanism is for.
+async function selfMaintenance() {
+  console.log('\n── SELF-MAINT :: a position cannot outlive its own maintenance ─────────────');
+  const w = await world({ actors: 6 });
+  const { staking, chain, users } = w;
+  const alice = users[0];
+  await staking.send(alice, 'deposit', [E18(1_000_000), 730]);
+  for (let i = 1; i < users.length; i++) await staking.send(users[i], 'deposit', [E18(10_000), 730]);
+  chain.mine(11);
+  chain.warp(731n * DAY); chain.mine(11);        // every commitment has elapsed
+
+  check(await staking.call('hasStaleBoost', [alice.hex]) === true,
+        'SELF-MAINT: precondition — the position is expired and still carries historical weight');
+
+  // Alice repeatedly drives maintenance while deliberately targeting everybody except herself.
+  let pokes = 0;
+  while (BigInt(await staking.call('activeLockerCount')) > 1n && pokes < 40) {
+    const [live] = await staking.call('getLockers', [0, 32]);
+    const target = live.find((a) => a.toLowerCase() !== alice.hex.toLowerCase());
+    if (!target) break;
+    const r = await staking.send(alice, 'pokeExpiredLock', [target]);
+    if (!r.ok) break;
+    chain.mine(1); pokes++;
+  }
+  // The loop above stops with one locker left by construction; let ordinary traffic finish the
+  // registry so the denominator assertion is about the mechanism, not about where the loop ended.
+  for (let k = 0; k < 8; k++) { chain.mine(2); await staking.send(users[3], 'claimRewards', []); }
+  const stillTracked = await staking.call('isTrackedLocker', [alice.hex]);
+  const stillStale = await staking.call('hasStaleBoost', [alice.hex]);
+  const p = await probe(w);
+  console.log(`     after ${pokes} self-driven maintenance transactions: tracked=${stillTracked} stale=${stillStale}`);
+  console.log(`     tracked-vs-derived weight gap: ${fmt(p.staleBE)} (effective) / ${fmt(p.staleBP)} (pure)`);
+  check(stillStale === false, 'SELF-MAINT: the carrier of the sweep normalises itself too',
+        `the position survived ${pokes} of its own maintenance passes carrying stale weight`);
+  check(p.staleBE === 0n && p.staleBP === 0n, 'SELF-MAINT: no stale weight remains in either denominator',
+        `${fmt(p.staleBE)} / ${fmt(p.staleBP)}`);
+  return { pokes };
+}
+
+// ── SELF-EXCLUSION AUDIT ────────────────────────────────────────────────────────────────
+//  The borrower window DOES exclude the beneficiary, and must: liquidating your own position
+//  would pay you the keeper bonus. Asserted here so the two windows cannot be "harmonised" by
+//  someone who reads only one of them.
+async function selfExclusionAudit() {
+  console.log('\n── SELF-EXCL :: the borrower window keeps its exclusion, and needs it ──────');
+  const w = await world();
+  const { staking, chain, users, token, guardian, admin } = w;
+  for (const u of users) await staking.send(u, 'deposit', [E18(10_000_000), 365]);
+  chain.mine(11);
+  for (const u of users) { const i = await staking.call('getUserInfo', [u.hex]); await staking.send(u, 'borrow', [BigInt(i[3])]); }
+  await staking.send(guardian, 'pause', []);
+  for (let y = 0; y < 25; y++) { chain.warp(YEAR); chain.mine(11); await staking.send(users[0], 'repay', [1n]); }
+  await staking.send(admin, 'unpause', []);
+
+  const self = users[1];
+  const b0 = BigInt(await token.call('balanceOf', [self.hex]));
+  const r = await staking.send(self, 'liquidate', [self.hex]);
+  const gain = BigInt(await token.call('balanceOf', [self.hex])) - b0 + E18(10_000_000);
+  console.log(`     self-liquidation → ${r.ok ? 'ok' : r.revert}`);
+  check(await staking.call('isSolvent') === true, 'SELF-EXCL: solvency intact after a self-liquidation attempt');
+  const p = await probe(w);
+  check(p.solvencyResidual <= DUST, 'SELF-EXCL: no value was created by liquidating oneself',
+        `residual ${p.solvencyResidual}`);
+}
+
 // ── EXIT-PATH CLOSURE ───────────────────────────────────────────────────────────────────
 //  Every exit path must move `owed` and `backing` by the same amount:  Δowed == Δbacking.
 //  The interesting branch is an under-water exit, where the position's debt exceeds its
@@ -1310,6 +1379,8 @@ mr.jit = await MR_jit();
 mr.boost = await MR_boost();
 mr.rateCurve = await rateCurveReach();
 mr.stale = await MR_stale();
+mr.selfMaint = await selfMaintenance();
+await selfExclusionAudit();
 mr.closure = await exitClosure();
 mr.emission = await MR_emission();
 
