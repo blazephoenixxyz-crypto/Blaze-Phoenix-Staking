@@ -530,11 +530,19 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
             emit LockSet(msg.sender, lockDays_, newUnlock, boostByDays(lockDays_));
         } else {
             // The longer existing lock is kept — that semantics is deliberate and unchanged. What
-            // must NOT survive is the stored duration: boost is the price of illiquidity, so the
-            // multiplier has to describe the commitment that actually remains on the capital, not
-            // one the wallet committed to at some earlier point. Re-keying `lockDays` to the real
-            // remainder is what makes two positions with the same principal and the same unlock
-            // timestamp receive the same multiplier.
+            // must NOT survive is the stored duration being applied to capital that never paid for
+            // it: the multiplier has to describe the commitment the INCOMING principal actually
+            // gets, not one the wallet made at some earlier point with different money.
+            //
+            // SCOPE, precisely. This re-key fires when new principal enters. It does NOT make the
+            // multiplier decay: a position that locks for seven years and never touches itself
+            // again is paid at seven years for the whole term, even with 555 days left, while a
+            // fresh 555-day lock is paid at 555 days. That is deliberate — the long position has
+            // genuinely been illiquid the entire time and is being paid for the commitment it
+            // made, amortised across its life. Making the multiplier decay with the remaining
+            // term is a different (veCRV-style) design; it would require the maintenance sweep to
+            // re-synchronise every live locker continuously rather than only at expiry, otherwise
+            // every locked position would sit permanently over-weighted between touches.
             //
             // `unlockTime` is untouched, so nothing here shortens anybody's lock. The remainder is
             // >= lockDays_ >= MIN_LOCK_DAYS (this branch only runs when the existing unlock is the

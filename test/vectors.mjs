@@ -65,6 +65,7 @@ console.log('\n── V1 :: reentrancy via a token that calls back on transfer �
     const reentered = await atk.call('succeeded');
     const err = await atk.call('lastError');
     console.log(`     re-enter ${name.padEnd(15)} outer=${r.ok ? 'ok' : r.revert}  inner succeeded=${reentered}  inner error="${err}"`);
+    check(r.ok, `V1[${name}]: the outer payout ran (otherwise the guard was never reached)`, `outer reverted ${r.revert}`);
     check(reentered === false, `V1: re-entering ${name} during a payout is rejected`,
           `the nested call SUCCEEDED — guard bypassed`);
     check(await solvent(staking) === true, `V1: solvency intact after the ${name} attempt`);
@@ -160,21 +161,29 @@ console.log('\n── V6 :: liquidation as a value-extraction primitive ──�
 {
   const w = await world();
   const { chain, staking, token, users } = w;
-  await staking.send(users[0], 'deposit', [E18(20_000_000), 365]);
-  await staking.send(users[1], 'deposit', [E18(10_000_000), 365]); chain.mine(11);
-  const inf = await staking.call('getUserInfo', [users[1].hex]);
-  await staking.send(users[1], 'borrow', [BigInt(inf[3])]);
-  chain.warp(30n * YEAR); chain.mine(20);
-  await staking.send(users[0], 'claimRewards', []);                        // drive the book forward
+  // A fully leveraged book is what actually decays into a liquidatable state. Under a pause the
+  // autonomous engine cannot get there first, so the manual path is the one under test.
+  for (const u of users) await staking.send(u, 'deposit', [E18(10_000_000), 365]);
+  chain.mine(11);
+  for (const u of users) { const i = await staking.call('getUserInfo', [u.hex]); await staking.send(u, 'borrow', [BigInt(i[3])]); }
+  await staking.send(w.guardian, 'pause', []);
+  for (let y = 0; y < 25; y++) { chain.warp(YEAR); chain.mine(11); await staking.send(users[0], 'repay', [1n]); }
+  await staking.send(w.admin, 'unpause', []);
   const keeper = users[3];
+  const target = users[5];
   const kb0 = BigInt(await token.call('balanceOf', [keeper.hex]));
-  const r1 = await staking.send(keeper, 'liquidate', [users[1].hex]);
+  const r1 = await staking.send(keeper, 'liquidate', [target.hex]);
   const gain1 = BigInt(await token.call('balanceOf', [keeper.hex])) - kb0;
-  const r2 = await staking.send(keeper, 'liquidate', [users[1].hex]);
+  const r2 = await staking.send(keeper, 'liquidate', [target.hex]);
   console.log(`     liquidate #1 → ${r1.ok ? 'ok' : r1.revert}, keeper gain ${fmt(gain1)}; repeat → ${r2.ok ? 'ok' : r2.revert}`);
+  check(r1.ok, 'V6: the position actually reached a liquidatable state (otherwise the rest is vacuous)',
+        `first liquidation reverted with ${r1.revert} — nothing below was exercised`);
   check(!r2.ok, 'V6: the same position cannot be liquidated twice', `second call succeeded`);
   check(await solvent(staking) === true, 'V6: solvency intact after liquidation');
-  check((await audit(staking)) === 0n, 'V6: audit bitmap clean after liquidation');
+  // Only the conservation bit is asserted: the remaining positions in this deliberately rotten
+  // book are still above the liquidation threshold, and the mask reporting that is correct.
+  check(((await audit(staking)) & 1n) === 0n, 'V6: no conservation breach after liquidation',
+        `bitmap 0b${(await audit(staking)).toString(2)}`);
 }
 
 // ── V7 · BLOCK-TIMESTAMP MANIPULATION ───────────────────────────────────────────────────
@@ -228,6 +237,7 @@ console.log('\n── V9 :: atomic deposit → borrow → withdraw inside one bl
   const b = await staking.send(users[1], 'borrow', [E18(1_000_000)]);
   const wd = await staking.send(users[1], 'withdraw', [E18(1)]);
   console.log(`     same-block borrow → ${b.ok ? 'ok' : b.revert};  same-block withdraw → ${wd.ok ? 'ok' : wd.revert}`);
+  check(b.ok, 'V9: the borrow landed (otherwise the withdraw is blocked for the wrong reason)', `borrow reverted ${b.revert}`);
   check(!wd.ok, 'V9: capital cannot enter and leave inside the guard window', `withdraw succeeded`);
   chain.warp(91n * DAY); chain.mine(11);
   await staking.send(users[1], 'repay', [MAX_UINT]);
@@ -294,3 +304,4 @@ console.log('\n═════════════════════�
 console.log(`  ${PASS} vector checks passed, ${FAIL} failed`);
 if (FAILURES.length) { console.log('\n  FAILED:'); FAILURES.forEach(f => console.log(`   ✗ ${f.label}\n       ${f.detail}`)); }
 console.log('════════════════════════════════════════════════════════════════════════════');
+if (FAIL > 0) process.exitCode = 1;   // a violated property must fail the process, not just print

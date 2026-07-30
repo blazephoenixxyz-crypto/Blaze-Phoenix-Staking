@@ -146,9 +146,10 @@ async function fuzzCampaign(seed, steps, { capScale = 1n, timeScale = 1n } = {})
     ]);
     bump(stat.actions, act);
 
-    // random time advance, log-uniform over [1 min, 45 days] — heavy tail on purpose:
-    // the reported defects all scale with Δt, so the sampler must reach long gaps.
-    const decade = Math.floor(r() * 5);
+    // random time advance, log-uniform with a heavy tail on purpose: the defects this suite
+    // looks for scale with Δt, so the sampler has to reach long gaps. decade <= 5 puts the
+    // maximum at 10^5 x 60 s, about 69 days.
+    const decade = Math.floor(r() * 6);
     const dt = BigInt(Math.max(1, Math.floor(r() * Math.pow(10, decade) * 60))) * timeScale;
     chain.warp(dt);
     chain.mine(1 + Math.floor(r() * 12));
@@ -388,6 +389,24 @@ async function MR_boost() {
   console.log(`     unlock timestamps differ by ${unlockGap} s; real commitment both ≈ ${remainingDays} days`);
   check(aBoost === bBoost, 'MR-BOOST: identical commitment ⇒ identical boost',
         `${aBoost} bps vs ${bBoost} bps  (${Number((aBoost * 100n) / bBoost) / 100}x advantage on identical illiquidity)`);
+
+  // The re-key fires on incoming principal, NOT as a decay. A position that commits long and
+  // never touches itself keeps its multiplier for the whole term. Asserted here so the design
+  // choice is on the record rather than assumed, and so a future change to it breaks a test.
+  {
+    const d = await world();
+    await d.staking.send(d.users[0], 'deposit', [E18(1_000_000), 2555]);
+    const atOpen = BigInt(await d.staking.call('effectiveBoostOf', [d.users[0].hex]));
+    d.chain.warp(2000n * DAY); d.chain.mine(11);
+    const late = BigInt(await d.staking.call('effectiveBoostOf', [d.users[0].hex]));
+    const remaining = 2555n - 2000n;
+    const fresh = BigInt(await d.staking.call('boostByDays', [remaining]));
+    console.log(`     7-year lock with ${remaining}d left is paid ${late} bps; a fresh ${remaining}d lock is paid ${fresh} bps`);
+    check(late === atOpen, 'MR-BOOST: a committed position keeps its multiplier for the whole term',
+          `${atOpen} → ${late}`);
+    check(late > fresh, 'MR-BOOST: that is strictly more than a fresh lock of the remaining length — by design',
+          `the two are equal, so the multiplier is decaying`);
+  }
 
   // Monotonicity: an untouched position's paid multiplier must never increase with time.
   let prev = BigInt(await staking.call('effectiveBoostOf', [honest.hex]));
@@ -1225,9 +1244,14 @@ async function scalingStudy() {
 
     const excess = attacked > ordinary ? attacked - ordinary : 0n;
     console.log(`     backlog ${String(d).padStart(4)}d : ordinary ${fmt(ordinary)} | attacked ${fmt(attacked)} | excess ${fmt(excess)}`);
-    if (excess > 0n) { xsT.push(Math.log(Number(d))); ysT.push(Math.log(Number(excess / 10n ** 12n))); }
+    // Guard the log: `excess > 0` does not imply `excess / 1e12 > 0`, and a floored zero would
+    // feed -Infinity straight into the fit, turning the check below into a meaningless verdict.
+    const scaled = excess / 10n ** 12n;
+    if (scaled > 0n) { xsT.push(Math.log(Number(d))); ysT.push(Math.log(Number(scaled))); }
   }
-  if (xsT.length >= 3) {
+  if (xsT.length === 0) {
+    check(true, 'SCALING: driver-overcharge is unmeasurable at every backlog length (excess is zero)');
+  } else if (xsT.length >= 3) {
     const f = ols(xsT, ysT);
     console.log(`     ⇒ excess ∝ Δt^${f.beta.toFixed(3)}   (R²=${f.r2.toFixed(4)})`);
     check(Math.abs(f.beta) < 0.15, 'SCALING: driver-overcharge does not grow with elapsed time',
@@ -1242,7 +1266,9 @@ async function scalingStudy() {
     await w.staking.send(w.users[0], 'deposit', [E18(1_000_000), 365]);
     const p = await probe(w);
     console.log(`     empty ${String(d).padStart(3)}d : stranded ${fmt(p.stranded)}`);
-    xsE.push(Math.log(Number(d))); ysE.push(Math.log(Number(p.stranded / 10n ** 12n)));
+    const scaledE = p.stranded / 10n ** 12n;
+    if (!check(scaledE > 0n, `SCALING: stranding is measurable at ${d}d`, `stranded=${p.stranded}`)) continue;
+    xsE.push(Math.log(Number(d))); ysE.push(Math.log(Number(scaledE)));
   }
   const fe = ols(xsE, ysE);
   console.log(`     ⇒ stranded ∝ Δt^${fe.beta.toFixed(3)}   (R²=${fe.r2.toFixed(4)})  [linear BY DESIGN]`);
@@ -1313,3 +1339,4 @@ if (FINDINGS.length) {
   for (const f of FINDINGS) console.log(`   ✗ ${f.label}\n       ${f.detail}`);
 }
 console.log('════════════════════════════════════════════════════════════════════════════');
+if (FAIL > 0) process.exitCode = 1;   // a violated property must fail the process, not just print

@@ -292,3 +292,4 @@ console.log('\n═════════════════════�
 console.log(`  ${PASS} checks passed, ${FAIL} failed`);
 if (F.length) { console.log('\n  FAILED:'); F.forEach(x => console.log(`   ✗ ${x.l}\n       ${x.d}`)); }
 console.log('════════════════════════════════════════════════════════════════════════════');
+if (FAIL > 0) process.exitCode = 1;   // a violated property must fail the process, not just print
