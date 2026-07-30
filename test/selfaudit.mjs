@@ -229,3 +229,75 @@ console.log(`  ${PASS} checks passed, ${FAIL} failed`);
 if (F.length) { console.log('\n  FAILED:'); F.forEach(x => console.log(`   ✗ ${x.l}\n       ${x.d}`)); }
 console.log('════════════════════════════════════════════════════════════════════════════');
 if (FAIL > 0) process.exitCode = 1;
+
+// ── S7 · EXIT PATHS MUST LEAVE IDENTICAL RESIDUE ────────────────────────────────────────
+//  Three different code paths end a position. Any one of them that forgets a registry entry or
+//  a weight leaves a ghost drawing on the denominators — the same class as an earlier finding.
+console.log('\n── S7 :: do all three exit paths clean up identically? ─────────────────────');
+{
+  const paths = {
+    'withdraw       ': async (w, u) => { w.chain.warp(400n * DAY); w.chain.mine(11);
+      await w.staking.send(u, 'withdraw', [BigInt((await w.staking.call('getUserInfo', [u.hex]))[0])]); },
+    'emergencyExit  ': async (w, u) => { await w.staking.send(w.guardian, 'declareEmergency', []);
+      await w.staking.send(u, 'emergencyWithdraw', []); },
+    // Everyone leveraged, or utilisation stays too low for the book to ever decay far enough and
+    // the arm silently tests nothing. The liquidation is asserted to land before anything is read.
+    'liquidation    ': async (w, u) => {
+      for (const x of w.users) if (x !== u) await w.staking.send(x, 'deposit', [E18(5_000_000), 365]);
+      w.chain.mine(11);
+      for (const x of w.users) { const i = await w.staking.call('getUserInfo', [x.hex]); await w.staking.send(x, 'borrow', [BigInt(i[3])]); }
+      await w.staking.send(w.guardian, 'pause', []);
+      for (let y = 0; y < 30; y++) { w.chain.warp(YEAR); w.chain.mine(11); await w.staking.send(u, 'repay', [1n]); }
+      await w.staking.send(w.admin, 'unpause', []);
+      const r = await w.staking.send(w.users[4], 'liquidate', [u.hex]);
+      check(r.ok, 'S7[liquidation]: the liquidation actually landed (otherwise this arm tests nothing)',
+            `reverted ${r.revert}`); },
+  };
+  for (const [name, run] of Object.entries(paths)) {
+    const w = await world();
+    const u = w.users[0];
+    await w.staking.send(w.users[5], 'deposit', [E18(5_000_000), 365]);   // keeps the pool alive
+    await w.staking.send(u, 'deposit', [E18(1_000_000), 365]);
+    await run(w, u);
+    const staked = BigInt((await w.staking.call('getUserInfo', [u.hex]))[0]);
+    const locker = await w.staking.call('isTrackedLocker', [u.hex]);
+    const borrower = await w.staking.call('isTrackedBorrower', [u.hex]);
+    const stale = await w.staking.call('hasStaleBoost', [u.hex]);
+    const debt = BigInt((await w.staking.call('getUserInfo', [u.hex]))[1]);
+    console.log(`     ${name} staked=${fmt(staked)} debt=${fmt(debt)} locker=${locker} borrower=${borrower} stale=${stale}`);
+    check(debt > 0n || borrower === false, `S7[${name.trim()}]: a debt-free position is not left in the borrower registry`,
+          `debt is zero yet the position is still tracked — a ghost in the solvency sweep`);
+    if (staked === 0n) {
+      check(locker === false && borrower === false, `S7[${name.trim()}]: a fully closed position leaves no registry entry`,
+            `locker=${locker} borrower=${borrower} — a ghost remains in a sweep set`);
+    }
+    check(stale === false, `S7[${name.trim()}]: no stale boost survives the exit`);
+    check(await solvent(w.staking) === true, `S7[${name.trim()}]: solvency intact`);
+  }
+}
+
+// ── S8 · CAN AUTHORITY BE RENOUNCED INTO A PERMANENT FREEZE? ────────────────────────────
+//  AccessControl exposes renounceRole. Unpause, cancelEmergency, fundEmission and the residue
+//  sweep are all admin-gated, so an admin that renounces while the protocol is paused would take
+//  every recovery path with it.
+console.log('\n── S8 :: renouncing authority while halted ────────────────────────────────');
+{
+  const w = await world();
+  const { chain, staking, admin, guardian, users } = w;
+  const DEFAULT_ADMIN = '0x' + '00'.repeat(32);
+  const ADMIN_ROLE = ethers.id('ADMIN_ROLE');
+  await staking.send(users[0], 'deposit', [E18(5_000_000), 90]);
+  await staking.send(guardian, 'pause', []);
+  await staking.send(admin, 'renounceRole', [ADMIN_ROLE, admin.hex]);
+  await staking.send(admin, 'renounceRole', [DEFAULT_ADMIN, admin.hex]);
+  const un = await staking.send(admin, 'unpause', []);
+  console.log(`     admin renounced every role while paused; unpause → ${un.ok ? 'ok' : un.revert}`);
+
+  chain.warp(91n * DAY); chain.mine(11);
+  const wd = await staking.send(users[0], 'withdraw', [E18(1_000_000)]);
+  const rp = await staking.send(users[0], 'claimRewards', []);
+  console.log(`     with nobody able to unpause: withdraw → ${wd.ok ? 'ok' : wd.revert}, claim → ${rp.ok ? 'ok' : rp.revert}`);
+  check(wd.ok, 'S8: stakers can still exit with their principal when authority is gone',
+        `withdraw reverted ${wd.revert} — an abdicating admin strands every deposit behind a pause`);
+  check(await solvent(w.staking) === true, 'S8: solvency intact');
+}
