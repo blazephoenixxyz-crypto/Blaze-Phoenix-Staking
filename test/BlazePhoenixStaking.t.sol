@@ -652,7 +652,22 @@ contract StressTest is Base {
         // carol's unrelated deposit MUST still succeed; the poisoned victim is skipped
         vm.prank(carol); bs.deposit(500_000e18, 90);
 
-        assertEq(bs.totalStaked(), 1_500_000e18);          // both stakes present
+        // Both stakes present. Asserting the raw literal 1_500_000e18 was correct under v3.0.0's
+        // LAZY interest, where nothing moved until a position was individually touched. Under
+        // v3.1.0 `_updateInterestIndex` settles the global side the moment interest economically
+        // accrues, so totalStaked legitimately drops by the accrued slice (here exactly
+        // 123.287671232876700000e18: 100k debt at 10% utilisation -> 150bps, over 30 days).
+        // Assert the IDENTITY instead of a frozen number, so this keeps holding as the rate,
+        // the elapsed time or the utilisation change.
+        // EXACT, not approximate: every wei that left totalStaked must be accounted for by the
+        // interest counter. If these two ever fail to sum to the deposits, conservation is broken
+        // and the test must fail loudly rather than tolerate a drift.
+        assertEq(bs.totalStaked() + bs.totalInterestAccruedGlobal(), 1_500_000e18,
+            "stake must be conserved: what left totalStaked is exactly what interest accrued");
+        (uint256 carolStaked,,,,,,,,,,,,,) = bs.getUserInfo(carol);
+        (uint256 victimStaked,,,,,,,,,,,,,) = bs.getUserInfo(victim);
+        assertEq(carolStaked, 500_000e18, "carol's unrelated stake is intact");
+        assertGt(victimStaked, 0,         "the poisoned victim keeps its position");
         assertTrue(bs.isTrackedBorrower(victim));          // victim skipped, not removed
         assertTrue(bs.isSolvent());
         assertEq(bs.auditInvariants() & 1, 0);             // conservation bit clear
