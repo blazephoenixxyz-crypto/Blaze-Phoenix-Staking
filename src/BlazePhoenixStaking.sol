@@ -741,7 +741,21 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
             unchecked { ++i; }
         }
         if (swept == 0) revert Staking__NoLock();
-        _autoMaintain(msg.sender);
+        // Deliberately NOT `_autoMaintain`. The caller has just normalised expired commitments
+        // explicitly and BY NAME, so re-running the rotating LOCK window on top of that is pure
+        // duplicated work — measured at 246,261 gas, 83% of this call, against 49,060 of actual
+        // work. The SOLVENCY window is kept: it is unrelated to what the caller just did, and it
+        // is the part the protocol genuinely needs every transaction to carry.
+        //
+        // This is not a weakening. The passive lock sweep costs O(S / budget) transactions to
+        // reach a given position (see test/SweepLatency.t.sol), and the escape hatch from that
+        // latency only helps if it is cheap enough to be used. Charging 5x to duplicate the slow
+        // path was a disincentive to the exact behaviour the protocol wants.
+        if (!paused() && !emergencyMode) {
+            uint256 b = _maintBudget();
+            if (b != 0) _sweepBorrowers(msg.sender, b);
+            lastMaintTime = block.timestamp;
+        }
     }
 
     // ════════════════════════════════════════════════════════════════════════════════════
