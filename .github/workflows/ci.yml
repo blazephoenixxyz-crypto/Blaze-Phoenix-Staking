@@ -10,6 +10,11 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+# Every job writes a compact digest to the run summary. That digest is readable
+# through the check-runs API in a few kilobytes, so a failure can be diagnosed
+# without downloading job logs — which matters when the only machine available
+# is on a slow mobile connection.
+
 jobs:
   foundry:
     name: Foundry — build, size gate, tests
@@ -21,28 +26,54 @@ jobs:
 
       - uses: foundry-rs/foundry-toolchain@v1
 
-      - name: Build (with contract sizes)
-        run: forge build --sizes
+      - name: Build
+        id: build
+        run: |
+          set -o pipefail
+          if forge build --sizes 2>&1 | tee build.log; then
+            echo "### Foundry build: OK" >> "$GITHUB_STEP_SUMMARY"
+            grep -E "BlazePhoenix(Staking|MathLib)" build.log >> "$GITHUB_STEP_SUMMARY" || true
+          else
+            {
+              echo "### Foundry build: FAILED"
+              echo '```'
+              grep -E "^(Error|error\[|Compiler run failed|  -->)" build.log | head -40 || tail -40 build.log
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
 
       - name: EIP-170 size gate
-        # forge build --sizes exits non-zero when a deployable contract exceeds the
-        # 24576-byte runtime limit, so the build step above already gates this; the
-        # explicit check documents the intent and prints the number that matters.
         run: |
-          forge build --sizes --json | python3 -c '
-          import json,sys
-          sizes = json.load(sys.stdin)
-          for name, info in sizes.items():
-              if name == "BlazePhoenixStaking":
-                  runtime = info["runtime_size"]
-                  margin  = 24576 - runtime
-                  print(f"{name}: runtime {runtime} B, margin {margin} B")
-                  sys.exit(0 if margin >= 0 else 1)
-          sys.exit(1)
-          '
+          forge build --sizes --json > sizes.json
+          python3 - <<'PY' >> "$GITHUB_STEP_SUMMARY"
+          import json, sys
+          sizes = json.load(open("sizes.json"))
+          info = sizes.get("BlazePhoenixStaking")
+          if info is None:
+              print("### Size gate: FAILED — BlazePhoenixStaking absent from build output")
+              sys.exit(1)
+          runtime = info["runtime_size"]
+          margin = 24576 - runtime
+          print(f"### Size gate: runtime **{runtime} B**, margin **{margin} B** of 24576")
+          sys.exit(0 if margin >= 0 else 1)
+          PY
 
-      - name: Foundry test suites
-        run: forge test -vv
+      - name: Foundry tests
+        run: |
+          set -o pipefail
+          if forge test -vv 2>&1 | tee test.log; then
+            echo "### Foundry tests: OK" >> "$GITHUB_STEP_SUMMARY"
+            grep -E "^(Ran|Suite result)" test.log >> "$GITHUB_STEP_SUMMARY" || true
+          else
+            {
+              echo "### Foundry tests: FAILED"
+              echo '```'
+              grep -E "^\[FAIL|Suite result|^Error" test.log | head -40
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
 
   node-evm:
     name: Node — real-EVM harness (9 suites)
@@ -57,21 +88,32 @@ jobs:
 
       - run: npm ci
 
-      - name: smoke — deploy & sanity
-        run: node test/smoke.mjs
-      - name: run — integrity & edge cases
-        run: node test/run.mjs
-      - name: attack — adversarial vectors
-        run: node test/attack.mjs
-      - name: boost — BP-2026-001 regression (B1–B10)
-        run: node test/boost.mjs
-      - name: vectors — canonical DeFi attack vectors
-        run: node test/vectors.mjs
-      - name: dimensions — state-dimension suite
-        run: node test/dimensions.mjs
-      - name: final — metamorphic relations & scaling studies
-        run: node test/final.mjs
-      - name: reporting — boundary & lifecycle reports
-        run: node test/reporting.mjs
-      - name: selfaudit — regression against our own remediations
-        run: node test/selfaudit.mjs
+      # All nine suites run even when an earlier one fails, so a single CI round
+      # reports every problem instead of only the first. Each failure contributes
+      # its failing check lines to the digest.
+      - name: Real-EVM suites
+        run: |
+          failed=""
+          for suite in smoke run attack boost vectors dimensions final reporting selfaudit; do
+            echo "::group::$suite"
+            if node "test/$suite.mjs" > "$suite.log" 2>&1; then
+              echo "- **$suite** — OK $(grep -oE '[0-9]+ (checks|passed)' "$suite.log" | tail -1)" >> "$GITHUB_STEP_SUMMARY"
+            else
+              failed="$failed $suite"
+              {
+                echo "- **$suite** — FAILED"
+                echo '```'
+                grep -E "✗|FAIL|Error:|throw" "$suite.log" | head -20
+                echo "--- last lines ---"
+                tail -12 "$suite.log"
+                echo '```'
+              } >> "$GITHUB_STEP_SUMMARY"
+            fi
+            cat "$suite.log"
+            echo "::endgroup::"
+          done
+          if [ -n "$failed" ]; then
+            echo "### Failing suites:$failed" >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+          echo "### All nine real-EVM suites passed" >> "$GITHUB_STEP_SUMMARY"
