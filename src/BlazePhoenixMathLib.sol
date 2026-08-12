@@ -1,5 +1,12 @@
 // SPDX-License-Identifier: BUSL-1.1
 // BlazePhoenix Protocol (c) April 2026 - April 2030
+//
+//  Fingerprint: 0x74d22ada35c060e71f6759654169f11a856ceedf49ad6ef283d4d82f746ccdc6
+//
+//  Rights. Original work, copyright automatic under the Berne Convention (1886),
+//  licensed under the Business Source License 1.1 stated above. Use outside that
+//  grant, before the Change Date, is infringement. Authorship is provable from
+//  the Fingerprint's keccak256 preimage without disclosing the authors' identity.
 pragma solidity 0.8.28;
 
 /// @title  BlazePhoenixMathLib

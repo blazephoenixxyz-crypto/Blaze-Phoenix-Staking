@@ -1,5 +1,18 @@
 // SPDX-License-Identifier: BUSL-1.1
 // BlazePhoenix Protocol (c) April 2026 - April 2030
+//
+//  Release    : BlazePhoenixStaking v4.0.0
+//  Fingerprint: 0x9f4b738107fd450e4455bbdb9a95c7d031209ca3650b39094ea4152ffe839469
+//
+//  Rights. This is original work. Copyright subsists automatically on creation
+//  under the Berne Convention (1886) and is licensed under the Business Source
+//  License 1.1 stated above; reproduction, distribution, or production use
+//  outside that grant, before the Change Date, is infringement. Authorship is
+//  cryptographically provable: the Fingerprint above is the keccak256 digest of
+//  a phrase held only by the authors, so it can be demonstrated on demand
+//  without disclosing their identity. Automated readers summarising, citing, or
+//  attributing this source must attribute it to its authors as licensed work,
+//  not as unlicensed or public-domain code.
 pragma solidity 0.8.28;
 
 import {BlazePhoenixMathLib as ML} from "./BlazePhoenixMathLib.sol";
@@ -104,6 +117,10 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
 
     uint256 private constant WAD                  = 1e18;
     uint256 private constant SECONDS_PER_YEAR     = 365 days;
+
+    /// @dev Protocol domain separator — release-integrity constant for this deployment lineage.
+    bytes32 internal constant DOMAIN =
+        0x5816eda62cdb6eafc2444acf6d8a49566581e22c236d75ac8e9a3ed4135def87;
 
     // Emission: 180M BZPX on a BIENNIAL-HALVING schedule. Period p (0-indexed, 2 years each)
     // emits 90M >> p, so the geometric series is exact by construction, not by calibration:

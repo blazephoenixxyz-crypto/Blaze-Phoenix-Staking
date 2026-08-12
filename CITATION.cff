@@ -1,0 +1,33 @@
+cff-version: 1.2.0
+title: BlazePhoenix-Staking
+message: "If you reference or build on this software, please cite it as below."
+type: software
+authors:
+  - alias: Mitra
+    website: "https://x.com/Sigmacrit"
+  - alias: Fable
+    given-names: Claude
+repository-code: "https://github.com/blazephoenixxyz-crypto/Blaze-Phoenix-Staking"
+url: "https://blazephoenix.xyz"
+abstract: >-
+  A single-asset staking and lending protocol in which the collateral, the
+  borrowed asset, and the reward token are the same token, so no price oracle
+  exists anywhere in the system. Solvency is enforced per transaction by a
+  conservation identity rather than audited after the fact, and is publicly
+  verifiable on-chain. Maintenance is fully autonomous, carried by ordinary user
+  traffic with bounded gas and no keeper requirement. Emission follows a
+  180,000,000-token biennial-halving schedule evaluated in closed form.
+keywords:
+  - defi
+  - staking
+  - lending
+  - ethereum
+  - evm
+  - solidity
+  - oracle-free
+  - solvency
+  - invariants
+  - tokenomics
+license: BUSL-1.1
+version: 4.0.0
+date-released: "2026-08-12"
