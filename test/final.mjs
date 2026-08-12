@@ -1039,7 +1039,11 @@ async function mockScenarios() {
           'MOCK: the sweep is closed until the emission programme ends', `got ${early.revert}`);
     chain.warp(10n * DAY); chain.mine(5);
     await staking.send(users[0], 'deposit', [E18(5_000_000), 365]);
-    chain.warp(8n * YEAR); chain.mine(20);
+    // Warp to just past the programme's close, read from the contract rather than
+    // hard-coded: the schedule's length is a design parameter and a literal here
+    // silently turns "the sweep works" into "the sweep works on a 7-year clock".
+    const emissionEnd = BigInt(await staking.call('emissionEnd'));
+    chain.warp(emissionEnd - chain.time + DAY); chain.mine(20);
     const notAdmin = await staking.send(users[1], 'sweepUndistributedEmission', []);
     check(!notAdmin.ok, 'MOCK: the sweep is admin-only', `got ok=${notAdmin.ok}`);
     const before = BigInt(await token.call('balanceOf', [treasury.hex]));

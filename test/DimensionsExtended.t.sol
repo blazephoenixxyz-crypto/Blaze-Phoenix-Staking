@@ -300,7 +300,7 @@ contract DimensionsExtendedTest is Base {
         assertEq(staking.emittedAt(start + 2 * period), total - (total >> 2), "year 4: 135M (75%)");
         assertEq(staking.emittedAt(start + 3 * period), total - (total >> 3), "year 6: 157.5M (87.5%)");
         assertEq(staking.emittedAt(staking.emissionEnd()),            total - (total >> 8),
-            "close: 179,296,875 — the 2^-8 tail is never emitted");
+            "close: 179,296,875 - the 2^-8 tail is never emitted");
         assertEq(staking.emittedAt(staking.emissionEnd() + 365 days), total - (total >> 8),
             "the curve is flat after the close");
 
