@@ -24,6 +24,14 @@ import {ReentrancyGuard}            from "@openzeppelin/contracts/utils/Reentran
 ///         economic meaning. Reporter credit for every disclosed finding is kept in the Hall of
 ///         Fame in README.md, not in this file.
 ///
+///         v4 — FINAL TOKENOMICS. The emission schedule moves from 180M-linear-over-7-years to
+///         180M on a biennial-halving curve (see the constants block): same budget, same
+///         determinism, same conservation identity — the accumulator now integrates the delta of
+///         a closed-form O(1) curve instead of a flat rate. Chosen over linear-with-cliff because
+///         a flat schedule ends abruptly (documented mercenary-capital exodus) while the halving
+///         tail hands over smoothly to real yield (interest + DEX fee-share). Rounding on the
+///         curve is sub-wei-per-second and always pro-protocol.
+///
 ///     ┌────────────────────────────────────────────────────────────────────────────────┐
 ///     │  THE MASTER CONSERVATION IDENTITY  (the single equation the whole book obeys)    │
 ///     │                                                                                  │
@@ -79,31 +87,48 @@ import {ReentrancyGuard}            from "@openzeppelin/contracts/utils/Reentran
 ///       `declareEmergency`, and a PERMISSIONLESS `tripBreaker` that anyone may call but ONLY when
 ///       the chain itself proves insolvency (`_hardBreach`: balance + dust < owed) — an objective,
 ///       un-spoofable condition, and reversible by the admin if the reading was transient.
-///     • DETERMINISTIC EMISSION. Empty-pool intervals advance the clock (emission stays in
-///       reserve), so a latecomer can never capture a backlog.
+///     • DETERMINISTIC EMISSION — 180M BZPX on a BIENNIAL-HALVING curve (90M years 1-2, 45M
+///       years 3-4, …), a closed-form O(1) pure function of time (`emittedAt`) with no loop and
+///       no admin knob, hard-closing after 8 periods (16 years) with the 2^-8 tail swept to the
+///       treasury. Empty-pool intervals advance the clock (emission stays in reserve), so a
+///       latecomer can never capture a backlog.
 ///     • MANDATORY LOCKED STAKING. There is no liquid stake: every deposit commits its funds for
-///       90..2555 days (a decreasing countdown caps it at the time left to the 7-year emission
-///       end). Borrowing is allowed against that collateral, but a position must be FULLY REPAID
+///       90..2555 days (a decreasing countdown caps it at the time left to the 16-year emission
+///       close). Borrowing is allowed against that collateral, but a position must be FULLY REPAID
 ///       (debt == 0) before any stake can be withdrawn — so there is no early-exit and no penalty.
 contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
 
-    string  public  constant VERSION              = "3.1.0";
+    string  public  constant VERSION              = "4.0.0";
     bytes32 private constant ROLE_ADMIN           = keccak256("ADMIN_ROLE");
     bytes32 private constant ROLE_GUARDIAN        = keccak256("GUARDIAN_ROLE");
 
     uint256 private constant WAD                  = 1e18;
     uint256 private constant SECONDS_PER_YEAR     = 365 days;
 
-    // Emission: 180M BZPX linear over 7 years.
-    uint256 public  constant TOTAL_REWARDS        = 180_000_000e18;
-    uint256 public  constant EMISSION_PERIOD      = 7 * 365 days;
-    uint256 public  constant REWARD_PER_SEC       = TOTAL_REWARDS / EMISSION_PERIOD;
+    // Emission: 180M BZPX on a BIENNIAL-HALVING schedule. Period p (0-indexed, 2 years each)
+    // emits 90M >> p, so the geometric series is exact by construction, not by calibration:
+    //     Σ_{p≥0} 90M / 2^p  =  180M.
+    // Cumulative emission is closed-form, O(1), shifts only — no loop, no oracle, no exp/log:
+    //     emitted(t) = (TOTAL − (TOTAL >> p)) + (R0 >> p)·(t − start − p·PERIOD),
+    //     p = ⌊(t − start) / PERIOD⌋,          R0 = 90M / PERIOD   [wei/s]
+    // The programme hard-closes after 8 full periods (16 years): by then 255/256 of the budget
+    // (179,296,875 BZPX) is out and the running rate is < 0.8% of the initial one, so the close
+    // is not a cliff — by design the tail hands over to real-yield (interest + DEX fee-share)
+    // rather than to a magic date that still pays. The exact residue, 180M >> 8 = 703,125 BZPX,
+    // plus whatever empty/underfunded windows stranded, is recoverable to the treasury via
+    // `sweepUndistributedEmission` — pro-protocol, never pro-user.
+    uint256 public  constant TOTAL_REWARDS          = 180_000_000e18;
+    uint256 public  constant HALVING_PERIOD         = 2 * 365 days;
+    uint256 public  constant EMISSION_PERIODS       = 8;
+    uint256 public  constant EMISSION_LENGTH        = EMISSION_PERIODS * HALVING_PERIOD;
+    uint256 public  constant INITIAL_REWARD_PER_SEC = (TOTAL_REWARDS / 2) / HALVING_PERIOD;
 
     uint256 public  constant MAX_STAKE_PER_WALLET = 30_000_000e18;
 
     // Emission is throttled, not gated, below this weight. One wei staked alone would otherwise
     // absorb the ENTIRE schedule for as long as it is the only position — 30 days of solitude is
-    // 1.17% of the whole 180,000,000 budget, bought for one wei. Below the mark the rate is scaled
+    // ~2% of the whole 180,000,000 budget at the period-0 rate, bought for one wei. Below the
+    // mark the rate is scaled
     // by `weight / MIN_EMISSION_WEIGHT`, so a dust pool earns dust while a genuinely small pool
     // earns proportionally. A hard cut-off here would have been worse than the problem it solves:
     // it would let a large holder stop emission for everyone still staked simply by leaving.
@@ -115,14 +140,15 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
     uint256 public  constant LIQ_BONUS_BPS        = 500;   // 5% surplus -> paid to the gas-payer
     uint256 public  constant RESERVE_FACTOR_BPS   = 300;   // 3%
 
-    // Lock is measured in DAYS, between MIN_LOCK_DAYS and MAX_LOCK_DAYS (== the 7-year emission
-    // window). Boost is continuous in the committed duration:
+    // Lock is measured in DAYS, between MIN_LOCK_DAYS and MAX_LOCK_DAYS (a 7-year policy cap;
+    // the emission programme itself runs 16 years). Boost is continuous in the committed duration:
     //     boost(d) = 10000 + 750·(d/365) + 250·(d/365)²   [bps]
     //   d =   90 -> ~1.02x     d = 365 (1y)  -> 1.10x      d = 1825 (5y) -> 2.00x
     //   d =  730 (2y) -> 1.25x d = 2555 (7y) -> 2.75x
     uint256 public  constant DAYS_PER_YEAR        = 365;
     uint16  public  constant MIN_LOCK_DAYS        = 90;
-    uint16  public  constant MAX_LOCK_DAYS        = uint16(7 * 365);   // 2555 == EMISSION_PERIOD in days
+    uint16  public  constant MAX_LOCK_DAYS        = uint16(7 * 365);   // 2555 — the boost curve (and its
+                                                                       // overflow proof) is calibrated on d <= 2555
     uint256 private constant BOOST_BASE           = 10_000;
     uint256 private constant BOOST_LINEAR         = 750;
     uint256 private constant BOOST_QUAD           = 250;
@@ -312,7 +338,7 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
         bzpx          = bzpx_;
         treasury      = treasury_;
         emissionStart = block.timestamp;
-        emissionEnd   = block.timestamp + EMISSION_PERIOD;
+        emissionEnd   = block.timestamp + EMISSION_LENGTH;
         lastRewardTime = block.timestamp;
         lastInterestTime = block.timestamp;
         lastMaintTime  = block.timestamp;
@@ -376,8 +402,9 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
     ///         Emission is a pure function of time and the accumulator deliberately does not
     ///         advance while nothing is earning — that is what stops a latecomer harvesting a
     ///         backlog they were never exposed to, and it stays exactly as it is. The consequence
-    ///         is that an empty window leaves `REWARD_PER_SEC x empty_seconds` in `rewardReserve`
-    ///         with no recipient: past `emissionEnd` the accumulator can never advance again,
+    ///         is that an empty window leaves that window's scheduled emission in `rewardReserve`
+    ///         with no recipient — as does the 2^-8 tail (703,125 BZPX) the halving schedule
+    ///         deliberately never emits: past `emissionEnd` the accumulator can never advance again,
     ///         `deposit` is closed, and `withdrawReserve` is bounded by `protocolReserve`. Without
     ///         this function those tokens are owed to nobody and reachable by nobody, and `_owed()`
     ///         overstates real liabilities by that amount for the rest of the contract's life —
@@ -485,7 +512,7 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
 
     /// @notice Stake `amount_` and commit it for `lockDays_` days. STAKING IS ALWAYS LOCKED:
     ///         every deposit sets/extends a lock between MIN_LOCK_DAYS and the decreasing
-    ///         countdown cap (days remaining to the 7-year emission end, ≤ MAX_LOCK_DAYS). A
+    ///         countdown cap (days remaining to the emission close, ≤ MAX_LOCK_DAYS). A
     ///         top-up may only EXTEND the existing unlock, never shorten it: if the chosen
     ///         duration would land before the current unlock, the longer existing lock is kept
     ///         and the new funds simply inherit it. Stake cannot leave before its unlock.
@@ -500,7 +527,7 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
         UserInfo storage u = _users[msg.sender];
         if (u.staked + amount_ > MAX_STAKE_PER_WALLET) revert Staking__CapExceeded();
 
-        // Decreasing countdown: a lock may never extend past the 7-year emission end.
+        // Decreasing countdown: a lock may never extend past the emission close.
         uint256 maxDays = (emissionEnd - block.timestamp) / 1 days;
         if (maxDays > MAX_LOCK_DAYS) maxDays = MAX_LOCK_DAYS;
         if (lockDays_ > maxDays) revert Staking__LockExceedsEmissionEnd();
@@ -519,7 +546,7 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
 
         // Set or extend the lock — never reduce it.
         // casting to 'uint64' is safe because the sum is (now + at most 2555 days) — the emission
-        // horizon ends in 2033, ~2^33 seconds, ten orders of magnitude below uint64.
+        // horizon ends in 2042, ~2^33 seconds, ten orders of magnitude below uint64.
         // forge-lint: disable-next-line(unsafe-typecast)
         uint64 newUnlock = uint64(block.timestamp + lockDays_ * 1 days);
         if (newUnlock >= u.unlockTime) {
@@ -667,7 +694,7 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
     // ════════════════════════════════════════════════════════════════════════════════════
     /// @notice Commit your stake for `lockDays_` days (min MIN_LOCK_DAYS, max MAX_LOCK_DAYS) to
     ///         earn a boost. A decreasing countdown caps the duration at the time remaining until
-    ///         the 7-year emission end, so no lock can ever outlast emission. Commitments can only
+    ///         the emission close, so no lock can ever outlast emission. Commitments can only
     ///         be EXTENDED (the new unlock must be later than the current one), never shortened.
     function lock(uint256 lockDays_) external nonReentrant whenNotPaused whenNotEmergency conserves {
         if (lockDays_ < MIN_LOCK_DAYS) revert Staking__LockTooShort();
@@ -678,7 +705,7 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
         if (u.staked == 0) revert Staking__NoStake();
         if (block.number <= u.depositBlock + MIN_DEPOSIT_BLOCKS) revert Staking__FlashLoanProtection();
 
-        // Decreasing countdown: the lock may never extend past the 7-year emission end.
+        // Decreasing countdown: the lock may never extend past the emission close.
         uint256 maxDays = (emissionEnd - block.timestamp) / 1 days;
         if (maxDays > MAX_LOCK_DAYS) maxDays = MAX_LOCK_DAYS;
         if (lockDays_ > maxDays) revert Staking__LockExceedsEmissionEnd();
@@ -1113,9 +1140,12 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
         uint256 tbe = totalBoostedEffective;
         if (tbe == 0) { lastRewardTime = block.timestamp; return; }   // no backlog capture
         uint256 t       = block.timestamp < emissionEnd ? block.timestamp : emissionEnd;
-        uint256 elapsed = t > lastRewardTime ? t - lastRewardTime : 0;
-        if (elapsed == 0) return;
-        uint256 reward  = REWARD_PER_SEC * elapsed;
+        if (t <= lastRewardTime) return;
+        // The window's scheduled emission is the DELTA of the closed-form curve. `_emittedAt` is
+        // monotone non-decreasing, so this can never underflow, and every property the linear
+        // schedule had (deterministic, pure function of time, skipped windows stay in reserve)
+        // carries over unchanged — only the curve's shape moved from flat to biennial halving.
+        uint256 reward  = _emittedAt(t) - _emittedAt(lastRewardTime);
         if (tbe < MIN_EMISSION_WEIGHT) reward = ML.mulDiv(reward, tbe, MIN_EMISSION_WEIGHT);
         if (reward > rewardReserve) reward = rewardReserve;
         if (reward == 0) { lastRewardTime = block.timestamp; return; }
@@ -1123,6 +1153,39 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
         rewardReserve          -= reward;
         totalRewardDistributed += reward;
         lastRewardTime          = block.timestamp;
+    }
+
+    /// @dev Cumulative scheduled emission at time `x` — the biennial-halving closed form
+    ///      (see the constants block). O(1): one division, two shifts, one multiplication.
+    ///      Monotone non-decreasing: within a period it grows linearly at `R0 >> p`; at each
+    ///      rollover the sub-wei remainder the floored rate left behind (< PERIOD wei, i.e.
+    ///      < 1e-10 BZPX) is folded into the `TOTAL − (TOTAL >> p)` term, a jump UP that keeps
+    ///      the curve on the exact geometric series instead of drifting below it.
+    ///      `unchecked` is safe: dt < EMISSION_LENGTH (~5.05e8 s), rate ≤ R0 (~1.43e18 wei/s),
+    ///      so the product is < 1e27, and `TOTAL >> p` never exceeds TOTAL.
+    function _emittedAt(uint256 x) internal view returns (uint256) {
+        if (x <= emissionStart) return 0;
+        if (x >= emissionEnd)   return TOTAL_REWARDS - (TOTAL_REWARDS >> EMISSION_PERIODS);
+        unchecked {
+            uint256 dt = x - emissionStart;
+            uint256 p  = dt / HALVING_PERIOD;                     // 0..7 here, 8 is the clamp above
+            return (TOTAL_REWARDS - (TOTAL_REWARDS >> p))
+                 + (INITIAL_REWARD_PER_SEC >> p) * (dt - p * HALVING_PERIOD);
+        }
+    }
+
+    /// @notice Cumulative emission the schedule has released up to `timestamp` — the O(1)
+    ///         biennial-halving closed form, exposed so anyone can verify the whole curve
+    ///         on-chain for free (same ethos as `solvency()` / `collateralRatio()`).
+    function emittedAt(uint256 timestamp) external view returns (uint256) {
+        return _emittedAt(timestamp);
+    }
+
+    /// @notice The emission rate in force right now: `R0 >> p` inside the programme, 0 after
+    ///         the close. Halves at every period rollover.
+    function currentRewardPerSec() public view returns (uint256) {
+        if (block.timestamp >= emissionEnd) return 0;
+        return INITIAL_REWARD_PER_SEC >> ((block.timestamp - emissionStart) / HALVING_PERIOD);
     }
 
     // ── settle (CEI: count, write debt, then pay) ─────────────────────────────────────────
@@ -1477,16 +1540,19 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
         return u.trackedBoostedEffective > be || u.trackedBoostedPure > bp;
     }
     /// @notice The longest lock (in days) that may be opened right now — the decreasing countdown:
-    ///         min(MAX_LOCK_DAYS, days remaining until the 7-year emission end).
+    ///         min(MAX_LOCK_DAYS, days remaining until the emission programme closes).
     function maxLockDaysAvailable() public view returns (uint256) {
         if (block.timestamp >= emissionEnd) return 0;
         uint256 d = (emissionEnd - block.timestamp) / 1 days;
         if (d > MAX_LOCK_DAYS) d = MAX_LOCK_DAYS;
         return d;
     }
+    /// @notice Fraction of TOTAL_REWARDS the schedule has released so far, in WAD. This tracks
+    ///         the halving CURVE, not the clock — 50% is reached at year 2, not year 8. Returns
+    ///         exactly WAD once the programme closes (the 2^-8 tail is closed, not pending).
     function emissionProgress() external view returns (uint256) {
         if (block.timestamp >= emissionEnd) return WAD;
-        return ML.mulDiv(block.timestamp - emissionStart, WAD, EMISSION_PERIOD);
+        return ML.mulDiv(_emittedAt(block.timestamp), WAD, TOTAL_REWARDS);
     }
     function timeSinceEmissionStart() external view returns (uint256) {
         return block.timestamp >= emissionStart ? block.timestamp - emissionStart : 0;
@@ -1518,9 +1584,9 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
         if (u.trackedBoostedEffective == 0 || totalBoostedEffective == 0) return 0;
         uint256 acc = accRewardPerShare;
         uint256 t = block.timestamp < emissionEnd ? block.timestamp : emissionEnd;
-        uint256 elapsed = t > lastRewardTime ? t - lastRewardTime : 0;
-        if (elapsed > 0) {
-            uint256 r = REWARD_PER_SEC * elapsed;
+        if (t > lastRewardTime) {
+            // Same closed-form delta `_updateGlobal` will integrate — quote == execution.
+            uint256 r = _emittedAt(t) - _emittedAt(lastRewardTime);
             if (totalBoostedEffective < MIN_EMISSION_WEIGHT) r = ML.mulDiv(r, totalBoostedEffective, MIN_EMISSION_WEIGHT);
             if (r > rewardReserve) r = rewardReserve;
             acc += ML.mulDiv(r, WAD, totalBoostedEffective);
@@ -1582,7 +1648,7 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
         utilizationWad = totalStaked == 0 ? 0 : ML.mulDiv(totalDebt, WAD, totalStaked);
         annualRateBps = _interestRate();
         rewardReserve_ = rewardReserve; protocolReserve_ = protocolReserve;
-        emissionStart_ = emissionStart; emissionEnd_ = emissionEnd; rewardPerSec = REWARD_PER_SEC;
+        emissionStart_ = emissionStart; emissionEnd_ = emissionEnd; rewardPerSec = currentRewardPerSec();
         totalLiquidations_ = totalLiquidations; totalBadDebt_ = totalBadDebt;
         totalInterestAccruedGlobal_ = totalInterestAccruedGlobal; owed_ = _owed();
         maxDaysNow = maxLockDaysAvailable();

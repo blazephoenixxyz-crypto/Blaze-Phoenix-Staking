@@ -263,5 +263,21 @@ reliable predictor of where the next bug lives is the dimension nobody has named
 
 ---
 
+## 10. Postscript — v4 applies §3 to its own emission
+
+v4 replaced the flat emission rate with a biennial-halving curve, which made `rate(s)`
+time-varying for the first time. The rectangle approximation of §3 —
+`rate(t₁) · (t₁ − t₀)` — would now be a live instance of the *retroactive re-pricing* family:
+a window crossing a halving boundary would be paid entirely at whichever period's rate the
+touching transaction happened to land in.
+
+The implementation instead distributes `emittedAt(t₁) − emittedAt(t₀)`, the exact integral of
+the schedule in closed form. The delta of a monotone cumulative curve is correct across any
+number of boundary crossings, for windows of any length, with no dependence on when somebody
+happened to poke the contract — the property this report exists to demand. Dimension 12's
+freeze-at-`emissionEnd` test and Dimension 13's period-boundary anchors pin it.
+
+---
+
 *Security credit for the disclosed findings is recorded in the
 [Hall of Fame](../README.md#-security-hall-of-fame).*

@@ -1,0 +1,77 @@
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  foundry:
+    name: Foundry — build, size gate, tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - uses: foundry-rs/foundry-toolchain@v1
+
+      - name: Build (with contract sizes)
+        run: forge build --sizes
+
+      - name: EIP-170 size gate
+        # forge build --sizes exits non-zero when a deployable contract exceeds the
+        # 24576-byte runtime limit, so the build step above already gates this; the
+        # explicit check documents the intent and prints the number that matters.
+        run: |
+          forge build --sizes --json | python3 -c '
+          import json,sys
+          sizes = json.load(sys.stdin)
+          for name, info in sizes.items():
+              if name == "BlazePhoenixStaking":
+                  runtime = info["runtime_size"]
+                  margin  = 24576 - runtime
+                  print(f"{name}: runtime {runtime} B, margin {margin} B")
+                  sys.exit(0 if margin >= 0 else 1)
+          sys.exit(1)
+          '
+
+      - name: Foundry test suites
+        run: forge test -vv
+
+  node-evm:
+    name: Node — real-EVM harness (9 suites)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+
+      - name: smoke — deploy & sanity
+        run: node test/smoke.mjs
+      - name: run — integrity & edge cases
+        run: node test/run.mjs
+      - name: attack — adversarial vectors
+        run: node test/attack.mjs
+      - name: boost — BP-2026-001 regression (B1–B10)
+        run: node test/boost.mjs
+      - name: vectors — canonical DeFi attack vectors
+        run: node test/vectors.mjs
+      - name: dimensions — state-dimension suite
+        run: node test/dimensions.mjs
+      - name: final — metamorphic relations & scaling studies
+        run: node test/final.mjs
+      - name: reporting — boundary & lifecycle reports
+        run: node test/reporting.mjs
+      - name: selfaudit — regression against our own remediations
+        run: node test/selfaudit.mjs

@@ -1,4 +1,4 @@
-# BlazePhoenix Staking — v3.1 (Autonomous + Provably Solvent)
+# BlazePhoenix Staking — v4 (Autonomous + Provably Solvent, Final Tokenomics)
 
 Single-asset staking + lending where **collateral, borrowed asset, and reward token are all the
 same token (BZPX)**. Because there is only one asset, there is **no price oracle anywhere** — an
