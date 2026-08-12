@@ -10,10 +10,11 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
-# Every job writes a compact digest to the run summary. That digest is readable
-# through the check-runs API in a few kilobytes, so a failure can be diagnosed
-# without downloading job logs — which matters when the only machine available
-# is on a slow mobile connection.
+# Failures are reported twice: as a rendered digest in the run summary (for the
+# web UI) and as workflow ERROR ANNOTATIONS. The annotations matter because they
+# come back through the check-runs API as a few kilobytes of JSON, so a failure
+# can be diagnosed without downloading the log archive — `gh run view --log`
+# pulls every job's log as one zip, which is not viable on a slow connection.
 
 jobs:
   foundry:
@@ -27,36 +28,37 @@ jobs:
       - uses: foundry-rs/foundry-toolchain@v1
 
       - name: Build
-        id: build
         run: |
           set -o pipefail
           if forge build --sizes 2>&1 | tee build.log; then
             echo "### Foundry build: OK" >> "$GITHUB_STEP_SUMMARY"
-            grep -E "BlazePhoenix(Staking|MathLib)" build.log >> "$GITHUB_STEP_SUMMARY" || true
           else
-            {
-              echo "### Foundry build: FAILED"
-              echo '```'
-              grep -E "^(Error|error\[|Compiler run failed|  -->)" build.log | head -40 || tail -40 build.log
-              echo '```'
-            } >> "$GITHUB_STEP_SUMMARY"
+            digest=$(grep -E "^(Error|error\[|Warning|Compiler run failed)|-->" build.log | head -25)
+            [ -n "$digest" ] || digest=$(tail -25 build.log)
+            echo "::error title=forge build failed::$(echo "$digest" | sed ':a;N;$!ba;s/\n/%0A/g')"
+            { echo "### Foundry build: FAILED"; echo '```'; echo "$digest"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
             exit 1
           fi
 
       - name: EIP-170 size gate
         run: |
           forge build --sizes --json > sizes.json
-          python3 - <<'PY' >> "$GITHUB_STEP_SUMMARY"
-          import json, sys
+          python3 - <<'PY'
+          import json, os, sys
           sizes = json.load(open("sizes.json"))
           info = sizes.get("BlazePhoenixStaking")
           if info is None:
-              print("### Size gate: FAILED — BlazePhoenixStaking absent from build output")
+              print("::error title=size gate::BlazePhoenixStaking absent from build output")
               sys.exit(1)
           runtime = info["runtime_size"]
           margin = 24576 - runtime
-          print(f"### Size gate: runtime **{runtime} B**, margin **{margin} B** of 24576")
-          sys.exit(0 if margin >= 0 else 1)
+          line = f"BlazePhoenixStaking runtime {runtime} B, margin {margin} B of 24576"
+          with open(os.environ["GITHUB_STEP_SUMMARY"], "a") as f:
+              f.write(f"### Size gate: {line}\n")
+          if margin < 0:
+              print(f"::error title=size gate::{line}")
+              sys.exit(1)
+          print(f"::notice title=size gate::{line}")
           PY
 
       - name: Foundry tests
@@ -64,14 +66,11 @@ jobs:
           set -o pipefail
           if forge test -vv 2>&1 | tee test.log; then
             echo "### Foundry tests: OK" >> "$GITHUB_STEP_SUMMARY"
-            grep -E "^(Ran|Suite result)" test.log >> "$GITHUB_STEP_SUMMARY" || true
           else
-            {
-              echo "### Foundry tests: FAILED"
-              echo '```'
-              grep -E "^\[FAIL|Suite result|^Error" test.log | head -40
-              echo '```'
-            } >> "$GITHUB_STEP_SUMMARY"
+            digest=$(grep -E "^\[FAIL|^Suite result|^Error|^Failing tests:" test.log | head -25)
+            [ -n "$digest" ] || digest=$(tail -25 test.log)
+            echo "::error title=forge test failed::$(echo "$digest" | sed ':a;N;$!ba;s/\n/%0A/g')"
+            { echo "### Foundry tests: FAILED"; echo '```'; echo "$digest"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
             exit 1
           fi
 
@@ -88,26 +87,21 @@ jobs:
 
       - run: npm ci
 
-      # All nine suites run even when an earlier one fails, so a single CI round
-      # reports every problem instead of only the first. Each failure contributes
-      # its failing check lines to the digest.
+      # All nine suites run even after one fails, so a single round reports every
+      # problem rather than only the earliest.
       - name: Real-EVM suites
         run: |
           failed=""
           for suite in smoke run attack boost vectors dimensions final reporting selfaudit; do
             echo "::group::$suite"
             if node "test/$suite.mjs" > "$suite.log" 2>&1; then
-              echo "- **$suite** — OK $(grep -oE '[0-9]+ (checks|passed)' "$suite.log" | tail -1)" >> "$GITHUB_STEP_SUMMARY"
+              echo "- **$suite** — OK" >> "$GITHUB_STEP_SUMMARY"
             else
               failed="$failed $suite"
-              {
-                echo "- **$suite** — FAILED"
-                echo '```'
-                grep -E "✗|FAIL|Error:|throw" "$suite.log" | head -20
-                echo "--- last lines ---"
-                tail -12 "$suite.log"
-                echo '```'
-              } >> "$GITHUB_STEP_SUMMARY"
+              digest=$(grep -E "✗|Error:|error:|throw " "$suite.log" | head -12)
+              [ -n "$digest" ] || digest=$(tail -15 "$suite.log")
+              echo "::error title=$suite failed::$(echo "$digest" | sed ':a;N;$!ba;s/\n/%0A/g')"
+              { echo "- **$suite** — FAILED"; echo '```'; echo "$digest"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
             fi
             cat "$suite.log"
             echo "::endgroup::"
