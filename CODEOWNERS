@@ -1,0 +1,14 @@
+# Code owners for BlazePhoenix-Staking.
+# Every change requires review from the organization's maintainers team,
+# keeping ownership on the org (anonymous by design) rather than a personal handle.
+#
+# NOTE: ensure the team `@blazephoenixxyz-crypto/maintainers` exists in the org
+# (Settings → Teams). Rename here if you use a different team slug.
+
+*                       @blazephoenixxyz-crypto/maintainers
+
+# Security-sensitive surfaces (contracts + CI + security policy) — same owner,
+# listed explicitly so review is never skipped on these paths.
+/src/                   @blazephoenixxyz-crypto/maintainers
+/.github/               @blazephoenixxyz-crypto/maintainers
+/SECURITY.md            @blazephoenixxyz-crypto/maintainers

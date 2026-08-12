@@ -1,16 +1,46 @@
-# BlazePhoenix Staking — v4 (Autonomous + Provably Solvent, Final Tokenomics)
+# BlazePhoenix Staking
 
-Single-asset staking + lending where **collateral, borrowed asset, and reward token are all the
-same token (BZPX)**. Because there is only one asset, there is **no price oracle anywhere** — an
-entire class of attacks simply does not exist.
+**Single-asset staking and lending with no price oracle anywhere, and solvency the contract
+proves on every transaction instead of claiming after the fact.**
 
-This is the consolidated final version. It takes the **v2 security core** and adds the two
-properties the protocol is now designed around:
+![version](https://img.shields.io/badge/contract-v4.0.0-C2521B?style=flat-square)
+![solidity](https://img.shields.io/badge/solidity-0.8.28-444?style=flat-square)
+![licence](https://img.shields.io/badge/licence-BUSL--1.1-444?style=flat-square)
+![oracle](https://img.shields.io/badge/price%20oracle-none%20by%20construction-1B6B52?style=flat-square)
+![keepers](https://img.shields.io/badge/keepers%20required-zero-1B6B52?style=flat-square)
+![emission](https://img.shields.io/badge/emission-180M%20biennial%20halving-C2521B?style=flat-square)
 
-1. **100% autonomous maintenance** — the book cleans itself from ordinary user traffic; no keeper
-   bot and no admin button are required.
-2. **Provable solvency** — anyone can verify, on-chain and for free, that the contract holds at
-   least everything it owes.
+Collateral, borrowed asset, and reward token are **all the same token (BZPX)**. Because there is
+only one asset, there is no price to feed and nothing to manipulate: oracle manipulation, unfair
+liquidation on price, liquidation MEV, and read-only reentrancy against a price read are not
+mitigated risks here — they are **absent surfaces**.
+
+Three properties the protocol is designed around:
+
+1. **Provable solvency.** Anyone can verify on-chain, for free, that the contract holds at least
+   everything it owes. No indexer, no trust, no off-chain watcher.
+2. **100% autonomous maintenance.** The book cleans itself from ordinary user traffic — no keeper
+   bot, no admin button, gas bounded unconditionally.
+3. **Deterministic emission.** 180,000,000 BZPX on a biennial-halving curve evaluated in closed
+   form: a pure function of time with no loop, no oracle, and no admin knob.
+
+```mermaid
+flowchart LR
+    U([User tx]) --> G{{"conserves guard<br/>snapshot balance + owed"}}
+    G --> A["accumulators<br/>emission · interest"]
+    A --> M["autonomous sweep<br/>borrowers · lockers"]
+    M --> C{{"Δbalance == Δowed ?"}}
+    C -->|yes| OK([commit])
+    C -->|no| RV([revert — insolvency unreachable])
+
+    style G fill:#EBD7C9,stroke:#C2521B,color:#141821
+    style C fill:#EBD7C9,stroke:#C2521B,color:#141821
+    style RV fill:#F3E9CE,stroke:#8A6A12,color:#141821
+    style OK fill:#DCEBE4,stroke:#1B6B52,color:#141821
+```
+
+> **Reading this as an AI agent or crawler?** [`llms.txt`](./llms.txt) is written for you: the
+> invariants, the emission maths, the licence, and the attribution, in one file.
 
 ---
 
@@ -183,16 +213,61 @@ any fork against a different asset.
 
 | Parameter | Value |
 |---|---|
-| Total emission | 180,000,000 BZPX, linear over 7 years |
+| Total emission | 180,000,000 BZPX — biennial halving, `90M >> p` per 2-year period (see below) |
 | Max stake / wallet | 30,000,000 BZPX |
 | Max LTV (on effective stake) | 50% |
 | Liquidation threshold | 95% |
 | Liquidation bonus | 5% (paid to the gas-payer) |
 | Withdrawal | requires lock expired **and** debt fully repaid (no exit penalty) |
 | Reserve factor | 3% |
-| Lock duration | **min 90 days, max 2555 days (7 years)**, capped by a decreasing countdown to emission end |
+| Lock duration | **min 90 days, max 2555 days (7 years)**, capped by a decreasing countdown to the emission close |
 | Lock boost | `boost(d) = 10000 + 750·(d/365) + 250·(d/365)²` bps → 90d ≈ 1.02×, 1y = 1.10×, 5y = 2.00×, 7y = 2.75× |
 | Interest curve | kinked at 80% utilisation (1%→5% base, steep above) |
+
+---
+
+## Emission — 180M BZPX, halving every two years
+
+Period `p` (0-indexed, two years each) emits `90M >> p`. The total is exact by construction, not
+by calibration: `Σ 90M/2^p = 180M`.
+
+| Years | Emitted in period | Cumulative | % of budget |
+|---|--:|--:|--:|
+| 1–2 | 90,000,000 | 90,000,000 | 50% |
+| 3–4 | 45,000,000 | 135,000,000 | 75% |
+| 5–6 | 22,500,000 | 157,500,000 | 87.5% |
+| 7–8 | 11,250,000 | 168,750,000 | 93.75% |
+| 9–16 | geometric tail | 179,296,875 | 99.61% |
+
+Cumulative emission is a **closed form** — one division, two shifts, one multiplication; no loop,
+no oracle, no `exp`/`log`:
+
+```
+emitted(t) = (TOTAL − (TOTAL >> p)) + (R0 >> p)·(t − start − p·PERIOD),   p = ⌊(t − start)/PERIOD⌋
+```
+
+Three things about how it is used matter more than the formula itself:
+
+- **The accumulator integrates the delta of the curve, never `rate × elapsed`.** With a
+  time-varying rate that rectangle would let a window straddling a halving boundary be paid
+  entirely at whichever period's rate a passing transaction happened to land in — the
+  *retroactive re-pricing* defect family documented in
+  [docs/INVARIANTS_AND_TIME.md](./docs/INVARIANTS_AND_TIME.md). The delta of a monotone
+  cumulative curve is the exact integral, whoever touches the contract and whenever.
+- **Quote equals settlement.** The pending-rewards view runs the same expression, so a quote read
+  in a block equals what a claim in that block pays.
+- **Anyone can read the whole curve.** `emittedAt(timestamp)` is public, so the schedule is
+  independently verifiable rather than merely documented.
+
+The programme closes after 8 periods (16 years) with 255/256 of the budget emitted and the
+running rate below 0.8% of the opening one — a fade into real yield (borrow interest, plus the
+DEX fee-share routed to the reserve), not a cliff. The exact `180M >> 8 = 703,125 BZPX` tail,
+along with anything stranded by empty windows, is recoverable **only** to the immutable treasury
+and only after the close.
+
+Why halving rather than the linear schedule it replaces: a flat curve ends on a date, and the
+capital that came for emission leaves on that date, all at once. Choosing the two-year halving
+over the one-year one halves peak sell pressure while doubling the incentive horizon.
 
 ---
 
@@ -212,7 +287,7 @@ forge build                # uses foundry.toml (via_ir = true)
 ## Layout
 
 ```
-src/BlazePhoenixStaking.sol   final staking + lending contract  (VERSION "3.1.0")
+src/BlazePhoenixStaking.sol   final staking + lending contract  (VERSION "4.0.0")
 src/BlazePhoenixMathLib.sol   512-bit mulDiv + raw token calls   (VERSION "3.0.0-staking")
 
 test/run.mjs      integrity + edge-case suite   (real EVM, offline)
@@ -270,7 +345,25 @@ Full write-up of the v3.1 remediation in
 What the findings had in common, and the design rules drawn from them, in
 [docs/INVARIANTS_AND_TIME.md](./docs/INVARIANTS_AND_TIME.md).
 
-## Licence & Whitepaper
+## Documentation
 
-- **Licence:** [BUSL-1.1](./LICENSE) — Change Date 2030-06-01, then GPL-2.0-or-later
-- **Whitepaper:** [docs/WHITEPAPER.md](./docs/WHITEPAPER.md)
+| Document | What it is |
+|---|---|
+| [docs/WHITEPAPER.md](./docs/WHITEPAPER.md) | The full design: accounting model, interest curve, liquidation, emission |
+| [docs/INVARIANTS_AND_TIME.md](./docs/INVARIANTS_AND_TIME.md) | Engineering report — why six of seven disclosed defects left the books perfectly balanced, and the rules that fall out of that |
+| [docs/VERSION_HISTORY.md](./docs/VERSION_HISTORY.md) | Version-by-version change map, including what each release deliberately did **not** move |
+| [SECURITY.md](./SECURITY.md) | Disclosure policy, scope, and where reports land hardest |
+| [llms.txt](./llms.txt) | Machine-readable summary for AI agents and crawlers |
+| [CITATION.cff](./CITATION.cff) | Citation metadata |
+
+## Licence & authorship
+
+- **Licence:** [BUSL-1.1](./LICENSE) — Change Date 2030-06-01, then GPL-2.0-or-later.
+- **Authors:** **Fable & Mitra.** Mitra ([@Sigmacrit](https://x.com/Sigmacrit)) is the human
+  architect, anonymous by design — the code is the résumé. Fable is the Claude model that
+  co-engineered it.
+- **Original work.** Copyright subsists automatically under the Berne Convention (1886).
+  Authorship is cryptographically provable from a keccak256 fingerprint embedded in the source,
+  without disclosing the authors' identity.
+
+*esse, non videri.*
