@@ -20,7 +20,20 @@ import { ethers } from 'ethers';
 const DAY = 86400n, YEAR = 365n * DAY;
 const MAX_UINT = (1n << 256n) - 1n;
 const WAD = 10n ** 18n;
-const REWARD_PER_SEC = (180_000_000n * WAD) / (7n * 365n * DAY);
+// Biennial-halving schedule (contract v4): period p (0-indexed, 2 years each) emits 90M >> p,
+// closing after 8 periods with the 2^-8 tail (703,125 BZPX) never emitted. R0 is the period-0
+// rate; every empty-window arm below sits inside period 0, where the curve is linear at R0.
+const TOTAL_EMISSION   = 180_000_000n * WAD;
+const HALVING_PERIOD   = 2n * YEAR;
+const EMISSION_PERIODS = 8n;
+const R0 = (TOTAL_EMISSION / 2n) / HALVING_PERIOD;
+const emittedAt = (dt) => {                       // dt: seconds since emissionStart
+  if (dt <= 0n) return 0n;
+  if (dt >= EMISSION_PERIODS * HALVING_PERIOD)
+    return TOTAL_EMISSION - (TOTAL_EMISSION >> EMISSION_PERIODS);
+  const p = dt / HALVING_PERIOD;
+  return (TOTAL_EMISSION - (TOTAL_EMISSION >> p)) + (R0 >> p) * (dt - p * HALVING_PERIOD);
+};
 const DUST = 10n ** 10n;
 
 const art = compileAll();
@@ -90,10 +103,10 @@ async function probe(w) {
   // I1 — Master Conservation Identity (the contract's own guard, one-sided)
   const solvencyResidual = BigInt(owed) - BigInt(backing);   // >0 ⇒ breach
 
-  // I2 — Emission closure.  Ideal linear schedule vs what the accumulator actually released.
-  //      stranded = REWARD_PER_SEC·Δt  −  (funded − remaining)
+  // I2 — Emission closure.  Ideal halving schedule vs what the accumulator actually released.
+  //      stranded = emittedAt(Δt)  −  (funded − remaining)
   const elapsed = chain.time - t0;
-  const idealEmitted = REWARD_PER_SEC * elapsed;
+  const idealEmitted = emittedAt(elapsed);
   const actualEmitted = BigInt(funded) - BigInt(rewardReserve);
   const stranded = idealEmitted - actualEmitted;
 
@@ -653,16 +666,17 @@ async function MR_emission() {
   console.log(`     empty window: ${emptyDays} days`);
   console.log(`     ideal emitted : ${fmt(p.idealEmitted)}`);
   console.log(`     actual emitted: ${fmt(p.actualEmitted)}`);
-  console.log(`     stranded      : ${fmt(p.stranded)}  (= REWARD_PER_SEC × empty seconds)`);
+  console.log(`     stranded      : ${fmt(p.stranded)}  (= R0 × empty seconds — period-0 rate)`);
 
-  const predicted = REWARD_PER_SEC * emptyDays * DAY;
+  const predicted = R0 * emptyDays * DAY;
   const err = p.stranded > predicted ? p.stranded - predicted : predicted - p.stranded;
   console.log(`     predicted     : ${fmt(predicted)}   |model error| = ${fmt(err)}`);
 
-  // Run the programme to completion with the pool CONTINUOUSLY populated, then ask whether
-  // any route can still move the residue. The pool stays full for the whole remaining window,
-  // so anything left over is attributable solely to the empty window at the start.
-  for (let k = 0; k < 10; k++) {
+  // Run the programme to completion (16 years now) with the pool CONTINUOUSLY populated, then
+  // ask whether any route can still move the residue. The pool stays full for the whole
+  // remaining window, so what is left over is the empty window at the start PLUS the 2^-8 tail
+  // (703,125 BZPX) the halving schedule deliberately never emits.
+  for (let k = 0; k < 17; k++) {
     chain.warp(YEAR); chain.mine(11);
     await staking.send(users[0], 'claimRewards', []);
   }
@@ -694,7 +708,7 @@ async function MR_emission() {
   const pAfter = await probe(w);
   check(pAfter.solvencyResidual <= DUST, 'MR-EMISSION: the sweep conserves the identity',
         `residual ${pAfter.solvencyResidual} wei`);
-  check(err <= REWARD_PER_SEC * 120n, 'MR-EMISSION: stranding matches the closed-form model rate×Δt',
+  check(err <= R0 * 120n, 'MR-EMISSION: stranding matches the closed-form model rate×Δt',
         `|model error| = ${fmt(err)}`);
   return { stranded: p.stranded, residue, predicted };
 }
@@ -1197,9 +1211,11 @@ async function mockScenarios() {
     check(!tooShort.ok && tooShort.revert === 'Staking__LockTooShort', 'MOCK: lock below MIN reverts',
           `got ${tooShort.revert}`);
 
-    chain.warp(1000n * DAY); chain.mine(11);
+    // The 16-year programme leaves maxLockDaysAvailable pinned at the 2555-day policy cap until
+    // fewer than 2555 days remain (day 3285). Warp to day 4000: 5840 − 4000 = 1840 days left.
+    chain.warp(4000n * DAY); chain.mine(11);
     const maxNow = BigInt(await staking.call('maxLockDaysAvailable'));
-    check(maxNow === 1555n, 'MOCK: available lock length counts down with the emission clock',
+    check(maxNow === 1840n, 'MOCK: available lock length counts down with the emission clock',
           `got ${maxNow}`);
     const past = await staking.send(users[0], 'deposit', [E18(1_000), maxNow + 1n]);
     check(!past.ok && past.revert === 'Staking__LockExceedsEmissionEnd',
@@ -1342,7 +1358,7 @@ async function scalingStudy() {
   const fe = ols(xsE, ysE);
   console.log(`     ⇒ stranded ∝ Δt^${fe.beta.toFixed(3)}   (R²=${fe.r2.toFixed(4)})  [linear BY DESIGN]`);
   check(fe.beta > 0.95 && fe.beta < 1.05 && fe.r2 > 0.999,
-        'SCALING: empty-window emission is skipped deterministically at exactly REWARD_PER_SEC',
+        'SCALING: empty-window emission is skipped deterministically at exactly the period-0 rate',
         `β = ${fe.beta.toFixed(3)} (R²=${fe.r2.toFixed(4)}) — expected exactly 1.000`);
 
   // (c) CONTROL — the solvency residual under a clean, continuously-populated timeline.

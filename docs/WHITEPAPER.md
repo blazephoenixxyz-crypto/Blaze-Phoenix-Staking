@@ -406,13 +406,42 @@ remainder recorded as `totalBadDebt`.
 
 ## 6. Emission
 
-### 6.1 Schedule
+### 6.1 Schedule — biennial halving, closed-form O(1)
 
 ```
-TOTAL_REWARDS   = 180,000,000 BZPX
-EMISSION_PERIOD = 7 × 365 days
-REWARD_PER_SEC  = TOTAL_REWARDS / EMISSION_PERIOD  ≈ 0.814 BZPX/s
+TOTAL_REWARDS          = 180,000,000 BZPX
+HALVING_PERIOD         = 2 × 365 days
+EMISSION_PERIODS       = 8                                   (programme closes after 16 years)
+INITIAL_REWARD_PER_SEC = (TOTAL_REWARDS / 2) / HALVING_PERIOD ≈ 1.427 BZPX/s
 ```
+
+Period `p` (0-indexed, 2 years each) emits `90M >> p` — 90M in years 1–2, 45M in
+years 3–4, 22.5M in years 5–6, and so on. The geometric series sums to 180M
+**exactly by construction**: Σ 90M/2ᵖ = 180M.
+
+Cumulative emission is a closed form — one division, two shifts, one
+multiplication; no loop, no oracle, no exp/log:
+
+```
+emitted(t) = (TOTAL − (TOTAL >> p)) + (R0 >> p) · (t − start − p·PERIOD),
+p = ⌊(t − start) / PERIOD⌋
+```
+
+The accumulator integrates the **delta** of this curve per window, so every
+property of the previous linear schedule (determinism, no backlog capture,
+skipped windows staying in reserve) carries over unchanged. The curve is
+exposed on-chain as `emittedAt(timestamp)` so anyone can verify it for free.
+
+The programme hard-closes after 8 full periods: by then 255/256 of the budget
+(179,296,875 BZPX) is out and the running rate is below 0.8% of the initial
+one, so the close is a fade into real yield (borrow interest + DEX fee-share),
+not a cliff. The exact residue — `180M >> 8 = 703,125 BZPX` — is recoverable to
+the treasury via `sweepUndistributedEmission`, pro-protocol, never pro-user.
+
+Why halving instead of linear: a flat schedule ends abruptly, and the
+mercenary-capital exodus at linear cliffs is well documented; a halving tail
+halves the peak sell-pressure of an annual-halving curve (45M/yr max) while
+keeping twice the incentive horizon.
 
 Rewards are distributed pro-rata to `totalBoostedEffective` (stake × boost,
 net of debt) via the standard accumulator pattern.

@@ -10,10 +10,50 @@ between them.
 | v1 | `1.1.0` | `1.0.0-staking` | Feature-rich; offline audit only; admin sweep + admin liquidation |
 | v2 | `2.1.0` | `2.0.0-staking` | Security core: on-chain conservation guard, permissionless liquidation, no backdoor |
 | v3 | `3.0.0` | `3.0.0-staking` | v2 core **+** fully autonomous maintenance **+** public solvency proofs |
-| **v3.1 (final)** | **`3.1.0`** | **`3.0.0-staking`** | v3 **+** lock expiry priced against the clock **+** the locker maintenance window |
+| v3.1 | `3.1.0` | `3.0.0-staking` | v3 **+** lock expiry priced against the clock **+** the locker maintenance window |
+| **v4 (final)** | **`4.0.0`** | **`3.0.0-staking`** | v3.1 **+** final tokenomics: 180M biennial-halving emission, closed-form O(1) |
 
 v3 = **v2 base**, with the two requested additions and the useful UX views that v2 had dropped
 from v1 re-added.
+
+---
+
+## v4 — final tokenomics: the biennial-halving emission curve
+
+The only economic change: the schedule moves from **180M linear over 7 years** to **180M on a
+biennial-halving curve** — period `p` (0-indexed, 2 years each) emits `90M >> p`, so
+Σ 90M/2ᵖ = 180M exactly by construction. Chosen over the linear schedule because a flat curve
+ends in a cliff (documented mercenary-capital exodus at linear ends), while the geometric tail
+fades into the real-yield regime (borrow interest + DEX fee-share) with no magic date.
+
+Mechanics:
+
+- Cumulative emission is **closed-form O(1)** — one division, two shifts, one multiplication;
+  no loop, no oracle, no exp/log:
+  `emitted(t) = (TOTAL − (TOTAL >> p)) + (R0 >> p)·(t − start − p·PERIOD)`, `p = ⌊(t−start)/PERIOD⌋`.
+- `_updateGlobal` integrates the **delta** of that curve per window, replacing the flat
+  `REWARD_PER_SEC × elapsed` term. Everything else in the accumulator is untouched.
+- The programme **hard-closes after 8 periods (16 years)**: 255/256 of the budget
+  (179,296,875 BZPX) emitted, running rate < 0.8% of initial — a fade, not a cliff. The exact
+  `180M >> 8 = 703,125 BZPX` residue is recoverable via the pre-existing
+  `sweepUndistributedEmission`, pro-protocol.
+- Rounding is always pro-protocol: the floored rate's sub-wei remainder (< 1e-10 BZPX per
+  rollover) folds into the `TOTAL − (TOTAL >> p)` term, keeping the curve on the exact series.
+
+Surface changes:
+
+- Constants: `EMISSION_PERIOD` / `REWARD_PER_SEC` → `HALVING_PERIOD`, `EMISSION_PERIODS`,
+  `EMISSION_LENGTH`, `INITIAL_REWARD_PER_SEC`.
+- New view `emittedAt(timestamp)` exposes the curve for free on-chain verification (same ethos
+  as `solvency()`); `emissionProgress()` now reports emitted/TOTAL (the curve, not the clock).
+- `MAX_LOCK_DAYS` stays 2555 — now a policy cap (the boost curve and its overflow proof are
+  calibrated on d ≤ 2555), no longer equal to the programme length. `maxLockDaysAvailable()`
+  stays pinned at 2555 until fewer than 2555 days remain to the 16-year close.
+
+**Untouched, verified by the existing suites:** the Master Conservation Identity and the
+`conserves` guard, deterministic no-backlog-capture emission (empty windows advance the clock;
+their emission strands in `rewardReserve`, recoverable), the `MIN_EMISSION_WEIGHT` throttle, CEI
+settlement, the autonomous maintenance engine, and the whole lock/boost model.
 
 ---
 

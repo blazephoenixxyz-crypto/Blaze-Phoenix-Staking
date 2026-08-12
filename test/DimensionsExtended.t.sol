@@ -278,9 +278,36 @@ contract DimensionsExtendedTest is Base {
         vm.warp(end + 3 * 365 days);
         vm.prank(bob); staking.claimRewards(); // unrelated neutral tx, drives _updateGlobal()
 
-        uint256 rewardPerSec = staking.REWARD_PER_SEC();
-        uint256 expectedDistributed = rewardPerSec * (end - start); // clamped at emissionEnd, not 3 years later
-        assertApproxEqAbs(staking.totalRewardDistributed(), expectedDistributed, rewardPerSec,
+        // The whole-programme emission is the closed-form curve's delta, clamped at emissionEnd,
+        // not at the late touch time.
+        uint256 expectedDistributed = staking.emittedAt(end) - staking.emittedAt(start);
+        assertApproxEqAbs(staking.totalRewardDistributed(), expectedDistributed,
+            staking.INITIAL_REWARD_PER_SEC(),
             "accRewardPerShare must have stopped accruing exactly at emissionEnd, not at the late touch time");
+    }
+
+    // ─── Dimension 13 — the biennial-halving curve itself ──────────────────────────────────
+    // The period-boundary anchors are EXACT by construction (the partial term is zero there and
+    // 180M is divisible by 2^8), so these are assertEq, not approx: any drift in the closed form
+    // is a hard failure, not noise.
+    function test_Dim13_EmissionCurveHalvingAnchors() public view {
+        uint256 start  = staking.emissionStart();
+        uint256 period = staking.HALVING_PERIOD();
+        uint256 total  = staking.TOTAL_REWARDS();
+
+        assertEq(staking.emittedAt(start), 0, "curve starts at zero");
+        assertEq(staking.emittedAt(start + period),     total - (total >> 1), "year 2:  90M (50%)");
+        assertEq(staking.emittedAt(start + 2 * period), total - (total >> 2), "year 4: 135M (75%)");
+        assertEq(staking.emittedAt(start + 3 * period), total - (total >> 3), "year 6: 157.5M (87.5%)");
+        assertEq(staking.emittedAt(staking.emissionEnd()),            total - (total >> 8),
+            "close: 179,296,875 — the 2^-8 tail is never emitted");
+        assertEq(staking.emittedAt(staking.emissionEnd() + 365 days), total - (total >> 8),
+            "the curve is flat after the close");
+
+        // Mid-period the curve is linear at the halved rate (sub-wei flooring aside).
+        assertApproxEqAbs(staking.emittedAt(start + period / 2), 45_000_000e18, 1e18,
+            "halfway through period 0 at R0");
+        assertApproxEqAbs(staking.emittedAt(start + period + period / 2), 112_500_000e18, 1e18,
+            "halfway through period 1 at R0/2");
     }
 }
