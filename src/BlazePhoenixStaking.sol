@@ -1493,8 +1493,16 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
         return ML.mulDiv(_effective(u), MAX_LTV, 100);
     }
     function _health(UserInfo storage u) internal view returns (uint256) {
-        if (u.staked == 0 || u.debt == 0) return WAD;
-        if (u.debt >= u.staked)           return 0;
+        // Only a debt-free position is unconditionally healthy. A position whose
+        // stake has been consumed to zero while debt remains is the WORST state
+        // this function can describe, not the best — and the very next line says
+        // so. Guarding on `staked == 0` here fired first and inverted the verdict,
+        // reporting maximum health for a position `_isLiquidatable` treats as
+        // immediately liquidatable. Interest accrual reaches that state on its
+        // own (see `_accrue`: interest is clamped to the stake and the remainder
+        // becomes uncollected), so it is ordinary, not adversarial.
+        if (u.debt == 0)        return WAD;
+        if (u.debt >= u.staked) return 0;
         return ML.mulDiv(u.staked - u.debt, WAD, u.staked);
     }
 
@@ -1508,7 +1516,13 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
         return _health(_users[user_]);
     }
     function _daysToLiqInternal(UserInfo storage u) internal view returns (uint256) {
-        if (u.debt == 0 || u.staked == 0)             return type(uint256).max;
+        // Same correction as `_health`: only a debt-free position is never
+        // liquidatable. With debt outstanding and the stake consumed to zero the
+        // next line already returns 0 (debt*100 >= 0 holds), which agrees with
+        // `_isLiquidatable`. The old `|| u.staked == 0` reported "never" for
+        // exactly the positions a liquidator most needs to find — the ones with
+        // no collateral left, which are where bad debt accumulates.
+        if (u.debt == 0)                              return type(uint256).max;
         if (u.debt * 100 >= u.staked * LIQ_THRESHOLD) return 0;
         uint256 stakeAtLiq = ML.mulDiv(u.debt, 100, LIQ_THRESHOLD) + 1;
         if (u.staked <= stakeAtLiq) return 0;
