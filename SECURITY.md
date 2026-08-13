@@ -76,8 +76,45 @@ in [`README.md`](./README.md), with your consent and under the name or handle yo
 choose. Credit is given for the finding, the root-cause analysis, and the
 remediation reasoning where they came from you — attribution is not rounded down.
 
-We do not currently run a paid bounty; this may change and will be announced
-here.
+## Bounty programme
+
+**40,000,000 BZPX is allocated to security research** — 4% of a fixed
+1,000,000,000 supply, carved out of the token allocation for this and nothing
+else. The pool is shared with
+[BlazePhoenix-Dex](https://github.com/blazephoenixxyz-crypto/Blaze-Phoenix-Dex);
+a finding against either protocol draws from it.
+
+Three things stated up front, because a researcher deserves to decide with open
+eyes rather than discover the terms after doing the work:
+
+1. **Rewards are paid in BZPX, not in stablecoins or ETH.** The token is not
+   liquid at the time of writing, so the value of an award at the moment it is
+   granted is not something we can promise. What we can promise is the quantity
+   and the schedule.
+2. **Payouts begin after October 2026.** Reports are accepted, triaged and
+   acknowledged from now; settlement of awards starts after that date. If that
+   timing does not suit you, waiting is an entirely reasonable choice — the
+   scope is not going anywhere.
+3. **Severity is our assessment, and we will show our reasoning.** Where we
+   disagree with a reporter's rating we will say why in writing rather than
+   silently downgrading.
+
+| Severity | Award |
+|---|---|
+| Critical — direct theft or permanent freezing of user funds; a reachable insolvent state | 2,000,000 – 6,000,000 BZPX |
+| High — theft under specific conditions, or a redistribution that systematically pays the wrong party | 500,000 – 2,000,000 BZPX |
+| Medium — griefing, temporary denial of service, recoverable residue reaching the wrong party | 100,000 – 500,000 BZPX |
+| Low — demonstrated impact below the above | up to 100,000 BZPX |
+
+A report must be previously unknown to us and must demonstrate impact rather than
+describe a theoretical concern. Duplicates are settled by the timestamp of the
+first report received.
+
+One note specific to this protocol, and it is the whole reason the taxonomy above
+exists: **a finding does not have to break conservation to be Critical here.**
+The guard can be working perfectly while the money goes to the wrong person. If
+your report shows that, do not downgrade it yourself on the grounds that the
+totals still balance — that is precisely the class we most want to hear about.
 
 ## Authorship & integrity
 
