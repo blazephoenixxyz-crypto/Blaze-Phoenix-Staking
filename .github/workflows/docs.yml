@@ -40,6 +40,17 @@ jobs:
         with:
           submodules: recursive
 
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      # OpenZeppelin is an npm dependency here, not a submodule, and the
+      # remapping in foundry.toml points into node_modules — so the install
+      # has to come before anything that compiles. Same order as ci.yml, and
+      # for the same reason it documents there.
+      - run: npm ci
+
       - name: Install Foundry
         uses: foundry-rs/foundry-toolchain@v1
 
