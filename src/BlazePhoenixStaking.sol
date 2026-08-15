@@ -345,12 +345,26 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
     ///      failure outside this contract) `tripBreaker()` lets anyone halt — but ONLY under that
     ///      objective on-chain breach, never on healthy state.
     modifier conserves() {
-        uint256 balBefore  = ML.rawBalanceOf(bzpx, address(this));
-        uint256 owedBefore = _owed();
+        // LIQ-01: compare the DELTA of the FLOOR-FREE Master Conservation Identity
+        //   balance + totalDebt + totalBadDebt
+        //     == totalStaked + rewardReserve + protocolReserve + pendingDistribution
+        // Every term is an individual non-negative state variable summed WITHOUT any
+        // max(x,0)/floor, so the identity is linear in EVERY regime. The old check
+        // read _owed(), which floors ledgerNet (ledgerSum vs totalDebt) and the
+        // totalBadDebt netting; in terminal distress those floors made a legitimate
+        // bad-debt liquidation / repay / interest accrual look like a value leak and
+        // reverted it (Staking__InvariantBreached), freezing the very recovery tools
+        // (liquidate/repay) exactly when they are needed. Historical drift still
+        // cancels because only the CHANGE across the body is compared.
+        uint256 lhsBefore = ML.rawBalanceOf(bzpx, address(this)) + totalDebt + totalBadDebt;
+        uint256 rhsBefore = totalStaked + rewardReserve + protocolReserve + _pendingDistribution();
         _;
-        uint256 lhs = ML.rawBalanceOf(bzpx, address(this)) + owedBefore;
-        uint256 rhs = balBefore + _owed();
-        uint256 d = lhs > rhs ? lhs - rhs : rhs - lhs;
+        uint256 lhsAfter = ML.rawBalanceOf(bzpx, address(this)) + totalDebt + totalBadDebt;
+        uint256 rhsAfter = totalStaked + rewardReserve + protocolReserve + _pendingDistribution();
+        // |Δlhs - Δrhs| = |(lhsAfter + rhsBefore) - (lhsBefore + rhsAfter)|
+        uint256 a = lhsAfter + rhsBefore;
+        uint256 b = lhsBefore + rhsAfter;
+        uint256 d = a > b ? a - b : b - a;
         if (d > CONSERVATION_DUST) revert Staking__InvariantBreached();
     }
     modifier whenNotEmergency() {
@@ -1334,7 +1348,24 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
         if (interest == 0) return;
 
         if (interest > u.staked) {
-            unchecked { totalUncollectedInterest += (interest - u.staked); }
+            // C-03 fix (couple the clamps). _updateInterestIndex already debited the
+            // GLOBAL totalStaked by this position's FULL interest and distributed it
+            // (reserveCut + toPool), but only u.staked of it is actually collectible.
+            // Add the uncollectible `shortfall` BACK to totalStaked so it again equals
+            // Σ u.staked — restoring honest utilisation (no death-spiral overstatement),
+            // an honest _owed()/isSolvent, an honest H-05 haircut denominator, and
+            // closing the withdraw() checked-underflow freeze — and record it as
+            // realised bad debt, because that interest was paid out to pure stakers /
+            // the reserve yet never seized from anyone. Conserves-neutral under the
+            // floor-free identity: +shortfall on the RHS (totalStaked) is matched by
+            // +shortfall on the LHS (totalBadDebt). totalUncollectedInterest stays as
+            // telemetry of the cumulative uncollectible interest.
+            uint256 shortfall = interest - u.staked;
+            unchecked {
+                totalUncollectedInterest += shortfall;
+                totalStaked              += shortfall;
+                totalBadDebt             += shortfall;
+            }
             interest = u.staked;
         }
         // ATTRIBUTION ONLY. The global side — totalStaked, the reserve cut and the pure-staker
@@ -1436,6 +1467,13 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
         uint256 acc = totalRewardDistributed > totalRewardsPaid ? totalRewardDistributed - totalRewardsPaid : 0;
         owed_ = ledgerNet + acc;
         owed_ = owed_ > totalBadDebt ? owed_ - totalBadDebt : 0;   // recorded losses are netted out
+    }
+
+    /// @dev Accrued-but-unpaid reward / pure-yield still owed to positions. paid <= distributed
+    ///      by construction, so the guard never fires — it only prevents an underflow. Used by
+    ///      the conserves identity so the check stays floor-free and linear in every regime.
+    function _pendingDistribution() internal view returns (uint256) {
+        return totalRewardDistributed > totalRewardsPaid ? totalRewardDistributed - totalRewardsPaid : 0;
     }
 
     /// @dev hard, one-sided: contract must hold at least what it owes (minus dust).
