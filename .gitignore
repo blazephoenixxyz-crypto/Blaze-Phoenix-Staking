@@ -4,3 +4,6 @@ node_modules/
 lib/
 broadcast/
 .env
+
+# Generated contract reference — built in CI, never committed
+docs-api/
