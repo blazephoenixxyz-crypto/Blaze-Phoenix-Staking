@@ -1312,19 +1312,21 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
         //     Δowed = −slice + reserveCut + toPool = 0,   Δbalance = 0
         uint256 slice = ML.mulDivSafe(debtNow, delta, WAD);
         if (slice == 0) return;
-        if (slice > totalStaked) slice = totalStaked;   // clamp to the collateral actually available
-
-        // C-03 index-clamp coupling: advance the per-debt index ONLY by what was actually
-        // debited/distributed (the CLAMPED slice), not the full pre-clamp delta. When the clamp
-        // binds (terminal distress) the two differ; charging users off the full delta would make
-        // Σ per-user interest exceed the global debit, so the shortfall reconcile in
-        // _accrueInterestFor would over-restore totalStaked into a phantom that re-opens clamp
-        // headroom and is paid out as unbacked yield. deltaEff keeps
-        // Σ per-user charges == global debit == distribution in EVERY regime. Checked add on
-        // purpose (a wrapped index would silently mis-price every position; ~1e32 accruals away).
-        uint256 deltaEff = ML.mulDiv(slice, WAD, debtNow);
-        if (deltaEff == 0) return;   // sub-unit rounding at terminal totalStaked: charge nothing this window
-        accInterestPerDebt += deltaEff;
+        if (slice > totalStaked) {
+            // C-03 index-clamp coupling. The clamp binds (terminal distress): the global can
+            // only debit `totalStaked`, so reduce the per-debt index advance to match. Otherwise
+            // per-user charges (computed off the full delta) sum to MORE than was debited and the
+            // shortfall reconcile in _accrueInterestFor over-restores totalStaked into a phantom
+            // that re-opens clamp headroom and is paid out as unbacked yield. When the clamp does
+            // NOT bind (the healthy regime) delta is used UNCHANGED, so interest is bit-identical
+            // to pre-fix (no rounding drift, existing assertions unaffected). Either way
+            // Σ per-user charges == the global debit.
+            slice = totalStaked;
+            delta = ML.mulDiv(slice, WAD, debtNow);
+            if (delta == 0) return;   // sub-unit rounding at terminal totalStaked: charge nothing this window
+        }
+        // Checked on purpose (a wrapped index would silently mis-price every position; ~1e32 away).
+        accInterestPerDebt += delta;
         totalStaked -= slice;
 
         uint256 reserveCut = ML.mulDiv(slice, RESERVE_FACTOR_BPS, 10_000);
