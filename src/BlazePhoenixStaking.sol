@@ -1325,6 +1325,17 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
             slice = totalStaked;
             delta = ML.mulDiv(slice, WAD, debtNow);
             if (delta == 0) return;   // sub-unit rounding at terminal totalStaked: charge nothing this window
+            // Re-derive the global debit from the FLOORED delta. `delta` above rounds down, so
+            // debiting the pre-floor `slice` (== totalStaked) would remove dust the index can
+            // never attribute back to any position: totalStaked lands BELOW Σ u.staked and the
+            // next checked `totalStaked -= seized` (liquidate) or `-= amount_` (withdraw) hits
+            // a panic underflow — re-freezing liquidation in terminal distress, the exact DoS
+            // LIQ-01 exists to remove. Recomputing makes the debit ⌊debtNow·δ/WAD⌋, the same
+            // rounding contract the healthy branch has always had (global debit >= Σ per-user
+            // ⌊dᵢ·δ/WAD⌋, equal in the single-borrower case), so the clamp binds without ever
+            // pushing the global total under what positions still hold.
+            slice = ML.mulDivSafe(debtNow, delta, WAD);
+            if (slice == 0) return;
         }
         // Checked on purpose (a wrapped index would silently mis-price every position; ~1e32 away).
         accInterestPerDebt += delta;

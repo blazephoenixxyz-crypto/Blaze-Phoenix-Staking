@@ -17,12 +17,18 @@ pragma solidity 0.8.28;
 // REACHING THE INTERESTING STATE, deterministically. A pristine book can never exceed 50%
 // utilisation: `_ltvCap = (staked - debt) / 2` caps every borrower's debt at half their own
 // stake, borrowers cannot withdraw (Staking__HasDebt), and a fresh depositor adds twice as
-// much stake as they may borrow. Interest erosion is the one lever left, and it is exact
-// here because the index applies the rate FROZEN at the last poke: bob at 50% util pays
-// 350 bps flat, so a single 21-year warp erodes 500_000e18 * 3.5% * 21 = 367_500e18 from a
-// 1_000_000e18 stake → totalStaked 632_500e18, util 79.05% — past the 0.75 cap, still under
-// bob's 95% liquidation line (632_500 * 95 > 500_000 * 100). No loops of warp+view calls
-// (this forge build's stale-call-cache bug), one warp, values re-read live afterwards.
+// much stake as they may borrow. Interest erosion is the one lever left — and it needs ~20
+// years at the sub-kink rate, far past the 7-year emission close. `deposit()` reverts
+// Staking__EmissionEnded there, so the borrower who will probe the cap CANNOT enter after
+// the erosion; `borrow()` carries no emission gate, so she pre-positions collateral at
+// genesis instead and sizes it so her private LTV headroom still crosses the aggregate
+// ceiling once the book has decayed. The erosion is exact because the index applies the
+// rate FROZEN at the last poke: with bob's 500_000e18 debt against 1_040_000e18 staked
+// (util 48.08% → 340 bps), a single 21-year warp erodes 500_000e18 * 3.40% * 21 =
+// 357_000e18 → totalStaked 683_000e18, util 73.21% — decayed far past the 50% pristine
+// ceiling, with the 0.75 cap now inside alice's own LTV reach, and bob still clear of the
+// 95% liquidation line (643_000 * 95 > 500_000 * 100). No loops of warp+view calls (this
+// forge build's stale-call-cache bug), one warp, values re-read live afterwards.
 //
 // Same harness as BlazePhoenixStaking.t.sol; mock renamed to avoid artifact-name ambiguity.
 
@@ -79,19 +85,30 @@ contract HardeningH04UtilCapTest is Test {
         return staking.totalDebt() * WAD / staking.totalStaked();
     }
 
-    /// Drive the aggregate book past the 0.75 cap through interest erosion (see file header):
-    /// bob at max LTV (util 50%), then one 21-year warp at the frozen 350 bps below-kink rate,
-    /// then one poke so the global index settles. Ends with util ≈ 0.7905e18 and bob healthy.
-    function _erodeBookPastCap() internal {
-        vm.prank(bob); staking.deposit(1_000_000e18, 90);
+    /// Alice's genesis collateral — sized so that after the erosion her private LTV headroom
+    /// (a/2 = 20_000e18) still reaches past the aggregate 0.75 ceiling (xExact ≈ 12_250e18).
+    uint256 constant ALICE_STAKE = 40_000e18;
+
+    /// Decay the aggregate book to within alice's reach of the 0.75 cap through interest
+    /// erosion (see file header): bob at max LTV plus alice's pre-positioned 40k (util
+    /// 48.08%, frozen 340 bps sub-kink rate), then ONE 21-year warp, then one poke so the
+    /// global index settles. Ends at util ≈ 0.7321e18 — beyond anything a pristine book can
+    /// reach — with bob healthy and alice debt-free (a debt-free position is never charged
+    /// interest, so her 40k collateral survives the decay untouched).
+    function _erodeBookNearCap() internal {
+        vm.prank(bob);   staking.deposit(1_000_000e18, 90);
+        vm.prank(alice); staking.deposit(ALICE_STAKE, 90);     // pre-positioned: deposits close at emissionEnd
         vm.roll(block.number + 2);
-        vm.prank(bob); staking.borrow(500_000e18);            // single-shot max LTV → util 50%
+        vm.prank(bob); staking.borrow(500_000e18);            // single-shot max LTV
         vm.warp(block.timestamp + 21 * 365 days); vm.roll(block.number + 11);
         vm.prank(carol); staking.claimRewards();               // unrelated tx settles the index
 
         // Preconditions the whole regression rests on — assert them, don't assume them.
-        assertGt(_util(), UTIL_CAP_WAD, "erosion must carry the book past the cap");
-        assertGt(staking.totalStaked() * 95, staking.totalDebt() * 100,
+        assertGt(_util(), WAD / 2, "erosion must carry the book past the 50% pristine ceiling");
+        assertLe(_util(), UTIL_CAP_WAD, "but not past the cap: the boundary must be probed by a borrow");
+        // All erosion lands on bob (the only borrower), so his post-attribution stake is
+        // exactly totalStaked - ALICE_STAKE.
+        assertGt((staking.totalStaked() - ALICE_STAKE) * 95, staking.totalDebt() * 100,
             "bob must stay clear of the 95% liquidation line or maintenance rewrites the book");
     }
 
@@ -117,29 +134,22 @@ contract HardeningH04UtilCapTest is Test {
     }
 
     // ─────────────────────────────────────────────────────────────────────────────────────
-    // (a)+(b) The boundary itself, one token to each side. With the book eroded past 0.75,
-    // alice sizes a deposit small enough that her own LTV headroom (half her stake) still
-    // reaches past the aggregate ceiling: a = 2·(D − 0.75·S) makes her max borrow a/2 land
-    // beyond the cap while the exact-boundary amount x = 0.75·(S+a) − D ≈ a/4 sits inside
-    // her LTV. Borrowing past the ceiling reverts Staking__UtilTooHigh; landing exactly on
-    // it succeeds (inclusive boundary); every further borrow is refused until someone ELSE
-    // repays — proving the cap is aggregate, not per-user.
+    // (a)+(b) The boundary itself, one token to each side. With the book decayed to 73.21%
+    // (`_erodeBookNearCap`), alice's genesis 40k gives her an LTV headroom of a/2 = 20_000e18
+    // while the ceiling sits only xExact = 0.75·S − D = 12_250e18 of debt away — so her OWN
+    // check passes on both probes and only the aggregate cap can answer. Borrowing past the
+    // ceiling reverts Staking__UtilTooHigh; landing exactly on it succeeds (inclusive
+    // boundary); every further borrow is refused until someone ELSE repays — proving the cap
+    // is aggregate, not per-user.
     // ─────────────────────────────────────────────────────────────────────────────────────
     function test_H04_BorrowAtExactCapSucceeds_PastCapRevertsUtilTooHigh() public {
-        _erodeBookPastCap();
-        uint256 sPre = staking.totalStaked();                  // ≈ 632_500e18
-        uint256 dPre = staking.totalDebt();                    //   500_000e18
+        _erodeBookNearCap();
 
-        uint256 a = 2 * (dPre - (sPre * 75) / 100);            // ≈ 51_250e18
-        vm.prank(alice); staking.deposit(a, 90);
-        vm.roll(block.number + 2);
-
-        uint256 s1 = staking.totalStaked();                    // no time passed → no new interest
-        uint256 d1 = staking.totalDebt();
-        assertEq(d1, dPre, "deposit must not move debt");
+        uint256 s1 = staking.totalStaked();                    // 683_000e18 (settled, no clamp)
+        uint256 d1 = staking.totalDebt();                      // 500_000e18
         uint256 maxDebt = (s1 * 75) / 100;                     // the ceiling in absolute debt
-        uint256 xExact  = maxDebt - d1;                        // ≈ a/4
-        assertLe(xExact + 1e18, a / 2, "both attempts sit inside alice's own LTV headroom");
+        uint256 xExact  = maxDebt - d1;                        // 12_250e18
+        assertLe(xExact + 1e18, ALICE_STAKE / 2, "both attempts sit inside alice's own LTV headroom");
 
         // Ordering: a caller with no LTV headroom is refused on LTV, never reaching the cap.
         vm.prank(bob);
