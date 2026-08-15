@@ -1305,10 +1305,6 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
 
         uint256 delta = ML.mulDivSafe(ML.mulDivSafe(WAD, _interestRate(), 10_000), elapsed, SECONDS_PER_YEAR);
         if (delta == 0) return;
-        // Checked on purpose: a wrapped accumulator would silently mis-price every outstanding
-        // position, which is strictly worse than reverting. Reaching uint256 max here needs on the
-        // order of 1e32 accruals, so this is unreachable in practice.
-        accInterestPerDebt += delta;
 
         // The slice of interest the whole book generated over `elapsed`, settled NOW against the
         // denominators that existed NOW. Distribution and collection move together, so the ledger
@@ -1316,7 +1312,19 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
         //     Δowed = −slice + reserveCut + toPool = 0,   Δbalance = 0
         uint256 slice = ML.mulDivSafe(debtNow, delta, WAD);
         if (slice == 0) return;
-        if (slice > totalStaked) slice = totalStaked;
+        if (slice > totalStaked) slice = totalStaked;   // clamp to the collateral actually available
+
+        // C-03 index-clamp coupling: advance the per-debt index ONLY by what was actually
+        // debited/distributed (the CLAMPED slice), not the full pre-clamp delta. When the clamp
+        // binds (terminal distress) the two differ; charging users off the full delta would make
+        // Σ per-user interest exceed the global debit, so the shortfall reconcile in
+        // _accrueInterestFor would over-restore totalStaked into a phantom that re-opens clamp
+        // headroom and is paid out as unbacked yield. deltaEff keeps
+        // Σ per-user charges == global debit == distribution in EVERY regime. Checked add on
+        // purpose (a wrapped index would silently mis-price every position; ~1e32 accruals away).
+        uint256 deltaEff = ML.mulDiv(slice, WAD, debtNow);
+        if (deltaEff == 0) return;   // sub-unit rounding at terminal totalStaked: charge nothing this window
+        accInterestPerDebt += deltaEff;
         totalStaked -= slice;
 
         uint256 reserveCut = ML.mulDiv(slice, RESERVE_FACTOR_BPS, 10_000);
