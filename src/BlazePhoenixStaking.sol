@@ -359,13 +359,14 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
         uint256 lhsBefore = ML.rawBalanceOf(bzpx, address(this)) + totalDebt + totalBadDebt;
         uint256 rhsBefore = totalStaked + rewardReserve + protocolReserve + _pendingDistribution();
         _;
-        uint256 lhsAfter = ML.rawBalanceOf(bzpx, address(this)) + totalDebt + totalBadDebt;
-        uint256 rhsAfter = totalStaked + rewardReserve + protocolReserve + _pendingDistribution();
-        // |Δlhs - Δrhs| = |(lhsAfter + rhsBefore) - (lhsBefore + rhsAfter)|
-        uint256 a = lhsAfter + rhsBefore;
-        uint256 b = lhsBefore + rhsAfter;
-        uint256 d = a > b ? a - b : b - a;
-        if (d > CONSERVATION_DUST) revert Staking__InvariantBreached();
+        // |Δlhs - Δrhs| with lhs = bal+totalDebt+totalBadDebt, rhs = totalStaked+RR+PR+pending.
+        // Folded to two locals (lhsAfter+rhsBefore vs lhsBefore+rhsAfter, comparison inlined) to
+        // keep the inlined modifier's stack footprint at/below the prior _owed()-based check —
+        // this contract is near the via-IR stack/size ceiling and extra modifier locals stack on
+        // top of every guarded function's own frame.
+        uint256 lhs = ML.rawBalanceOf(bzpx, address(this)) + totalDebt + totalBadDebt + rhsBefore;
+        uint256 rhs = lhsBefore + totalStaked + rewardReserve + protocolReserve + _pendingDistribution();
+        if ((lhs > rhs ? lhs - rhs : rhs - lhs) > CONSERVATION_DUST) revert Staking__InvariantBreached();
     }
     modifier whenNotEmergency() {
         if (emergencyMode) revert Staking__EmergencyActive();
