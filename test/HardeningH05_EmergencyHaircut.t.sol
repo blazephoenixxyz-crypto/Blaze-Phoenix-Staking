@@ -134,7 +134,7 @@ contract HardeningH05EmergencyHaircutTest is Test {
         // aliceGot * bobEquity == bobGot * aliceEquity.
         assertEq(aliceGot * 400_000e18, bobGot * 600_000e18, "same fraction for both exiters");
 
-        assertEq(staking.backing(), 0, "the pot empties exactly — nothing stranded");
+        assertEq(staking.backing(), 0, "the pot empties exactly -- nothing stranded");
         assertEq(staking.totalStaked(), 0);
         assertEq(staking.owed(), 0, "every claim settled");
         assertEq(staking.activeLockerCount(), 0, "no ghost registry entries left behind");
@@ -158,7 +158,7 @@ contract HardeningH05EmergencyHaircutTest is Test {
         assertEq(aliceGot, 300_000e18, "late exiter: exactly half of 600k equity");
         assertEq(aliceGot * 400_000e18, bobGot * 600_000e18, "same fraction for both exiters");
 
-        assertEq(staking.backing(), 0, "the pot empties exactly — nothing stranded");
+        assertEq(staking.backing(), 0, "the pot empties exactly -- nothing stranded");
         assertEq(staking.totalStaked(), 0);
         assertEq(staking.owed(), 0, "every claim settled");
         assertTrue(staking.isSolvent());
@@ -189,12 +189,12 @@ contract HardeningH05EmergencyHaircutTest is Test {
         _declareEmergency();
 
         uint256 aliceGot = _exit(alice);                   // the would-be drainer goes FIRST
-        assertEq(aliceGot, 360_000e18, "3/5 of her 600k net equity — not the full pot");
+        assertEq(aliceGot, 360_000e18, "3/5 of her 600k net equity -- not the full pot");
         assertEq(staking.backing(), 240_000e18, "bob's share is still physically there");
 
         uint256 bobGot = _exit(bob);
         assertGt(bobGot, 0, "the late pure staker must never be left with zero");
-        assertEq(bobGot, 240_000e18, "3/5 of his 400k equity — the SAME fraction as alice");
+        assertEq(bobGot, 240_000e18, "3/5 of his 400k equity -- the SAME fraction as alice");
         assertEq(aliceGot * 400_000e18, bobGot * 600_000e18, "payout_i / equity_i equal");
 
         assertEq(staking.backing(), 0, "pot distributed exactly, no residue");

@@ -111,7 +111,7 @@ contract HardeningH04UtilCapTest is Test {
 
         assertEq(staking.totalDebt(),   1_500_000e18, "all three max-LTV borrows succeeded");
         assertEq(staking.totalStaked(), 3_000_000e18);
-        assertLe(_util(), UTIL_CAP_WAD, "the deepest a pristine book can go is 50% — inside the cap");
+        assertLe(_util(), UTIL_CAP_WAD, "the deepest a pristine book can go is 50% -- inside the cap");
         assertTrue(staking.isSolvent());
         assertEq(staking.auditInvariants() & 1, 0);
     }
