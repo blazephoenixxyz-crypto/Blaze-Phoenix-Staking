@@ -184,13 +184,17 @@ contract EMGHaircutUnderwaterTest is Test {
             ? staking.totalStaked() - staking.totalDebt() : 0;
         assertLt(claims, E, "underwater carol makes claims < E: the disarm precondition");
 
-        // A pot fixed in the band claims < pot < E (claims ~= 970k, E = 1,000k → pick 985k). On main
-        // the gate `pot < claims` is FALSE here, so NO haircut runs and full-equity FCFS drains the
-        // pot, stranding the late staker; post-fix the gate compares against E and engages.
-        uint256 potTarget = 985_000e18;
+        // Target a pot strictly inside the band claims < pot < E, derived from live state rather
+        // than hard-coded: carol's residual debt after ~1000y of accrual is far larger than her
+        // original borrow, so `claims` sits well below E and a fixed constant would underflow the
+        // burn. Midpoint of the band, clamped to the pot actually held. On main the gate
+        // `pot < claims` is FALSE here, so NO haircut runs and full-equity FCFS drains the pot,
+        // stranding the late staker; post-fix the gate compares against E and engages.
+        uint256 pot0 = staking.backing();
+        uint256 potTarget = claims + (E - claims) / 2;
+        if (potTarget > pot0) potTarget = pot0;           // never burn a negative amount
         assertGt(potTarget, claims, "pot above the understated claims (main would not haircut)");
         assertLt(potTarget, E, "pot below the true E (a genuine shortfall exists)");
-        uint256 pot0 = staking.backing();
         token.burn(address(staking), pot0 - potTarget);
 
         _declareEmergency();
@@ -200,7 +204,13 @@ contract EMGHaircutUnderwaterTest is Test {
         assertGt(aliceGot, 0);
         assertGt(bobGot, 0, "late pure staker never stranded in the disarm band");
         assertLe(aliceGot + bobGot, potTarget, "never over-drains the pot");
-        assertEq(aliceGot * 400_000e18, bobGot * 600_000e18, "same fraction: the haircut engaged");
+        // The haircut engaged: each is paid strictly less than full equity (on main both would be
+        // paid in full until the pot ran dry). Cross-products agree to floor dust, since pot/E is
+        // not an exact ratio here and mulDiv floors each payout independently.
+        assertLt(aliceGot, 600_000e18, "alice haircut, not paid in full");
+        assertLt(bobGot,   400_000e18, "bob haircut, not paid in full");
+        assertApproxEqAbs(aliceGot * 400_000e18, bobGot * 600_000e18, 1e24,
+            "same fraction for both exiters, to rounding dust");
     }
 
     // ─────────────────────────────────────────────────────────────────────────────────────
