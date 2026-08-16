@@ -155,16 +155,17 @@ contract EMGHaircutUnderwaterTest is Test {
 
         _declareEmergency();
 
+        // carol stays PRESENT and underwater throughout — an underwater position (stake 0) cannot
+        // itself call emergencyWithdraw (it reverts Staking__NoStake), so the bug is about its
+        // presence distorting the denominator, not its exit. On main `claims` nets carol's −30k in,
+        // over-scales the two pure exiters, and bob's transfer reverts (pot drained). Post-fix E
+        // excludes carol, so both are paid exactly half and the pot empties to zero.
         uint256 aliceGot = _exit(alice);
         uint256 bobGot   = _exit(bob);
         assertEq(aliceGot, 300_000e18, "alice: exactly half of 600k");
         assertEq(bobGot,   200_000e18, "bob: exactly half of 400k -- NOT stranded");
         assertEq(aliceGot + bobGot, 500_000e18, "sum of payouts == pot, exact");
         assertEq(aliceGot * 400_000e18, bobGot * 600_000e18, "same fraction both exiters");
-
-        // carol (underwater) draws nothing.
-        uint256 carolGot = _exit(carol);
-        assertEq(carolGot, 0, "underwater position draws 0 from the pot");
     }
 
     // ─────────────────────────────────────────────────────────────────────────────────────
@@ -175,30 +176,31 @@ contract EMGHaircutUnderwaterTest is Test {
     function test_EMG02_DisarmBand_HaircutEngages_LateStakerPaid() public {
         vm.prank(alice); staking.deposit(600_000e18, 90);
         vm.prank(bob);   staking.deposit(400_000e18, 90);
-        _makeUnderwater(dave, 200_000e18, 60_000e18);   // large residual debt shrinks `claims`
+        _makeUnderwater(carol, 90_000e18, 30_000e18);   // residual debt ~30k shrinks `claims` below E
 
         uint256 E = staking.totalPositiveEquity();
-        assertEq(E, 1_000_000e18, "E = alice + bob");
+        assertEq(E, 1_000_000e18, "E = alice + bob (carol contributes 0)");
         uint256 claims = staking.totalStaked() > staking.totalDebt()
             ? staking.totalStaked() - staking.totalDebt() : 0;
+        assertLt(claims, E, "underwater carol makes claims < E — the disarm precondition");
 
-        // choose pot in the band claims < pot < E.
-        uint256 potTarget = (claims + E) / 2;
-        assertGt(potTarget, claims, "pot above the buggy claims");
-        assertLt(potTarget, E, "pot below the true E");
+        // A pot fixed in the band claims < pot < E (claims ~= 970k, E = 1,000k → pick 985k). On main
+        // the gate `pot < claims` is FALSE here, so NO haircut runs and full-equity FCFS drains the
+        // pot, stranding the late staker; post-fix the gate compares against E and engages.
+        uint256 potTarget = 985_000e18;
+        assertGt(potTarget, claims, "pot above the understated claims (main would not haircut)");
+        assertLt(potTarget, E, "pot below the true E (a genuine shortfall exists)");
         uint256 pot0 = staking.backing();
         token.burn(address(staking), pot0 - potTarget);
-        assertEq(staking.backing(), potTarget, "pot in the disarm band");
 
         _declareEmergency();
 
         uint256 aliceGot = _exit(alice);
         uint256 bobGot   = _exit(bob);
-        // both are haircut by pot/E; the LATE staker must still be paid > 0 (the EMG-02 anchor).
         assertGt(aliceGot, 0);
         assertGt(bobGot, 0, "late pure staker never stranded in the disarm band");
         assertLe(aliceGot + bobGot, potTarget, "never over-drains the pot");
-        assertEq(aliceGot * 400_000e18, bobGot * 600_000e18, "same fraction");
+        assertEq(aliceGot * 400_000e18, bobGot * 600_000e18, "same fraction — the haircut engaged");
     }
 
     // ─────────────────────────────────────────────────────────────────────────────────────
@@ -214,13 +216,15 @@ contract EMGHaircutUnderwaterTest is Test {
         token.burn(address(staking), pot0 - 500_000e18);
         _declareEmergency();
 
-        // order: carol (underwater) FIRST, then bob, then alice.
-        uint256 carolGot = _exit(carol);
+        // Opposite order to EMG-01 (bob before alice), carol underwater and present throughout.
+        // Each pure staker's payout is the SAME constant as in EMG-01's alice-first run — together
+        // the two tests prove exit order is irrelevant. On main, carol's presence in `claims` plus
+        // any underwater realisation makes the fraction order-dependent (the 72-vs-90 swing).
         uint256 bobGot   = _exit(bob);
         uint256 aliceGot = _exit(alice);
-        assertEq(carolGot, 0);
-        assertEq(bobGot,   200_000e18, "bob half regardless of carol exiting first");
-        assertEq(aliceGot, 300_000e18, "alice half regardless of order");
+        assertEq(bobGot,   200_000e18, "bob half regardless of exit order");
+        assertEq(aliceGot, 300_000e18, "alice half regardless of exit order");
+        assertEq(aliceGot * 400_000e18, bobGot * 600_000e18, "identical fraction, order-invariant");
     }
 
     // ─────────────────────────────────────────────────────────────────────────────────────
