@@ -1661,7 +1661,12 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
         return _effective(_users[user_]);
     }
     function totalEffectiveStaked() external view returns (uint256) {
-        return totalStaked > totalDebt ? totalStaked - totalDebt : 0;
+        // The aggregate effective (net) stake IS the positive-equity sum: Σ max(staked − debt, 0).
+        // `totalStaked − totalDebt` nets underwater positions' negative equity in and understates it
+        // whenever any position is underwater — the same defect the emergency haircut carried. Reading
+        // the maintained accumulator returns the honest figure to integrators and costs one SLOAD
+        // instead of two-plus-arithmetic.
+        return totalPositiveEquity;
     }
     function healthFactor(address user_) external view returns (uint256) {
         return _health(_users[user_]);
