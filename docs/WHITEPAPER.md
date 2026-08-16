@@ -1,6 +1,6 @@
 # BlazePhoenix Protocol — Technical Whitepaper
 
-**Version 3.1.0 · July 2026**
+**Version 3.2.0 · August 2026**
 
 > **Security credit — BP-2026-001.** §3.3 and §4.2.1 exist because of a finding disclosed on
 > 28 July 2026 by **[NetGakarot](https://github.com/NetGakarot)** ("Gakarot"): the maintenance
@@ -8,6 +8,18 @@
 > idle staker whose lock had expired retained its historical boost in the global reward
 > denominators indefinitely. Solvency was never reachable — boost is a denominator weight, never a
 > claim on value — but the distribution was unfair and the incentive to re-lock was destroyed.
+>
+> **Security credit — BP-2026-008.** The final paragraph of §3.3 exists because of a second
+> finding by the same researcher: the lock-expiry window originally excluded the transaction's
+> own `beneficiary` the way the borrower window does, so a position could keep its expired boost
+> alive indefinitely by being the one that carries the maintenance traffic. The exclusion is
+> correct for liquidations (you must not earn the keeper bonus on yourself) and wrong for lock
+> normalisation (releasing your own lapsed weight pays nothing) — the two windows now differ
+> deliberately, and the difference is documented in the code.
+
+*Document 3.2.0 covers the August 2026 terminal-distress hardening round (contract `4.0.0`):
+the floor-free conservation identity (§2.2), the aggregate utilisation cap (§5.2), the
+index-coupled interest clamp (§5.3), and the pro-rata emergency haircut (§7.6).*
 
 ---
 
@@ -102,20 +114,35 @@ wrapped in the `conserves` modifier:
 
 ```solidity
 modifier conserves() {
-    uint256 balBefore  = ML.rawBalanceOf(bzpx, address(this));
-    uint256 owedBefore = _owed();
+    uint256 lhsBefore = ML.rawBalanceOf(bzpx, address(this)) + totalDebt + totalBadDebt;
+    uint256 rhsBefore = totalStaked + rewardReserve + protocolReserve + _pendingDistribution();
     _;
-    uint256 lhs = ML.rawBalanceOf(bzpx, address(this)) + owedBefore;
-    uint256 rhs = balBefore + _owed();
-    uint256 d = lhs > rhs ? lhs - rhs : rhs - lhs;
-    if (d > CONSERVATION_DUST) revert Staking__InvariantBreached();
+    // revert Staking__InvariantBreached() unless |Δlhs − Δrhs| ≤ CONSERVATION_DUST
 }
 ```
 
-This checks the **delta**, not the absolute value. Formally:
+The guard compares the delta of the Master Conservation Identity in its **floor-free
+rearrangement** — every term moved to the side that keeps it a plain non-negative state
+variable, summed without any `max(x, 0)`:
 
 ```
-|Δbalance − Δowed| ≤ CONSERVATION_DUST
+balance + totalDebt + totalBadDebt
+    =  totalStaked + rewardReserve + protocolReserve
+     + (totalRewardDistributed − totalRewardsPaid)
+```
+
+This is algebraically the same equation as §2, but the arrangement matters. The public
+`_owed()` view floors two of its intermediate subtractions so it can never report a negative
+number. Inside the guard those floors are non-linearities: in terminal distress (interest
+erosion has consumed the book) a legitimate bad-debt liquidation, repayment, or interest
+accrual crosses a floor boundary and reads as a value leak — the guard would revert exactly
+the recovery tools the distressed state needs. The floor-free form is linear in every regime,
+so the guard never confuses distress with theft (finding LIQ-01, August 2026 hardening round).
+
+The check is over the **delta**, not the absolute value. Formally:
+
+```
+|Δlhs − Δrhs| ≤ CONSERVATION_DUST
 ```
 
 Checking the delta rather than the absolute value is critical for two reasons:
@@ -127,8 +154,8 @@ Checking the delta rather than the absolute value is critical for two reasons:
 
 - **Leak detection.** Any transaction that moves value in a way not reflected in
   the ledger — for example, a re-entrancy that claims rewards twice, or an
-  accounting bug that credits a user without receiving tokens — will cause `Δowed`
-  to diverge from `Δbalance` and revert atomically.
+  accounting bug that credits a user without receiving tokens — will make the two
+  sides of the identity diverge and revert atomically.
 
 ### 2.3 Public solvency surface
 
@@ -239,6 +266,13 @@ Worst case per transaction is `MAINT_MAX_SCAN + MAINT_MAX_LOCK_ACTIONS` iteratio
 `expiredLockScan(offset, limit)` measures the outstanding backlog on-chain with no indexer;
 `pokeExpiredLock(user)` and `pokeExpiredLocks(users)` let anyone clear it at their own gas cost.
 
+Unlike the borrower window, this window **does not skip the transaction's own beneficiary**,
+and the asymmetry is deliberate (BP-2026-008). The borrower sweep excludes the beneficiary
+because liquidating your own position would pay you the keeper bonus. Normalising your own
+elapsed commitment pays nothing — it only releases weight the position is no longer entitled
+to — so excluding the beneficiary here would let an active user keep their expired boost alive
+indefinitely *precisely by being the one whose transactions carry the maintenance*.
+
 ### 3.4 Failure isolation
 
 Each per-borrower step runs through an internal self-external call (`maintStep`, callable
@@ -248,7 +282,7 @@ atomically and skipped, the cursor advances so the sweep never stalls, and **the
 user's own transaction still succeeds**. A poisoned position can never become a denial-of-service
 vector against the rest of the protocol. (See §7.7 for the token assumption this defends.)
 
-### 3.3 Why this is sufficient
+### 3.5 Why this is sufficient
 
 A position becomes liquidatable only after interest has eroded `stake` to within
 `LIQ_THRESHOLD` (95%) of `debt`. The kinked interest rate (max ~730% APR above
@@ -369,18 +403,68 @@ else:                   rate = RK + (util − 0.80) × S2/WAD
 Above 80% utilisation the rate rises steeply, incentivising repayment and
 disincentivising further borrowing.
 
+#### 5.2.1 Aggregate utilisation cap
+
+`borrow()` additionally reverts (`Staking__UtilTooHigh`) whenever the **aggregate** book after
+the borrow would exceed `MAX_PROTOCOL_UTIL_WAD = 75%` — deliberately below the 80% kink. No
+act of borrowing, by anyone, can push the whole protocol into the steep interest branch; that
+branch remains reachable only through interest erosion over time, which is the scenario it
+exists to price. This is defence in depth on top of the per-position LTV bound (§5.1): the
+individual bound limits a position, the aggregate cap limits the book. When a repayment brings
+utilisation back under the cap, borrowing headroom reopens for every participant — the cap is
+a property of the aggregate, not a per-account penalty.
+
+#### 5.2.2 Telemetry never understates distress
+
+If interest erosion ever drives `totalStaked` to zero with debt still outstanding, the naive
+utilisation reading (`debt/staked`) is undefined, and an earlier revision reported that
+terminal state as floor rate, 0% utilisation, and no invariant violation. The views
+(`utilizationRate`, `getGlobalStats`, `auditInvariants`, and the rate function itself) now
+clamp utilisation to 100% (`WAD`) and report maximum distress as maximum distress, matching
+the public `simulateRate`. No UI reading the published surface can understate the real rate.
+
 ### 5.3 Interest accrual
 
-Interest reduces the borrower's `staked` balance (not a separate debt counter):
+Interest reduces the borrower's `staked` balance (not a separate debt counter).
+Accrual is driven by a global per-debt index, `accInterestPerDebt`: each elapsed
+window is stamped with the rate that actually prevailed across it (the index is
+advanced **before** any write that could move the rate), the whole book's slice is
+debited from `totalStaked` in the same step, and each position is later charged its
+share of the index growth it lived through:
 
 ```
-interest = debt × rate × elapsed / SECONDS_PER_YEAR
-stake    -= interest
+δ     = rate × elapsed / SECONDS_PER_YEAR          (index advance, WAD)
+slice = ⌊totalDebt × δ / WAD⌋                       (global debit)
+interest_i = ⌊debt_i × Δindex_i / WAD⌋              (per-user charge, on touch)
 ```
 
 Of the interest collected:
 - **3% reserve factor** → `protocolReserve` (admin can withdraw to immutable treasury)
 - **97%** → distributed to pure stakers (debt-free positions) as `accPureYieldPerShare`
+
+Distribution and collection move in the same atomic step, so the ledger never
+claims more than the contract holds.
+
+#### 5.3.1 The terminal-distress clamp is coupled to the index
+
+The global debit can never exceed what remains: `slice` is clamped to `totalStaked`.
+The hardening round showed that the clamp is only sound if the **index advance is
+re-derived from the clamped slice** (`δ = ⌊slice × WAD / totalDebt⌋`) and the debit
+then re-derived from that floored `δ` again. Uncoupled, the per-user charges (computed
+off the full `δ`) sum to more than was globally debited; re-floored only once, the
+rounding dust is debited globally but attributable to no position, `totalStaked` lands
+below `Σ staked_i`, and the next liquidation hits a checked underflow — re-freezing
+recovery in exactly the state it exists for. With both re-derivations,
+`Σ per-user charges == global debit` in every regime, and the healthy (non-clamped)
+path is bit-identical to the original arithmetic.
+
+When a single position's charge exceeds its remaining stake, the position pays what
+it has and the uncollectible shortfall is recorded as `totalBadDebt` while being
+restored to `totalStaked` (finding C-03) — keeping `totalStaked == Σ staked_i` true,
+which the utilisation reading, the solvency views, and the emergency haircut (§7.6)
+all depend on. The floor-free `conserves` identity (§2.2) is what lets this
+reclassification pass the guard: `+shortfall` on `totalBadDebt` (left side) matches
+`+shortfall` on `totalStaked` (right side).
 
 ### 5.4 Liquidation
 
@@ -518,6 +602,22 @@ Two halt paths exist:
 Both are **pull-only**: `emergencyWithdraw()` returns a user's net equity
 (`staked − debt`). No admin can sweep funds.
 
+In a **breached** emergency the contract may physically hold less than the sum of
+net equities. Paying full equity first-come-first-served would let early exiters
+drain the pot and leave late (and pure) stakers with nothing. `emergencyWithdraw`
+therefore scales the payout by the physical pot when — and only when — a real
+shortfall exists:
+
+```
+payout = equity × pot / claims        (iff pot < claims)
+```
+
+where `pot` is the contract's raw balance and `claims` is the sum of remaining net
+equities. The fraction is **exit-order invariant**: each exit removes `payout` from
+the pot and `equity` from the claims, so `pot/claims` is unchanged for everyone who
+follows — no advantage to racing the exit queue. In solvent operation `pot ≥ claims`,
+the scale factor is ≥ 1, and every exit pays full equity exactly as before.
+
 Accrued-but-unpaid rewards are **forfeited** on an emergency exit (the hatch does no reward
 maths by design). The forfeited amount remains inside the `totalRewardDistributed −
 totalRewardsPaid` term of `owed()`, so post-emergency the ledger *overstates* what it owes —
@@ -561,7 +661,9 @@ here as explicit deploy invariants for any fork or re-deployment against a diffe
 | BD | `totalBadDebt` | Recorded liquidation losses |
 | O | `_owed()` | `S − D + RR + PR + (RD − RP) − BD` |
 
-**Conservation:** `B + BD = O + BD` → `B = O` (ignoring dust)
+**Conservation (floor-free form, as enforced by `conserves`):**
+`B + D + BD = S + RR + PR + (RD − RP)` — every term a plain non-negative state
+variable; the guard compares the delta of the two sides (§2.2)
 
 **Solvency:** `B + DUST ≥ O`
 
@@ -609,6 +711,13 @@ The protocol is tested by two complementary suites:
   - `test_stress_blacklist_maintenanceResilient` — a blacklisted borrower cannot DoS the sweep
   - `test_stress_lockerRegistryFlood_boundedAndSelfDraining` — fuzz: a 20..60-deep expired locker
     backlog keeps per-tx gas bounded and drains from organic flow alone
+- **Hardening regressions** — `HardeningH04_UtilCap.t.sol` (LTV-first revert ordering, the
+  exact 75% boundary borrow landing and one token more refusing, headroom reopening on another
+  borrower's repay) and `HardeningH05_EmergencyHaircut.t.sol` (pro-rata haircut engages only on
+  a real shortfall, exit-order invariance, solvent exits unchanged). The terminal-distress
+  clamp coupling (§5.3.1) is pinned by the JS attack suite's single-window self-liquidation
+  scenarios, whose odd-ratio books (1,000,000/499,000) exercise the rounding-dust path that
+  exactly-dividing books cannot reach.
 - **BP-2026-001 regression** — `test_StaleBoost_*` (Foundry) and `test/boost.mjs` B1..B10 (JS).
   B1 uses only the v3.0.0 ABI, so it runs verbatim against the vulnerable contract and fails there
   on the reported divergence itself (idle:active yield ratio 1.25× and a 2.25M denominator, against

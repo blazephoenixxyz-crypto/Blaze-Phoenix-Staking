@@ -12,9 +12,51 @@ between them.
 | v3 | `3.0.0` | `3.0.0-staking` | v2 core **+** fully autonomous maintenance **+** public solvency proofs |
 | v3.1 | `3.1.0` | `3.0.0-staking` | v3 **+** lock expiry priced against the clock **+** the locker maintenance window |
 | **v4 (final)** | **`4.0.0`** | **`3.0.0-staking`** | v3.1 **+** final tokenomics: 180M biennial-halving emission, closed-form O(1) |
+| **v4 hardened** | **`4.0.0`** | **`3.0.0-staking`** | v4 **+** terminal-distress round: floor-free `conserves`, index-coupled clamp, 75% aggregate util cap, pro-rata emergency haircut, honest telemetry |
 
 v3 = **v2 base**, with the two requested additions and the useful UX views that v2 had dropped
 from v1 re-added.
+
+---
+
+## v4 hardened — the terminal-distress round (August 2026)
+
+An internal adversarial pass (devil's-advocate review, two independent skeptics) plus one
+external disclosure, all in the regime the original suites under-visited: **interest erosion
+carried to the end of the book**. No contract version bump — same ABI, same economics in every
+healthy state; every change below only alters what happens when `totalStaked` approaches or
+reaches exhaustion, or what the published telemetry says there.
+
+- **LIQ-01 — floor-free `conserves`.** The guard now compares the delta of the identity in the
+  rearrangement `balance + totalDebt + totalBadDebt == totalStaked + RR + PR + pending`, with
+  no `max(x,0)` anywhere. The old `_owed()`-based check crossed its floors in terminal distress
+  and reverted legitimate bad-debt liquidations, repayments and accrual — freezing the recovery
+  tools exactly when they were needed.
+- **C-03 — per-user clamp reconcile.** When a position's accrued charge exceeds its remaining
+  stake, the uncollectible shortfall is restored to `totalStaked` and recorded as
+  `totalBadDebt`, keeping `totalStaked == Σ u.staked` (honest utilisation, honest solvency,
+  honest haircut denominator, no withdraw underflow freeze).
+- **Index-coupled clamp.** When the global slice clamp binds, the per-debt index advance is
+  re-derived from the clamped slice, and the global debit re-derived from the floored index
+  advance — `Σ per-user charges == global debit` in every regime. The healthy path is
+  bit-identical to pre-fix. (Three commits: the coupling, the bind-only restriction after both
+  CI suites caught healthy-regime rounding drift, and the floor-dust re-derivation after the JS
+  attack suite caught a checked-underflow re-freeze on non-dividing books.)
+- **H-04 — aggregate utilisation cap.** `borrow()` reverts past 75% aggregate utilisation,
+  below the 80% kink: no borrow can push the whole protocol into the steep branch.
+- **H-05 — pro-rata emergency haircut.** In a breached emergency, `emergencyWithdraw` scales
+  payouts by `pot/claims` (exit-order invariant); solvent operation pays full equity unchanged.
+- **Honest telemetry.** `utilizationRate`/`getGlobalStats`/`auditInvariants`/the rate function
+  clamp utilisation to WAD and report the terminal state as maximum distress, never as floor
+  rate + 0% utilisation + no violation.
+- **BP-2026-008 (external, NetGakarot).** The lock-expiry window no longer inherits the
+  borrower window's self-exclusion: normalising your own expired boost pays nothing, so
+  skipping the beneficiary only let an active user keep an expired boost alive with their own
+  traffic.
+
+Regression anchors: `HardeningH04_UtilCap.t.sol`, `HardeningH05_EmergencyHaircut.t.sol`, and
+the JS attack suite's single-window self-liquidation on a non-dividing book (1,000,000/499,000)
+for the rounding-dust path. Foundry 57/57 across 10 suites; Node harness 9/9 suites green.
 
 ---
 
