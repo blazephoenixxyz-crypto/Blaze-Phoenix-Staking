@@ -285,11 +285,11 @@ vector against the rest of the protocol. (See §7.7 for the token assumption thi
 ### 3.5 Why this is sufficient
 
 A position becomes liquidatable only after interest has eroded `stake` to within
-`LIQ_THRESHOLD` (95%) of `debt`. The kinked interest rate (max ~730% APR above
-80% utilisation) is the aggressive case. Even at 730% APR, a position at 50% LTV
-takes approximately `(1 - 0.95/0.5) * 365 / 7.3 ≈ 0` days — meaning positions at
-maximum LTV are immediately liquidatable if interest is at the extreme rate. At
-normal rates (3–5% APR) a 50% LTV position has months of runway.
+`LIQ_THRESHOLD` (95%) of `debt`. The kinked interest rate — 150% APR at full
+utilisation (`RK + 0.2 × S2` = 500 + 14,500 bps; the 725%-per-unit figure is the
+slope `S2`, not a reachable rate) — is the aggressive case: a position at the
+maximum `d = S/3` ceiling erodes to the threshold in roughly sixteen months.
+At normal rates (3–5% APR) the same position has decades of runway.
 
 In all cases, organic user traffic will scan the position well within any
 reasonable liquidation window, given that the scan window widens proportionally
