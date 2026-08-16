@@ -182,7 +182,7 @@ contract EMGHaircutUnderwaterTest is Test {
         assertEq(E, 1_000_000e18, "E = alice + bob (carol contributes 0)");
         uint256 claims = staking.totalStaked() > staking.totalDebt()
             ? staking.totalStaked() - staking.totalDebt() : 0;
-        assertLt(claims, E, "underwater carol makes claims < E — the disarm precondition");
+        assertLt(claims, E, "underwater carol makes claims < E: the disarm precondition");
 
         // A pot fixed in the band claims < pot < E (claims ~= 970k, E = 1,000k → pick 985k). On main
         // the gate `pot < claims` is FALSE here, so NO haircut runs and full-equity FCFS drains the
@@ -200,7 +200,7 @@ contract EMGHaircutUnderwaterTest is Test {
         assertGt(aliceGot, 0);
         assertGt(bobGot, 0, "late pure staker never stranded in the disarm band");
         assertLe(aliceGot + bobGot, potTarget, "never over-drains the pot");
-        assertEq(aliceGot * 400_000e18, bobGot * 600_000e18, "same fraction — the haircut engaged");
+        assertEq(aliceGot * 400_000e18, bobGot * 600_000e18, "same fraction: the haircut engaged");
     }
 
     // ─────────────────────────────────────────────────────────────────────────────────────
