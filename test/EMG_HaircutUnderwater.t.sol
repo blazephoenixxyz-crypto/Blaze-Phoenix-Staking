@@ -184,18 +184,20 @@ contract EMGHaircutUnderwaterTest is Test {
             ? staking.totalStaked() - staking.totalDebt() : 0;
         assertLt(claims, E, "underwater carol makes claims < E: the disarm precondition");
 
-        // Target a pot strictly inside the band claims < pot < E, derived from live state rather
-        // than hard-coded: carol's residual debt after ~1000y of accrual is far larger than her
-        // original borrow, so `claims` sits well below E and a fixed constant would underflow the
-        // burn. Midpoint of the band, clamped to the pot actually held. On main the gate
-        // `pot < claims` is FALSE here, so NO haircut runs and full-equity FCFS drains the pot,
-        // stranding the late staker; post-fix the gate compares against E and engages.
+        // Put the pot at the MIDPOINT of the band claims < pot < E. The band is narrow and its
+        // width is exactly carol's underwater overhang (E - claims == her debt, since her stake is
+        // 0). The live pot sits BELOW claims here — the interest she paid was distributed to the
+        // pure stakers and left the contract on the maintenance sweep — so the pot must be raised,
+        // not burnt: mint the difference into the contract. A donation only ever raises backing
+        // without raising owed, which is legitimate (and is precisely why the breaker cannot be
+        // tripped by an outsider). Adjust in whichever direction the live state requires.
         uint256 pot0 = staking.backing();
         uint256 potTarget = claims + (E - claims) / 2;
-        if (potTarget > pot0) potTarget = pot0;           // never burn a negative amount
         assertGt(potTarget, claims, "pot above the understated claims (main would not haircut)");
         assertLt(potTarget, E, "pot below the true E (a genuine shortfall exists)");
-        token.burn(address(staking), pot0 - potTarget);
+        if (potTarget > pot0) token.mint(address(staking), potTarget - pot0);
+        else                  token.burn(address(staking), pot0 - potTarget);
+        assertEq(staking.backing(), potTarget, "pot parked inside the disarm band");
 
         _declareEmergency();
 
