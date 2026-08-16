@@ -179,6 +179,13 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
     uint256 private constant RATE_S1              = 500;
     uint256 private constant RATE_S2              = 72_500;
 
+    // Protocol-wide utilisation ceiling for borrowing (H-04), held strictly BELOW
+    // the 80% kink so no borrow can push the AGGREGATE book into the steep interest
+    // branch. The two paths that can still cross the kink — pure-staker exodus and
+    // interest erosion — are bounded elsewhere (the >=90-day lock and the accrual
+    // clamp); this closes the one path a borrower controls directly.
+    uint256 private constant MAX_PROTOCOL_UTIL_WAD = 0.75e18;
+
     // Dust allowance for the one-sided conservation guard (1e-8 BZPX). mulDiv rounds DOWN,
     // so the contract structurally accumulates >= what it owes; this only covers exotic
     // rounding on the dangerous (shortfall) side.
@@ -302,6 +309,7 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
     error Staking__ZeroAddress();
     error Staking__InsufficientStake();
     error Staking__LTVExceeded();
+    error Staking__UtilTooHigh();
     error Staking__NotLiquidatable();
     error Staking__TransferFailed();
     error Staking__HasDebt();
@@ -337,13 +345,28 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
     ///      failure outside this contract) `tripBreaker()` lets anyone halt — but ONLY under that
     ///      objective on-chain breach, never on healthy state.
     modifier conserves() {
-        uint256 balBefore  = ML.rawBalanceOf(bzpx, address(this));
-        uint256 owedBefore = _owed();
+        // LIQ-01: compare the DELTA of the FLOOR-FREE Master Conservation Identity
+        //   balance + totalDebt + totalBadDebt
+        //     == totalStaked + rewardReserve + protocolReserve + pendingDistribution
+        // Every term is an individual non-negative state variable summed WITHOUT any
+        // max(x,0)/floor, so the identity is linear in EVERY regime. The old check
+        // read _owed(), which floors ledgerNet (ledgerSum vs totalDebt) and the
+        // totalBadDebt netting; in terminal distress those floors made a legitimate
+        // bad-debt liquidation / repay / interest accrual look like a value leak and
+        // reverted it (Staking__InvariantBreached), freezing the very recovery tools
+        // (liquidate/repay) exactly when they are needed. Historical drift still
+        // cancels because only the CHANGE across the body is compared.
+        uint256 lhsBefore = ML.rawBalanceOf(bzpx, address(this)) + totalDebt + totalBadDebt;
+        uint256 rhsBefore = totalStaked + rewardReserve + protocolReserve + _pendingDistribution();
         _;
-        uint256 lhs = ML.rawBalanceOf(bzpx, address(this)) + owedBefore;
-        uint256 rhs = balBefore + _owed();
-        uint256 d = lhs > rhs ? lhs - rhs : rhs - lhs;
-        if (d > CONSERVATION_DUST) revert Staking__InvariantBreached();
+        // |Δlhs - Δrhs| with lhs = bal+totalDebt+totalBadDebt, rhs = totalStaked+RR+PR+pending.
+        // Folded to two locals (lhsAfter+rhsBefore vs lhsBefore+rhsAfter, comparison inlined) to
+        // keep the inlined modifier's stack footprint at/below the prior _owed()-based check —
+        // this contract is near the via-IR stack/size ceiling and extra modifier locals stack on
+        // top of every guarded function's own frame.
+        uint256 lhs = ML.rawBalanceOf(bzpx, address(this)) + totalDebt + totalBadDebt + rhsBefore;
+        uint256 rhs = lhsBefore + totalStaked + rewardReserve + protocolReserve + _pendingDistribution();
+        if ((lhs > rhs ? lhs - rhs : rhs - lhs) > CONSERVATION_DUST) revert Staking__InvariantBreached();
     }
     modifier whenNotEmergency() {
         if (emergencyMode) revert Staking__EmergencyActive();
@@ -498,6 +521,23 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
         uint256 debt   = u.debt;
         uint256 payout = principal > debt ? principal - debt : 0;
 
+        // Pro-rata solvency haircut (H-05): in a BREACHED emergency the contract may
+        // hold less than it owes. Distribute the physical pot across ALL remaining
+        // net equity so early exiters cannot drain it and leave late or pure stakers
+        // with nothing. The fraction pot/claims is invariant across exits — each exit
+        // removes `payout` from the pot and its own equity from the denominator by
+        // the same fraction — so the pool empties fairly and exactly. When solvent
+        // (pot >= claims) the fraction is >= 1 and every exit still pays full equity,
+        // so honest operation is unchanged; the haircut engages ONLY on a real
+        // shortfall. NOTE: this reads totalStaked/totalDebt post-accrual, so its
+        // fairness is exact only once the clamp-desync (C-03) is coupled — until then
+        // it is still strictly fairer than the prior first-come-full-payout drain.
+        if (payout > 0) {
+            uint256 pot    = ML.rawBalanceOf(bzpx, address(this));
+            uint256 claims = totalStaked > totalDebt ? totalStaked - totalDebt : 0;
+            if (claims > 0 && pot < claims) payout = ML.mulDiv(payout, pot, claims);
+        }
+
         // An under-water exit realises a loss, exactly as a liquidation does. Removing more debt
         // than collateral shrinks the `− totalDebt` term of `_owed()` with nothing to offset it,
         // so the shortfall MUST be recorded here for the identity to survive the exit:
@@ -616,6 +656,12 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
 
         UserInfo storage u = _users[msg.sender];
         if (u.debt + amount_ > _ltvCap(u)) revert Staking__LTVExceeded();   // LTV on EFFECTIVE stake
+        // Aggregate cap (H-04): no single borrow may lift the WHOLE book past the
+        // protocol utilisation ceiling. A caller with LTV headroom has staked
+        // collateral, so totalStaked > 0 holds here — the zero-guard is defensive.
+        if (totalStaked == 0 ||
+            ML.mulDiv(totalDebt + amount_, WAD, totalStaked) > MAX_PROTOCOL_UTIL_WAD)
+            revert Staking__UtilTooHigh();
 
         bool wasZeroDebt = (u.debt == 0);
         u.debt          += amount_;
@@ -1260,10 +1306,6 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
 
         uint256 delta = ML.mulDivSafe(ML.mulDivSafe(WAD, _interestRate(), 10_000), elapsed, SECONDS_PER_YEAR);
         if (delta == 0) return;
-        // Checked on purpose: a wrapped accumulator would silently mis-price every outstanding
-        // position, which is strictly worse than reverting. Reaching uint256 max here needs on the
-        // order of 1e32 accruals, so this is unreachable in practice.
-        accInterestPerDebt += delta;
 
         // The slice of interest the whole book generated over `elapsed`, settled NOW against the
         // denominators that existed NOW. Distribution and collection move together, so the ledger
@@ -1271,7 +1313,32 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
         //     Δowed = −slice + reserveCut + toPool = 0,   Δbalance = 0
         uint256 slice = ML.mulDivSafe(debtNow, delta, WAD);
         if (slice == 0) return;
-        if (slice > totalStaked) slice = totalStaked;
+        if (slice > totalStaked) {
+            // C-03 index-clamp coupling. The clamp binds (terminal distress): the global can
+            // only debit `totalStaked`, so reduce the per-debt index advance to match. Otherwise
+            // per-user charges (computed off the full delta) sum to MORE than was debited and the
+            // shortfall reconcile in _accrueInterestFor over-restores totalStaked into a phantom
+            // that re-opens clamp headroom and is paid out as unbacked yield. When the clamp does
+            // NOT bind (the healthy regime) delta is used UNCHANGED, so interest is bit-identical
+            // to pre-fix (no rounding drift, existing assertions unaffected). Either way
+            // Σ per-user charges == the global debit.
+            slice = totalStaked;
+            delta = ML.mulDiv(slice, WAD, debtNow);
+            if (delta == 0) return;   // sub-unit rounding at terminal totalStaked: charge nothing this window
+            // Re-derive the global debit from the FLOORED delta. `delta` above rounds down, so
+            // debiting the pre-floor `slice` (== totalStaked) would remove dust the index can
+            // never attribute back to any position: totalStaked lands BELOW Σ u.staked and the
+            // next checked `totalStaked -= seized` (liquidate) or `-= amount_` (withdraw) hits
+            // a panic underflow — re-freezing liquidation in terminal distress, the exact DoS
+            // LIQ-01 exists to remove. Recomputing makes the debit ⌊debtNow·δ/WAD⌋, the same
+            // rounding contract the healthy branch has always had (global debit >= Σ per-user
+            // ⌊dᵢ·δ/WAD⌋, equal in the single-borrower case), so the clamp binds without ever
+            // pushing the global total under what positions still hold.
+            slice = ML.mulDivSafe(debtNow, delta, WAD);
+            if (slice == 0) return;
+        }
+        // Checked on purpose (a wrapped index would silently mis-price every position; ~1e32 away).
+        accInterestPerDebt += delta;
         totalStaked -= slice;
 
         uint256 reserveCut = ML.mulDiv(slice, RESERVE_FACTOR_BPS, 10_000);
@@ -1303,7 +1370,24 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
         if (interest == 0) return;
 
         if (interest > u.staked) {
-            unchecked { totalUncollectedInterest += (interest - u.staked); }
+            // C-03 fix (couple the clamps). _updateInterestIndex already debited the
+            // GLOBAL totalStaked by this position's FULL interest and distributed it
+            // (reserveCut + toPool), but only u.staked of it is actually collectible.
+            // Add the uncollectible `shortfall` BACK to totalStaked so it again equals
+            // Σ u.staked — restoring honest utilisation (no death-spiral overstatement),
+            // an honest _owed()/isSolvent, an honest H-05 haircut denominator, and
+            // closing the withdraw() checked-underflow freeze — and record it as
+            // realised bad debt, because that interest was paid out to pure stakers /
+            // the reserve yet never seized from anyone. Conserves-neutral under the
+            // floor-free identity: +shortfall on the RHS (totalStaked) is matched by
+            // +shortfall on the LHS (totalBadDebt). totalUncollectedInterest stays as
+            // telemetry of the cumulative uncollectible interest.
+            uint256 shortfall = interest - u.staked;
+            unchecked {
+                totalUncollectedInterest += shortfall;
+                totalStaked              += shortfall;
+                totalBadDebt             += shortfall;
+            }
             interest = u.staked;
         }
         // ATTRIBUTION ONLY. The global side — totalStaked, the reserve cut and the pure-staker
@@ -1377,8 +1461,17 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
 
     // ── interest curve ──────────────────────────────────────────────────────────────────
     function _interestRate() internal view returns (uint256 rateBps) {
-        if (totalStaked == 0) return RATE_R0;
-        uint256 util = ML.mulDiv(totalDebt, WAD, totalStaked);
+        uint256 util;
+        if (totalStaked == 0) {
+            // Debt with zero backing is MAXIMALLY utilised, not idle: report the
+            // ceiling rate, never the floor. Accrual is unaffected — the slice in
+            // _updateInterestIndex clamps to totalStaked (== 0) regardless of rate.
+            if (totalDebt == 0) return RATE_R0;
+            util = WAD;
+        } else {
+            util = ML.mulDiv(totalDebt, WAD, totalStaked);
+            if (util > WAD) util = WAD;   // reconcile with simulateRate(): both cap at WAD
+        }
         if (util <= RATE_UK) rateBps = RATE_R0 + ML.mulDiv(util, RATE_S1, WAD);
         else                 rateBps = RATE_RK + ML.mulDiv(util - RATE_UK, RATE_S2, WAD);
     }
@@ -1396,6 +1489,13 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
         uint256 acc = totalRewardDistributed > totalRewardsPaid ? totalRewardDistributed - totalRewardsPaid : 0;
         owed_ = ledgerNet + acc;
         owed_ = owed_ > totalBadDebt ? owed_ - totalBadDebt : 0;   // recorded losses are netted out
+    }
+
+    /// @dev Accrued-but-unpaid reward / pure-yield still owed to positions. paid <= distributed
+    ///      by construction, so the guard never fires — it only prevents an underflow. Used by
+    ///      the conserves identity so the check stays floor-free and linear in every regime.
+    function _pendingDistribution() internal view returns (uint256) {
+        return totalRewardDistributed > totalRewardsPaid ? totalRewardDistributed - totalRewardsPaid : 0;
     }
 
     /// @dev hard, one-sided: contract must hold at least what it owes (minus dust).
@@ -1467,7 +1567,10 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
     ///   bit0 Conservation  bit1 Solvency  bit2 EmissionCap  bit3 Monotonicity  bit4 BoostBounded
     function auditInvariants() external view returns (uint8 violations) {
         if (_hardBreach()) violations |= 1 << 0;
-        if (totalStaked > 0 && totalDebt * 100 > totalStaked * LIQ_THRESHOLD) violations |= 1 << 1;
+        // Solvency signal fires in the TERMINAL state too: totalStaked driven to 0
+        // with debt outstanding is the worst case, not an unmonitored one.
+        if ((totalStaked == 0 && totalDebt > 0) ||
+            (totalStaked > 0 && totalDebt * 100 > totalStaked * LIQ_THRESHOLD)) violations |= 1 << 1;
         if (rewardReserve > TOTAL_REWARDS) violations |= 1 << 2;
         if (accRewardPerShare < lastAuditedAccReward || accPureYieldPerShare < lastAuditedAccPure)
             violations |= 1 << 3;
@@ -1493,8 +1596,16 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
         return ML.mulDiv(_effective(u), MAX_LTV, 100);
     }
     function _health(UserInfo storage u) internal view returns (uint256) {
-        if (u.staked == 0 || u.debt == 0) return WAD;
-        if (u.debt >= u.staked)           return 0;
+        // Only a debt-free position is unconditionally healthy. A position whose
+        // stake has been consumed to zero while debt remains is the WORST state
+        // this function can describe, not the best — and the very next line says
+        // so. Guarding on `staked == 0` here fired first and inverted the verdict,
+        // reporting maximum health for a position `_isLiquidatable` treats as
+        // immediately liquidatable. Interest accrual reaches that state on its
+        // own (see `_accrue`: interest is clamped to the stake and the remainder
+        // becomes uncollected), so it is ordinary, not adversarial.
+        if (u.debt == 0)        return WAD;
+        if (u.debt >= u.staked) return 0;
         return ML.mulDiv(u.staked - u.debt, WAD, u.staked);
     }
 
@@ -1508,7 +1619,13 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
         return _health(_users[user_]);
     }
     function _daysToLiqInternal(UserInfo storage u) internal view returns (uint256) {
-        if (u.debt == 0 || u.staked == 0)             return type(uint256).max;
+        // Same correction as `_health`: only a debt-free position is never
+        // liquidatable. With debt outstanding and the stake consumed to zero the
+        // next line already returns 0 (debt*100 >= 0 holds), which agrees with
+        // `_isLiquidatable`. The old `|| u.staked == 0` reported "never" for
+        // exactly the positions a liquidator most needs to find — the ones with
+        // no collateral left, which are where bad debt accumulates.
+        if (u.debt == 0)                              return type(uint256).max;
         if (u.debt * 100 >= u.staked * LIQ_THRESHOLD) return 0;
         uint256 stakeAtLiq = ML.mulDiv(u.debt, 100, LIQ_THRESHOLD) + 1;
         if (u.staked <= stakeAtLiq) return 0;
@@ -1518,7 +1635,10 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
     function daysToLiquidation(address user_) external view returns (uint256) { return _daysToLiqInternal(_users[user_]); }
     function currentInterestRateBps() external view returns (uint256) { return _interestRate(); }
     function utilizationRate() external view returns (uint256) {
-        if (totalStaked == 0) return 0;
+        // Terminal state: debt outstanding with the stake pool consumed to zero is
+        // INFINITE utilisation, not 0% — reporting 0 made maximum distress read as
+        // perfect health.
+        if (totalStaked == 0) return totalDebt > 0 ? type(uint256).max : 0;
         return ML.mulDiv(totalDebt, WAD, totalStaked);
     }
     function maxBorrowOf(address user_) external view returns (uint256) {
@@ -1662,7 +1782,9 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
     ) {
         totalStaked_ = totalStaked; totalDebt_ = totalDebt;
         totalBoostedEffective_ = totalBoostedEffective; totalBoostedPure_ = totalBoostedPure;
-        utilizationWad = totalStaked == 0 ? 0 : ML.mulDiv(totalDebt, WAD, totalStaked);
+        utilizationWad = totalStaked == 0
+            ? (totalDebt > 0 ? type(uint256).max : 0)
+            : ML.mulDiv(totalDebt, WAD, totalStaked);
         annualRateBps = _interestRate();
         rewardReserve_ = rewardReserve; protocolReserve_ = protocolReserve;
         emissionStart_ = emissionStart; emissionEnd_ = emissionEnd; rewardPerSec = currentRewardPerSec();

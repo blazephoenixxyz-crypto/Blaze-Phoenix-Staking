@@ -1,0 +1,73 @@
+name: Contract reference (GitHub Pages)
+
+# Publishes a browsable reference for the staking engine, generated from the
+# natspec in the source, at every push to the default branch.
+#
+# Built in CI rather than committed: documentation written by hand goes stale
+# silently, and stale documentation about a contract that holds user principal
+# is worse than none — it produces confidence that is not backed by the code.
+# This way what is published is the current source, or nothing publishes.
+#
+# Nothing here changes the licence. The source is BUSL-1.1 (Change Date
+# 1 June 2030): this makes it readable and auditable, which is the point of
+# BUSL rather than an exception to it.
+
+on:
+  push:
+    branches: [BlazePhoenix-Staking]
+    paths:
+      - 'src/**'
+      - 'foundry.toml'
+      - '.github/workflows/docs.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# One deployment at a time, never cancelled midway, so what is served is
+# always a complete build.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      # OpenZeppelin is an npm dependency here, not a submodule, and the
+      # remapping in foundry.toml points into node_modules — so the install
+      # has to come before anything that compiles. Same order as ci.yml, and
+      # for the same reason it documents there.
+      - run: npm ci
+
+      - name: Install Foundry
+        uses: foundry-rs/foundry-toolchain@v1
+
+      - name: Generate the reference from natspec
+        run: forge doc --build --out docs-api
+
+      - name: Upload
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: docs-api/book
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

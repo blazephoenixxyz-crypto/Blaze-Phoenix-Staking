@@ -279,5 +279,30 @@ freeze-at-`emissionEnd` test and Dimension 13's period-boundary anchors pin it.
 
 ---
 
+## 11. Postscript — the terminal-distress round confirms §6
+
+The August 2026 hardening round is §6's thesis run three times on the same fix, and is
+recorded here for that reason.
+
+The first cut of the clamp reconcile (C-03) **over-corrected**: it restored to `totalStaked` a
+shortfall computed off an index that had advanced further than the global debit, manufacturing
+a phantom that re-opened clamp headroom and was distributable as unbacked yield. Two
+independent adversarial reviewers found it — in the remediation, not in the original code. The
+second cut coupled the index to the clamp in *every* window and shifted healthy-regime interest
+by a rounding amount; both CI suites caught assertions pinned to exact numbers. The third cut
+coupled only when the clamp binds, and still left a floor-dust residue that a non-dividing
+book (1,000,000/499,000 — the exactly-dividing test fixture could never see it) turned into a
+checked underflow that re-froze liquidation: the precise DoS the companion fix (LIQ-01)
+existed to remove.
+
+Three iterations, each caught by a different instrument — adversarial review, exact-value
+regression, and an attack-suite fixture whose numbers were chosen not to divide. The rule from
+§6 stands as written: **a fix is a state change, and it deserves the scrutiny given to the
+code it replaced.** The corollary this round adds: *choose test fixtures whose arithmetic does
+not flatter the implementation* — a book that divides exactly proves less than one that
+leaves a remainder.
+
+---
+
 *Security credit for the disclosed findings is recorded in the
 [Hall of Fame](../README.md#-security-hall-of-fame).*
