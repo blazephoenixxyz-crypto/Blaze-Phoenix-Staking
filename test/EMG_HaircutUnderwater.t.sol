@@ -89,12 +89,22 @@ contract EMGHaircutUnderwaterTest is Test {
         vm.prank(who); staking.deposit(stakeAmt, 2555);
         vm.roll(block.number + 2);
         vm.prank(who); staking.borrow(borrowAmt);
-        // warp long enough that interest > stake, then poke to realise the clamp.
-        vm.warp(block.timestamp + 3650 days);
-        staking.pokeExpiredLock(who);              // touches the position → _accrueInterestFor clamps
+        // Warp long enough that a single lazy accrual charges interest > the whole stake, so the
+        // per-user clamp in _accrueInterestFor zeroes it. Utilisation here is tiny (large debt-free
+        // stakers dominate), so the rate sits near the 1% floor and the accrual needs a very long
+        // arm: ~1000 years. Interest is independent of emission (which ends at year 16), and a
+        // debt-free staker's stake never erodes, so the pure stakers stay exact across this warp.
+        vm.warp(block.timestamp + 365_000 days);
+        vm.roll(block.number + 2);
+        // `who` triggers its OWN accrual — repay runs _accrueInterestFor(who) first (clamping stake
+        // to 0 as interest > stake), and because who == msg.sender the auto-maintenance sweep at the
+        // end EXCLUDES it (the beneficiary is never self-liquidated). The position is left underwater
+        // AND present — exactly the state the haircut must handle. A poke by a third party would let
+        // the sweep liquidate it instead, dissolving the very case under test.
+        vm.prank(who); staking.repay(1);
         (uint256 s, uint256 d,) = _position(who);
-        assertEq(s, 0, "underwater setup: stake must be fully eroded");
-        assertGt(d, 0, "underwater setup: debt must remain");
+        assertEq(s, 0, "underwater setup: stake fully eroded to zero");
+        assertGt(d, 0, "underwater setup: debt remains -> position is underwater");
     }
 
     function _position(address who) internal view returns (uint256 s, uint256 d, uint256 eq) {
