@@ -223,6 +223,16 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
     uint256 public totalBoostedEffective;   // denominator: emission rewards
     uint256 public totalBoostedPure;        // denominator: pure-yield (interest)
 
+    // Σ max(staked_i − debt_i, 0): the aggregate POSITIVE net equity — the set that actually
+    // draws from the pot in a breached `emergencyWithdraw`. This is the ONLY correct haircut
+    // denominator: `totalStaked − totalDebt` nets underwater positions' negative equity in, so
+    // it understates the true claims by the underwater overhang, which both over-pays early
+    // exiters (draining the pot, stranding a solvent latecomer) and silently DISARMS the haircut
+    // across `claims ≤ pot < totalPositiveEquity`. Maintained through the same single writer
+    // `_applyBoost` as the boosted totals, so it inherits their eager, drift-alarmed discipline
+    // with no new call sites; the value is public so a watchdog can re-derive Σ max(·,0) off-chain.
+    uint256 public totalPositiveEquity;
+
     uint256 public accRewardPerShare;
     uint256 public accPureYieldPerShare;
     uint256 public lastRewardTime;
@@ -278,6 +288,7 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
         uint256 interestIndex;      // checkpoint into accInterestPerDebt
         uint256 trackedBoostedEffective;
         uint256 trackedBoostedPure;
+        uint256 trackedEquity;      // this position's max(staked − debt, 0); summand of totalPositiveEquity
         uint64  depositBlock;
         uint64  unlockTime;
         uint16  lockDays;     // committed lock duration in days (0 = no active lock)
@@ -484,6 +495,7 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
     function tripBreaker() external {
         if (emergencyMode) revert Staking__EmergencyActive();
         if (!_hardBreach()) revert Staking__NoBreach();
+        _updateInterestIndex();   // charge interest up to the trip, THEN freeze it for the emergency
         emergencyMode = true; emergencyTrippedAt = block.timestamp;
         if (!paused()) _pause();
         emit EmergencyDeclared(msg.sender, block.timestamp, true);
@@ -493,6 +505,7 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
     ///         independent of the on-chain breach condition. Cannot move funds.
     function declareEmergency() external onlyRole(ROLE_GUARDIAN) {
         if (emergencyMode) revert Staking__EmergencyActive();
+        _updateInterestIndex();   // charge interest up to the halt, THEN freeze it for the emergency
         emergencyMode = true; emergencyTrippedAt = block.timestamp;
         if (!paused()) _pause();
         emit EmergencyDeclared(msg.sender, block.timestamp, false);
@@ -503,6 +516,11 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
     function cancelEmergency() external onlyRole(ROLE_ADMIN) {
         if (!emergencyMode) revert Staking__EmergencyNotActive();
         if (_hardBreach())  revert Staking__InvariantBreached();
+        // Resume the interest clock at NOW so the emergency window is never charged retroactively.
+        // The in-emergency freeze only slides lastInterestTime when _updateInterestIndex runs (an
+        // exit or fundEmission); if the emergency passed with neither, the clock still sits at the
+        // trip, and without this slide the first post-resume accrual would bill the whole halt.
+        lastInterestTime = block.timestamp;
         emergencyMode = false; emergencyTrippedAt = 0;
         emit EmergencyCancelled(msg.sender, block.timestamp);
     }
@@ -521,21 +539,29 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
         uint256 debt   = u.debt;
         uint256 payout = principal > debt ? principal - debt : 0;
 
-        // Pro-rata solvency haircut (H-05): in a BREACHED emergency the contract may
-        // hold less than it owes. Distribute the physical pot across ALL remaining
-        // net equity so early exiters cannot drain it and leave late or pure stakers
-        // with nothing. The fraction pot/claims is invariant across exits — each exit
-        // removes `payout` from the pot and its own equity from the denominator by
-        // the same fraction — so the pool empties fairly and exactly. When solvent
-        // (pot >= claims) the fraction is >= 1 and every exit still pays full equity,
-        // so honest operation is unchanged; the haircut engages ONLY on a real
-        // shortfall. NOTE: this reads totalStaked/totalDebt post-accrual, so its
-        // fairness is exact only once the clamp-desync (C-03) is coupled — until then
-        // it is still strictly fairer than the prior first-come-full-payout drain.
+        // Pro-rata solvency haircut (H-05 / EMG-01/02): in a BREACHED emergency the contract may
+        // hold less than it owes. Scale each exit by pot/E, where E = totalPositiveEquity =
+        // Σ max(staked − debt, 0) is the aggregate of exactly the positions that draw from the pot.
+        // The earlier denominator `totalStaked − totalDebt` netted underwater positions' NEGATIVE
+        // equity in, understating E by the underwater overhang: it over-paid early exiters and,
+        // in the band `claims ≤ pot < E`, made the `pot < claims` gate false and disarmed the
+        // haircut in the very state it exists for. `eCorr` replaces this exiter's tracked term
+        // (possibly stale-high, since interest freezes at the trip and L517's accrual has already
+        // debited its stake but not its trackedEquity) with its exact post-accrual `payout`, so the
+        // denominator is exact w.r.t. this exit. GUARANTEE (one-sided, not exactness): trackedEquity
+        // ≥ true equity by monotonicity, so E ≥ true positive claims, so pot/E is never too large —
+        // Σ payouts ≤ pot in every exit order, no over-drain, no stranding. This is a supermartingale
+        // bound, NOT the exact order-invariance the old comment claimed (an over-scaled or stale term
+        // can leave dust and a small order-dependent slack; both are strictly in the pot's favour).
+        // When solvent (pot ≥ eCorr) the branch never engages and full net equity is paid, as before.
         if (payout > 0) {
-            uint256 pot    = ML.rawBalanceOf(bzpx, address(this));
-            uint256 claims = totalStaked > totalDebt ? totalStaked - totalDebt : 0;
-            if (claims > 0 && pot < claims) payout = ML.mulDiv(payout, pot, claims);
+            uint256 pot   = ML.rawBalanceOf(bzpx, address(this));
+            // Self-corrected denominator: totalPositiveEquity − (this exiter's stale-high term) +
+            // (its exact equity). eCorr ≥ payout always (the total includes u.trackedEquity as a
+            // summand), so no underflow and no division by zero once payout > 0.
+            uint256 eCorr = totalPositiveEquity - u.trackedEquity + payout;
+            if (pot < eCorr) payout = ML.mulDiv(payout, pot, eCorr);
+            if (payout > pot) payout = pot;   // belt: provably dead under the bound above, kept as seam insurance
         }
 
         // An under-water exit realises a loss, exactly as a liquidation does. Removing more debt
@@ -553,7 +579,13 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
         totalStaked = totalStaked > principal ? totalStaked - principal : 0;
         if (debt > 0) { totalDebt = totalDebt > debt ? totalDebt - debt : 0; _removeBorrower(msg.sender); }
 
-        _applyBoost(u, 0, 0);              // single-writer cleanup — no ghost share
+        // Zero the per-user fields BEFORE the single writer: _applyBoost derives this position's
+        // positive-equity contribution from u.staked/u.debt, so it must see them at their FINAL
+        // (exited) value or it would re-add the exiter's equity to totalPositiveEquity instead of
+        // releasing it. Mirrors _executeLiquidation, which zeroes u.debt/u.staked before its
+        // _applyBoost(u,0,0). The subsequent `delete` clears trackedEquity along with the rest.
+        u.staked = 0; u.debt = 0;
+        _applyBoost(u, 0, 0);              // single-writer cleanup — releases boosted + positive-equity share
         _removeLocker(msg.sender);         // the position is gone; leave no ghost registry entry
         delete _users[msg.sender];
 
@@ -1298,6 +1330,14 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
     ///      freeze exactly when the protocol is already under stress. This mirrors the saturating
     ///      arithmetic the per-user charge has always used.
     function _updateInterestIndex() internal {
+        // Freeze the interest clock for the duration of an emergency. Interest is charged up to the
+        // trip (tripBreaker/declareEmergency call this once, before setting the flag), then the clock
+        // slides with wall time while charging nothing: borrowers cannot `repay` under emergency
+        // (whenNotEmergency), so accruing across that window would bill a debt they are forbidden to
+        // reduce, and would erode the haircut base while exits are in flight, leaking interest slices
+        // into reward accounting the exiters forfeit. The slide keeps `cancelEmergency` resume-safe —
+        // no retroactive lump on the first post-resume accrual.
+        if (emergencyMode) { lastInterestTime = block.timestamp; return; }
         uint256 elapsed = block.timestamp - lastInterestTime;
         if (elapsed == 0) return;
         lastInterestTime = block.timestamp;
@@ -1418,14 +1458,22 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
         bp = (u.debt == 0 && u.staked > 0) ? ML.mulDiv(u.staked, boost, BOOST_BASE) : 0;
     }
 
-    /// @dev THE sole writer of the boosted totals. Plain checked subtraction: the global total
-    ///      is exactly the sum of all tracked contributions, so it is always >= this user's
-    ///      tracked value; an underflow would signal drift and (correctly) revert.
+    /// @dev THE sole writer of the boosted totals AND of totalPositiveEquity. Plain checked
+    ///      subtraction: each global total is exactly the sum of all tracked contributions, so it
+    ///      is always >= this user's tracked value; an underflow would signal drift and (correctly)
+    ///      revert. CALLER CONTRACT: u.staked and u.debt are FINAL for this tx at the call site,
+    ///      because the positive-equity summand is derived from them here — every equity-changing
+    ///      path already resyncs through this writer before the tx ends, so the derived value is
+    ///      exact over stored state. (emergencyWithdraw's kill path zeroes u.staked/u.debt before
+    ///      its _applyBoost(u,0,0) precisely so this derivation releases, not resurrects, its equity.)
     function _applyBoost(UserInfo storage u, uint256 newBE, uint256 newBP) internal {
         totalBoostedEffective = totalBoostedEffective - u.trackedBoostedEffective + newBE;
         totalBoostedPure      = totalBoostedPure      - u.trackedBoostedPure      + newBP;
+        uint256 newEq = u.staked > u.debt ? u.staked - u.debt : 0;
+        totalPositiveEquity   = totalPositiveEquity   - u.trackedEquity           + newEq;
         u.trackedBoostedEffective = newBE;
         u.trackedBoostedPure      = newBP;
+        u.trackedEquity           = newEq;
     }
 
     function _checkpoint(UserInfo storage u) internal {
@@ -1613,7 +1661,12 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
         return _effective(_users[user_]);
     }
     function totalEffectiveStaked() external view returns (uint256) {
-        return totalStaked > totalDebt ? totalStaked - totalDebt : 0;
+        // The aggregate effective (net) stake IS the positive-equity sum: Σ max(staked − debt, 0).
+        // `totalStaked − totalDebt` nets underwater positions' negative equity in and understates it
+        // whenever any position is underwater — the same defect the emergency haircut carried. Reading
+        // the maintained accumulator returns the honest figure to integrators and costs one SLOAD
+        // instead of two-plus-arithmetic.
+        return totalPositiveEquity;
     }
     function healthFactor(address user_) external view returns (uint256) {
         return _health(_users[user_]);
