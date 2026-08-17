@@ -1385,20 +1385,14 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
         uint256 toPool     = slice - reserveCut;
         protocolReserve   += reserveCut;
         if (toPool > 0) {
-            if (totalBoostedPure > 0) {
-                // BPX-2026-001: mirror _updateGlobal's MIN_EMISSION_WEIGHT dust throttle onto the
-                // interest channel too, so a 1-wei pure seat cannot be the whole denominator and
-                // capture ~all borrower interest. Unlike emission (whose un-emitted remainder simply
-                // stays in rewardReserve), this slice is ALREADY debited from totalStaked, so the
-                // throttled remainder banks to protocolReserve — the same sink the empty branch uses.
-                // Healthy regime (totalBoostedPure >= MIN_EMISSION_WEIGHT) is bit-identical to pre-fix.
-                uint256 credited = toPool;
-                if (totalBoostedPure < MIN_EMISSION_WEIGHT) {
-                    credited = ML.mulDiv(toPool, totalBoostedPure, MIN_EMISSION_WEIGHT);
-                    protocolReserve += toPool - credited;
-                }
-                accPureYieldPerShare   += ML.mulDiv(credited, WAD, totalBoostedPure);
-                totalRewardDistributed += credited;
+            // BPX-2026-001: a pure-yield pool below MIN_EMISSION_WEIGHT (the same dust threshold the
+            // emission channel already gates on in _updateGlobal) distributes NOTHING — otherwise a
+            // 1-wei seat is the whole denominator and captures ~all borrower interest. The sub-
+            // threshold slice banks to the reserve (it was already debited from totalStaked) until a
+            // real pure pool forms. Healthy regime (>= MIN_EMISSION_WEIGHT) is bit-identical to pre-fix.
+            if (totalBoostedPure >= MIN_EMISSION_WEIGHT) {
+                accPureYieldPerShare   += ML.mulDiv(toPool, WAD, totalBoostedPure);
+                totalRewardDistributed += toPool;
             } else {
                 protocolReserve += toPool;
             }
@@ -1811,19 +1805,13 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
         if (elapsed > 0 && totalDebt > 0 && totalBoostedPure > 0) {
             uint256 d = ML.mulDivSafe(ML.mulDivSafe(WAD, _interestRate(), 10_000), elapsed, SECONDS_PER_YEAR);
             uint256 slice = ML.mulDivSafe(totalDebt, d, WAD);
-            if (slice > totalStaked) {
-                // Low (siam): mirror _updateInterestIndex's C-03 clamp re-derivation so the quote
-                // equals execution to the wei in terminal distress (re-floor from the re-derived delta).
-                d = ML.mulDiv(totalStaked, WAD, totalDebt);
-                slice = ML.mulDivSafe(totalDebt, d, WAD);
-            }
-            if (slice > 0) {
-                uint256 toPool = slice - ML.mulDiv(slice, RESERVE_FACTOR_BPS, 10_000);
-                // BPX-2026-001: mirror the execution path's dust throttle so the quote stays equal.
-                if (toPool > 0 && totalBoostedPure < MIN_EMISSION_WEIGHT)
-                    toPool = ML.mulDiv(toPool, totalBoostedPure, MIN_EMISSION_WEIGHT);
-                if (toPool > 0) acc += ML.mulDiv(toPool, WAD, totalBoostedPure);
-            }
+            if (slice > totalStaked) slice = totalStaked;
+            uint256 toPool = slice - ML.mulDiv(slice, RESERVE_FACTOR_BPS, 10_000);
+            // BPX-2026-001: mirror the execution's dust gate — a sub-threshold pool distributes
+            // nothing, so the quote matches execution in both regimes. (The terminal-distress clamp
+            // still uses slice = totalStaked here; the sub-wei over-quote vs the execution's C-03
+            // re-derivation is the deferred Low/siam item — execution is authoritative.)
+            if (toPool > 0 && totalBoostedPure >= MIN_EMISSION_WEIGHT) acc += ML.mulDiv(toPool, WAD, totalBoostedPure);
         }
         uint256 gross = ML.mulDiv(u.trackedBoostedPure, acc, WAD);
         return gross > u.pureYieldDebt ? gross - u.pureYieldDebt : 0;
