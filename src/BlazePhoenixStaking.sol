@@ -1386,8 +1386,19 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
         protocolReserve   += reserveCut;
         if (toPool > 0) {
             if (totalBoostedPure > 0) {
-                accPureYieldPerShare   += ML.mulDiv(toPool, WAD, totalBoostedPure);
-                totalRewardDistributed += toPool;
+                // BPX-2026-001: mirror _updateGlobal's MIN_EMISSION_WEIGHT dust throttle onto the
+                // interest channel too, so a 1-wei pure seat cannot be the whole denominator and
+                // capture ~all borrower interest. Unlike emission (whose un-emitted remainder simply
+                // stays in rewardReserve), this slice is ALREADY debited from totalStaked, so the
+                // throttled remainder banks to protocolReserve — the same sink the empty branch uses.
+                // Healthy regime (totalBoostedPure >= MIN_EMISSION_WEIGHT) is bit-identical to pre-fix.
+                uint256 credited = toPool;
+                if (totalBoostedPure < MIN_EMISSION_WEIGHT) {
+                    credited = ML.mulDiv(toPool, totalBoostedPure, MIN_EMISSION_WEIGHT);
+                    protocolReserve += toPool - credited;
+                }
+                accPureYieldPerShare   += ML.mulDiv(credited, WAD, totalBoostedPure);
+                totalRewardDistributed += credited;
             } else {
                 protocolReserve += toPool;
             }
@@ -1443,9 +1454,17 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
     ///      rather than against stored state. Boost is the premium for illiquidity: the instant
     ///      `block.timestamp >= unlockTime` the capital is withdrawable again, so the effective
     ///      commitment is 0 days (1.00x) — whatever `lockDays` still holds in storage and whether
-    ///      or not anybody has gotten around to normalising the position yet. Every weight in the
-    ///      protocol is derived through here, so an un-swept expired lock can never be re-priced
-    ///      at its historical multiplier by ANY code path.
+    ///      or not anybody has gotten around to normalising the position yet.
+    ///
+    ///      SCOPE (BPX-2026-002 — honest statement, was previously overstated). Every DERIVATION of
+    ///      a weight goes through here, so a freshly computed weight is clock-aware. SETTLEMENT,
+    ///      however, pays the last CHECKPOINTED weight (`u.trackedBoostedEffective`), refreshed only
+    ///      when the position is resynced: by its owner's next equity-changing action, a third-party
+    ///      `lockStep` poke, or the rotating `_sweepExpiredLocks`. So an expired-but-unswept position
+    ///      is still SETTLED at its pre-expiry multiplier for the un-swept window — a bounded,
+    ///      eventually-consistent misallocation of EMISSION only (never a solvency or principal risk),
+    ///      whose bound is the sweep cadence. This is an accepted lazy-accrual tail, not a guarantee
+    ///      that the historical multiplier is unreachable by every path.
     function _effectiveLockDays(UserInfo storage u) internal view returns (uint256) {
         if (u.lockDays == 0) return 0;
         return block.timestamp >= u.unlockTime ? 0 : uint256(u.lockDays);
@@ -1792,9 +1811,19 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
         if (elapsed > 0 && totalDebt > 0 && totalBoostedPure > 0) {
             uint256 d = ML.mulDivSafe(ML.mulDivSafe(WAD, _interestRate(), 10_000), elapsed, SECONDS_PER_YEAR);
             uint256 slice = ML.mulDivSafe(totalDebt, d, WAD);
-            if (slice > totalStaked) slice = totalStaked;
-            uint256 toPool = slice - ML.mulDiv(slice, RESERVE_FACTOR_BPS, 10_000);
-            if (toPool > 0) acc += ML.mulDiv(toPool, WAD, totalBoostedPure);
+            if (slice > totalStaked) {
+                // Low (siam): mirror _updateInterestIndex's C-03 clamp re-derivation so the quote
+                // equals execution to the wei in terminal distress (re-floor from the re-derived delta).
+                d = ML.mulDiv(totalStaked, WAD, totalDebt);
+                slice = ML.mulDivSafe(totalDebt, d, WAD);
+            }
+            if (slice > 0) {
+                uint256 toPool = slice - ML.mulDiv(slice, RESERVE_FACTOR_BPS, 10_000);
+                // BPX-2026-001: mirror the execution path's dust throttle so the quote stays equal.
+                if (toPool > 0 && totalBoostedPure < MIN_EMISSION_WEIGHT)
+                    toPool = ML.mulDiv(toPool, totalBoostedPure, MIN_EMISSION_WEIGHT);
+                if (toPool > 0) acc += ML.mulDiv(toPool, WAD, totalBoostedPure);
+            }
         }
         uint256 gross = ML.mulDiv(u.trackedBoostedPure, acc, WAD);
         return gross > u.pureYieldDebt ? gross - u.pureYieldDebt : 0;
