@@ -4,7 +4,7 @@ out = "out"
 libs = ["lib"]
 solc_version = "0.8.28"
 optimizer = true
-optimizer_runs = 200
+optimizer_runs = 150
 via_ir = true
 # OpenZeppelin resolves through the npm dependency declared in package.json, not
 # through lib/. `.gitignore` ignores lib/ wholesale, and openzeppelin-contracts was
