@@ -167,7 +167,7 @@ export function compileAll() {
       'Reenterer.sol': { content: REENTRANT_ATTACKER },
     },
     settings: {
-      optimizer: { enabled: true, runs: 200 },
+      optimizer: { enabled: true, runs: 150 },   // kept in lock-step with foundry.toml (was 200; lowered to recover EIP-170 headroom for the BPX-2026-001 fix)
       viaIR: true,
       outputSelection: { '*': { '*': ['abi', 'evm.bytecode.object'] } },
     },
