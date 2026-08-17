@@ -131,6 +131,51 @@ contract FullSurfaceHandler is Test {
         try staking.lockStep(_actor(tseed), _actor(seed)) { _hit("lockStep"); } catch {}
     }
 
+    // ── guided reachability ──────────────────────────────────────────────────
+    //
+    // CI's first run failed here, and the reason is a property of the design
+    // rather than a flaw: `_autoMaintain` normalises expired locks during
+    // ordinary traffic, which is the whole "no keeper requirement" claim. The
+    // consequence is that a purely random sequence almost never finds a lock
+    // that is BOTH still expired AND still registered at the moment poke is
+    // called — every deposit/lock also pushes unlockTime forward again. So the
+    // two poke entry points were unreachable, and the coverage gate said so.
+    //
+    // These actions steer into that state deliberately instead of hoping the
+    // fuzzer stumbles on it. They warp only to just past an unlock that already
+    // exists, so they add reachability without inventing a state the protocol
+    // could not reach on its own.
+    function expireAndPoke(uint256 seed) public {
+        address a = _actor(seed);
+        (,,,,,,,,, uint256 lockDays, uint256 unlockTime,,,) = staking.getUserInfo(a);
+        if (lockDays == 0) return;
+        if (block.timestamp < unlockTime) {
+            vm.warp(unlockTime + 1);
+            vm.roll(block.number + 1);
+        }
+        vm.prank(_actor(seed + 1));
+        try staking.pokeExpiredLock(a) { _hit("pokeExpiredLock"); } catch {}
+    }
+
+    /// Same, for the batch form. It reverts only when NOTHING in the list was
+    /// actionable, so it needs at least one genuinely expired entry.
+    function expireAndPokeBatch(uint256 seed) public {
+        uint256 earliest = type(uint256).max;
+        for (uint256 i = 0; i < actors.length; i++) {
+            (,,,,,,,,, uint256 lockDays, uint256 unlockTime,,,) = staking.getUserInfo(actors[i]);
+            if (lockDays != 0 && unlockTime < earliest) earliest = unlockTime;
+        }
+        if (earliest == type(uint256).max) return;
+        if (block.timestamp <= earliest) {
+            vm.warp(earliest + 1);
+            vm.roll(block.number + 1);
+        }
+        address[] memory batch = new address[](actors.length);
+        for (uint256 i = 0; i < actors.length; i++) batch[i] = actors[i];
+        vm.prank(_actor(seed));
+        try staking.pokeExpiredLocks(batch) { _hit("pokeExpiredLocks"); } catch {}
+    }
+
     // ── flows that are not entry points at all ───────────────────────────────
     /// An unsolicited transfer in. Raises backing without raising owed, which is
     /// the one legitimate way the identity becomes an inequality.
