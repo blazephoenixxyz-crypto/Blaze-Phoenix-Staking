@@ -55,6 +55,35 @@ contract FullSurfaceHandler is Test {
     /// Per-entry-point success counters — the coverage proof for INV-16.
     mapping(bytes32 => uint256) public calls;
 
+    /// Total simulated time advanced, and its ceiling.
+    ///
+    /// The lock ceiling counts DOWN to the end of the 16-year emission, so a
+    /// campaign that warps far enough forward reaches a state where no deposit
+    /// is grantable at all. That is a legitimate end-state for the protocol but
+    /// a useless one to fuzz in: CI showed campaigns where the guided warps to
+    /// `unlockTime + 1` (years, for a long lock) burned the whole window and not
+    /// one deposit settled. Budgeting the clock keeps the campaign inside the
+    /// region where the surface is actually reachable.
+    uint256 public warped;
+    uint256 internal constant WARP_BUDGET = 1200 days;
+
+    function _advanceTo(uint256 ts) internal returns (bool) {
+        if (ts <= block.timestamp) return true;
+        uint256 delta = ts - block.timestamp;
+        if (warped + delta > WARP_BUDGET) return false;
+        warped += delta;
+        vm.warp(ts);
+        vm.roll(block.number + 10);
+        return true;
+    }
+
+    function _advanceBy(uint256 delta) internal {
+        if (warped + delta > WARP_BUDGET) return;
+        warped += delta;
+        vm.warp(block.timestamp + delta);
+        vm.roll(block.number + 30);
+    }
+
     constructor(BlazePhoenixStaking s, MockERC20 t, address[] memory a) {
         staking = s; token = t; actors = a;
     }
@@ -158,10 +187,7 @@ contract FullSurfaceHandler is Test {
         address a = _actor(seed);
         (,,,,,,,,, uint256 lockDays, uint256 unlockTime,,,) = staking.getUserInfo(a);
         if (lockDays == 0) return;
-        if (block.timestamp < unlockTime) {
-            vm.warp(unlockTime + 1);
-            vm.roll(block.number + 1);
-        }
+        if (!_advanceTo(unlockTime + 1)) return;   // out of clock budget
         vm.prank(_actor(seed + 1));
         try staking.pokeExpiredLock(a) { _hit("pokeExpiredLock"); } catch {}
     }
@@ -175,10 +201,7 @@ contract FullSurfaceHandler is Test {
             if (lockDays != 0 && unlockTime < earliest) earliest = unlockTime;
         }
         if (earliest == type(uint256).max) return;
-        if (block.timestamp <= earliest) {
-            vm.warp(earliest + 1);
-            vm.roll(block.number + 1);
-        }
+        if (!_advanceTo(earliest + 1)) return;     // out of clock budget
         address[] memory batch = new address[](actors.length);
         for (uint256 i = 0; i < actors.length; i++) batch[i] = actors[i];
         vm.prank(_actor(seed));
@@ -206,14 +229,12 @@ contract FullSurfaceHandler is Test {
 
     // ── time ─────────────────────────────────────────────────────────────────
     function passTime(uint256 s) public {
-        s = bound(s, 1 hours, 60 days);
-        vm.warp(block.timestamp + s); vm.roll(block.number + 30);
+        _advanceBy(bound(s, 1 hours, 60 days));
     }
     /// Carries positions past their unlock so lock expiry is inside the fuzzed
     /// space, which is what INV-18 needs to be a real test.
     function passLockPeriod(uint256 s) public {
-        s = bound(s, 60 days, 800 days);
-        vm.warp(block.timestamp + s); vm.roll(block.number + 300);
+        _advanceBy(bound(s, 60 days, 400 days));
     }
 }
 
