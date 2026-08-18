@@ -102,15 +102,14 @@ contract UnderwaterFreezeTest is Test {
         console2.log("uncollected  :", st.solvency().totalUncollectedInterest);
         if (sum > total) console2.log(">>> totalStaked BELOW sum by:", sum - total);
 
-        // RED-FIRST: the healthy saver must be able to withdraw its intact stake. Present code:
-        // `totalStaked -= amount_` (L725) underflows because the eager global slice drove
-        // totalStaked below the saver's u.staked -> Panic 0x11, funds frozen. After a fix that
-        // keeps totalStaked == sum(u.staked): withdraw succeeds.
-        bool underflowed;
+        // DECISIVE PROBE (no catch): let the withdraw revert propagate so forge decodes the exact
+        // reason into the CI [FAIL: ...] digest.
+        //   PASS                         -> withdraw executed, invariant genuinely held (non-vacuous).
+        //   FAIL panic 0x11 (underflow)  -> DRIFT PROVEN: totalStaked -= amount_ (L725) underflowed.
+        //   FAIL Staking__X()            -> scenario did not reach the drift; X names why.
+        // The saver has debt==0 and its 90d lock expired in the decade warp, so the only legitimate
+        // blockers are gone; any revert here is diagnostic.
         vm.prank(saver);
-        try st.withdraw(1_000e18) { underflowed = false; }
-        catch (bytes memory r) { underflowed = _isPanic11(r); if (underflowed) console2.log(">>> withdraw underflowed (Panic 0x11)"); }
-
-        assertFalse(underflowed, "healthy saver withdraw underflowed on totalStaked (Panic 0x11) - eager/lazy drift freeze");
+        st.withdraw(1_000e18);
     }
 }
