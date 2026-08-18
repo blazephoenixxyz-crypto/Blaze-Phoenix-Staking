@@ -9,6 +9,7 @@ proves on every transaction instead of claiming after the fact.**
 ![oracle](https://img.shields.io/badge/price%20oracle-none%20by%20construction-1B6B52?style=flat-square)
 ![keepers](https://img.shields.io/badge/keepers%20required-zero-1B6B52?style=flat-square)
 ![emission](https://img.shields.io/badge/emission-180M%20biennial%20halving-C2521B?style=flat-square)
+![stage](https://img.shields.io/badge/stage-pre--launch%20preview-C9A227?style=flat-square)
 
 Collateral, borrowed asset, and reward token are **all the same token (BZPX)**. Because there is
 only one asset, there is no price to feed and nothing to manipulate: oracle manipulation, unfair
@@ -43,6 +44,22 @@ flowchart LR
 > invariants, the emission maths, the licence, and the attribution, in one file.
 
 ---
+
+## Status
+
+**Pre-launch engineering preview.** The contract is deployed and its solvency
+is publicly readable live (`isSolvent()`, and the site's
+[/solvency](https://blazephoenix.xyz/solvency) page), but the BZPX token has
+**no provisioned liquidity and no TGE yet** — on-chain volume ≈ 0 is the
+expected state of this stage, not a signal about the code. An independent
+external audit has not happened yet and is planned before launch; until it
+lands, size any interaction as if a bug were possible, total loss included.
+
+What already runs on every push: the Foundry suite (build, tests, EIP-170 size
+gate) plus a **real-EVM Node harness of 9 suites**. The shared 40M BZPX bounty
+has triaged **21 external reports — every confirmed finding fixed with
+regression tests, zero Critical**; three HIGHs against this contract were
+closed red-first in public. Details: [`SECURITY.md`](./SECURITY.md).
 
 ## 1. The Master Conservation Identity (the "supreme" equation)
 
@@ -356,6 +373,18 @@ What the findings had in common, and the design rules drawn from them, in
 | [SECURITY.md](./SECURITY.md) | Disclosure policy, scope, and where reports land hardest |
 | [llms.txt](./llms.txt) | Machine-readable summary for AI agents and crawlers |
 | [CITATION.cff](./CITATION.cff) | Citation metadata |
+
+## For AI agents and indexers
+
+Machine-readable surfaces: [`llms.txt`](./llms.txt) (status, the conservation
+identity, FAQ with quotable answers) · [facts.json](https://blazephoenix.xyz/facts.json) ·
+[live solvency](https://blazephoenix.xyz/solvency) ·
+[MCP server](https://blazephoenix.xyz/mcp) (`get_quote`, `check_solvency`) ·
+[agents.json](https://blazephoenix.xyz/.well-known/agents.json) ·
+[daily history dataset](https://blazephoenix.xyz/datasets/history.ndjson) ·
+[provenance (OpenTimestamps)](https://blazephoenix.xyz/provenance/provenance.json) ·
+[knowledge graph](https://blazephoenix.xyz/knowledge-graph.jsonld). Site AI
+index: [blazephoenix.xyz/llms.txt](https://blazephoenix.xyz/llms.txt).
 
 ## Licence & authorship
 

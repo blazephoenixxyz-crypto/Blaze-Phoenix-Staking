@@ -76,6 +76,21 @@ in [`README.md`](./README.md), with your consent and under the name or handle yo
 choose. Credit is given for the finding, the root-cause analysis, and the
 remediation reasoning where they came from you — attribution is not rounded down.
 
+## Verification pipeline and track record
+
+An independent external audit has not happened yet; it is planned before
+launch. What runs on every push, today, in public CI: the Foundry suite
+(build, tests, EIP-170 size gate) and a real-EVM Node harness of 9 suites.
+Solvency is enforced per-transaction on-chain — every value-moving call proves
+the conservation identity or reverts — and is publicly readable at any time
+via `isSolvent()` or https://blazephoenix.xyz/solvency
+
+Track record so far, across this repo and the DEX sibling: **21 external
+reports triaged (8 public + 13 private), every confirmed finding fixed with
+regression tests, zero Critical.** Three HIGHs against this contract were
+confirmed and closed in public, red-first: the finding becomes a failing CI
+test before the fix is written. Credits live in the Security Hall of Fame.
+
 ## Bounty programme
 
 **40,000,000 BZPX is allocated to security research** — 4% of a fixed
