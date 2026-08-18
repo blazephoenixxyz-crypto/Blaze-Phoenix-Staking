@@ -72,8 +72,10 @@ contract UnderwaterFreezeTest is Test {
     function test_HealthySaverWithdraw_FreezesOnDriftUnderflow() public {
         uint256 t = block.timestamp;
 
-        // Small healthy saver, no lock, no borrow -> withdraw-eligible after the flash-loan window.
-        vm.prank(saver); st.deposit(1_000e18, 0);
+        // Small healthy saver, no borrow -> withdraw-eligible once the (min) lock expires.
+        // Min lock applies (deposit(.,0) reverts Staking__LockTooShort); the decade warp below
+        // clears the 90-day lock long before the withdraw probe.
+        vm.prank(saver); st.deposit(1_000e18, 90);
 
         // Borrowers dominate utilisation; no large healthy staker suppresses the rate.
         for (uint256 i; i < N; ++i) { vm.prank(bs[i]); st.deposit(1_000e18, 90); }
