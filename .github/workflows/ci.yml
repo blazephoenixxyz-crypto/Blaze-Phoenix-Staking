@@ -83,6 +83,79 @@ jobs:
             exit 1
           fi
 
+      - name: Deeper invariant/fuzz pass (REPORT-ONLY — never gates)
+        # `|| true` is deliberate: a deep campaign is a search, not a bound, and
+        # its variance would make the gating job flaky. Labelled so nobody reads
+        # a green tick here as a proof — the gate is the hermetic run above. The
+        # conservation invariant is known to be fuzz-flaky (vault note 116), and
+        # this is where that signal belongs: visible, not blocking. If one of
+        # these ever discharges deterministically, promote it into the gate and
+        # drop the `|| true`.
+        run: |
+          forge test --match-path "test/*Invariant*" --fuzz-runs 512 --invariant-runs 128 --invariant-depth 128 -vv || true
+          forge test --match-path "test/*Conservation*" --fuzz-runs 512 -vv || true
+
+  yul-guard:
+    name: Yul evaluation-order guard
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Builtin arguments evaluate RIGHT TO LEFT
+        # Yul evaluates a builtin's arguments right to left, so
+        # `and(staticcall(...), eq(returndatasize(), 32))` tests the size left by
+        # the PREVIOUS external call, not by this one. That shipped once in the
+        # Dex (Core._curveCryptoGetDy) and cost a silently inert protocol floor.
+        # MathLib currently uses the safe idiom everywhere — capture the call
+        # result in a variable, then test returndatasize() — and this job is what
+        # keeps it that way: a comment asking people not to "simplify" it back is
+        # a plea, a CI job is the rule. Costs ~2s and no compiler. The comment
+        # filter is required: the warning text itself contains the pattern.
+        run: |
+          if grep -rnE 'and\((staticcall|call|delegatecall|callcode)\(' src/ | grep -vE ':\s*(///|//|\*)'; then
+            echo "::error title=Yul evaluation order::Builtin arguments evaluate right-to-left — capture the call result in a variable first, then test returndatasize()."
+            exit 1
+          fi
+          echo "### Yul evaluation-order guard: clean" >> "$GITHUB_STEP_SUMMARY"
+
+  formal:
+    name: formal verification (Halmos symbolic, report-only)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      # OpenZeppelin is an npm dependency, not a submodule — the remapping in
+      # foundry.toml points into node_modules, so the install comes first.
+      - run: npm ci
+      - uses: foundry-rs/foundry-toolchain@v1
+      - name: Install Halmos
+        run: pip install halmos
+      - name: Symbolic spec — MathLib (report-only)
+        # test/formal/MathLibFormalSpec.t.sol. REPORT-ONLY on arrival, and the
+        # `|| true` is deliberate: the Dex measured that properties routing
+        # through the 512-bit assembly mulDiv reach `mulmod`, which Halmos
+        # over-approximates, so they time out instead of discharging — and a
+        # check that cannot decide has no place in a gate. The spec here states
+        # the single-word and domain-edge properties, which SHOULD discharge.
+        #
+        # Promotion rule, inherited from the Dex: a check moves into a hard gate
+        # only after a report-only run has MEASURED it discharging cleanly. This
+        # job is where that measurement happens. If these discharge, promote them
+        # and drop the `|| true`.
+        #
+        # Bounded at the process rather than with timeout-minutes, which marks a
+        # step CANCELLED — GitHub propagates a cancellation to the job even under
+        # continue-on-error, so the step would go red for doing exactly what it
+        # is expected to do.
+        run: timeout 1500 halmos --contract MathLibFormalSpec -v || true
+      - name: Note
+        run: echo "Report-only. A TIMEOUT here is an expected outcome and gates nothing." >> "$GITHUB_STEP_SUMMARY"
+
   node-evm:
     name: Node — real-EVM harness (9 suites)
     runs-on: ubuntu-latest

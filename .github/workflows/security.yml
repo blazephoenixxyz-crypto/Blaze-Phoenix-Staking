@@ -1,0 +1,125 @@
+name: security
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+  workflow_dispatch:
+
+# Brutal static + detector layer, complementing the formal jobs in ci.yml
+# (Halmos symbolic + SMTChecker CHC). Cloud-only — never run on the maintainer's
+# device. Slither gates on high-impact/high-confidence findings; Aderyn and
+# Solhint are report-only (uploaded as artifacts) so they surface issues without
+# blocking on style/informational noise.
+
+jobs:
+  slither:
+    name: Slither (static detectors, fail on high)
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - name: Install Foundry
+        uses: foundry-rs/foundry-toolchain@v1
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install Slither
+        run: pip install slither-analyzer
+      - name: Slither — full detectors, SARIF + markdown summary
+        run: |
+          slither . \
+            --sarif slither.sarif \
+            --checklist --markdown-root . > slither-report.md 2>&1 || true
+          echo "----- Slither summary -----"
+          tail -c 40000 slither-report.md || true
+      - name: Slither — GATE on high-impact/high-confidence
+        # Fails the job if any high-impact & high-confidence detector fires.
+        run: slither . --fail-high
+      - name: Upload Slither reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: slither-reports
+          path: |
+            slither.sarif
+            slither-report.md
+
+  aderyn:
+    name: Aderyn (static analyzer, report)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - name: Install Foundry
+        uses: foundry-rs/foundry-toolchain@v1
+      - name: Install Aderyn
+        run: |
+          curl -L https://raw.githubusercontent.com/Cyfrin/up/main/install | bash || true
+          echo "$HOME/.cyfrin/bin" >> "$GITHUB_PATH"
+      - name: Run Aderyn
+        run: |
+          ~/.cyfrin/bin/cyfrinup || true
+          ~/.cyfrin/bin/aderyn . -o aderyn-report.md || aderyn . -o aderyn-report.md || true
+          echo "----- Aderyn summary -----"
+          tail -c 40000 aderyn-report.md || true
+      - name: Upload Aderyn report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: aderyn-report
+          path: aderyn-report.md
+
+  solhint:
+    name: Solhint (linter, report)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - name: Install & run Solhint
+        run: |
+          npm i -g solhint || true
+          solhint 'src/**/*.sol' > solhint-report.txt 2>&1 || true
+          echo "----- Solhint summary -----"
+          cat solhint-report.txt || true
+      - name: Upload Solhint report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: solhint-report
+          path: solhint-report.txt
+
+  certora:
+    name: Certora Prover (INV-20 effV4Fee fail-closed)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install certora-cli + solc 0.8.36
+        run: |
+          pip install certora-cli solc-select
+          solc-select install 0.8.36
+          solc-select use 0.8.36
+          # Certora resolves the "solc0.8.36" name from PATH.
+          ln -sf "$(command -v solc)" /usr/local/bin/solc0.8.36
+      - name: Run Certora (skips gracefully until CERTORAKEY is set)
+        env:
+          CERTORAKEY: ${{ secrets.CERTORAKEY }}
+        run: |
+          if [ -z "$CERTORAKEY" ]; then
+            echo "CERTORAKEY not set — Certora scaffold is ready; add the repo secret to run the proof."
+            exit 0
+          fi
+          certoraRun certora/conf/effv4fee.conf
