@@ -367,21 +367,43 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
         // reverted it (Staking__InvariantBreached), freezing the very recovery tools
         // (liquidate/repay) exactly when they are needed. Historical drift still
         // cancels because only the CHANGE across the body is compared.
-        uint256 lhsBefore = ML.rawBalanceOf(bzpx, address(this)) + totalDebt + totalBadDebt;
-        uint256 rhsBefore = totalStaked + rewardReserve + protocolReserve + _pendingDistribution();
+        (uint256 lhsBefore, uint256 rhsBefore) = _conservationSnapshot();
         _;
         // |Δlhs - Δrhs| with lhs = bal+totalDebt+totalBadDebt, rhs = totalStaked+RR+PR+pending.
         // Folded to two locals (lhsAfter+rhsBefore vs lhsBefore+rhsAfter, comparison inlined) to
         // keep the inlined modifier's stack footprint at/below the prior _owed()-based check —
         // this contract is near the via-IR stack/size ceiling and extra modifier locals stack on
         // top of every guarded function's own frame.
+        _conservationCheck(lhsBefore, rhsBefore);
+    }
+
+    /// @dev The two halves of `conserves()`, lifted OUT of the modifier body. A modifier is
+    ///      inlined into every function that wears it, and this one wears 15 — so the full
+    ///      identity (two raw balance reads, eight SLOADs, two `_pendingDistribution()` calls,
+    ///      the arithmetic and the revert) was emitted 15 times over, twice per site. As
+    ///      functions it is emitted ONCE and each site pays a jump. This is byte-for-byte the
+    ///      same check in the same order — nothing about the invariant changes — and it also
+    ///      relieves the stack pressure the modifier's own comment flags, since the locals now
+    ///      live in the helper's frame instead of stacking on top of every guarded function's.
+    function _conservationSnapshot() internal view returns (uint256 lhsBefore, uint256 rhsBefore) {
+        lhsBefore = ML.rawBalanceOf(bzpx, address(this)) + totalDebt + totalBadDebt;
+        rhsBefore = totalStaked + rewardReserve + protocolReserve + _pendingDistribution();
+    }
+
+    function _conservationCheck(uint256 lhsBefore, uint256 rhsBefore) internal view {
         uint256 lhs = ML.rawBalanceOf(bzpx, address(this)) + totalDebt + totalBadDebt + rhsBefore;
         uint256 rhs = lhsBefore + totalStaked + rewardReserve + protocolReserve + _pendingDistribution();
         if ((lhs > rhs ? lhs - rhs : rhs - lhs) > CONSERVATION_DUST) revert Staking__InvariantBreached();
     }
     modifier whenNotEmergency() {
-        if (emergencyMode) revert Staking__EmergencyActive();
+        _requireNotEmergency();
         _;
+    }
+
+    /// @dev Same reasoning as `_conservationSnapshot`: worn by 14 functions, so the SLOAD and the
+    ///      revert were emitted 14 times. One copy, fourteen jumps.
+    function _requireNotEmergency() internal view {
+        if (emergencyMode) revert Staking__EmergencyActive();
     }
 
     constructor(address bzpx_, address treasury_) {
@@ -404,7 +426,7 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
     ///         boost(d) = BOOST_BASE + BOOST_LINEAR·(d/365) + BOOST_QUAD·(d/365)², integer-floored.
     function boostByDays(uint256 lockDays_) public pure returns (uint256 bps) {
         if (lockDays_ == 0) return BOOST_BASE;
-        if (lockDays_ > MAX_LOCK_DAYS) lockDays_ = MAX_LOCK_DAYS;
+        lockDays_ = _min(lockDays_, MAX_LOCK_DAYS);
         unchecked {
             // d ≤ 2555, so every product is far below 2^256 — no overflow.
             bps = BOOST_BASE
@@ -441,7 +463,7 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
         external nonReentrant onlyRole(ROLE_ADMIN) whenNotEmergency conserves
     {
         if (amount_ == 0) revert Staking__ZeroAmount();
-        if (amount_ > protocolReserve) amount_ = protocolReserve;
+        amount_ = _min(amount_, protocolReserve);
         protocolReserve -= amount_;
         if (!ML.rawTransfer(bzpx, treasury, amount_)) revert Staking__TransferFailed();
         emit ReserveWithdrawn(treasury, amount_);
@@ -537,7 +559,7 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
         uint256 principal = u.staked;
         if (principal == 0) revert Staking__NoStake();
         uint256 debt   = u.debt;
-        uint256 payout = principal > debt ? principal - debt : 0;
+        uint256 payout = _sub0(principal, debt);
 
         // Pro-rata solvency haircut (H-05 / EMG-01/02): in a BREACHED emergency the contract may
         // hold less than it owes. Scale each exit by pot/E, where E = totalPositiveEquity =
@@ -561,7 +583,7 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
             // summand), so no underflow and no division by zero once payout > 0.
             uint256 eCorr = totalPositiveEquity - u.trackedEquity + payout;
             if (pot < eCorr) payout = ML.mulDiv(payout, pot, eCorr);
-            if (payout > pot) payout = pot;   // belt: provably dead under the bound above, kept as seam insurance
+            payout = _min(payout, pot);   // belt: provably dead under the bound above, kept as seam insurance
         }
 
         // An under-water exit realises a loss, exactly as a liquidation does. Removing more debt
@@ -576,8 +598,8 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
             unchecked { totalBadDebt += (badDebt - covered); }
         }
 
-        totalStaked = totalStaked > principal ? totalStaked - principal : 0;
-        if (debt > 0) { totalDebt = totalDebt > debt ? totalDebt - debt : 0; _removeBorrower(msg.sender); }
+        totalStaked = _sub0(totalStaked, principal);
+        if (debt > 0) { totalDebt = _sub0(totalDebt, debt); _removeBorrower(msg.sender); }
 
         // Zero the per-user fields BEFORE the single writer: _applyBoost derives this position's
         // positive-equity contribution from u.staked/u.debt, so it must see them at their FINAL
@@ -618,7 +640,7 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
 
         // Decreasing countdown: a lock may never extend past the emission close.
         uint256 maxDays = (emissionEnd - block.timestamp) / 1 days;
-        if (maxDays > MAX_LOCK_DAYS) maxDays = MAX_LOCK_DAYS;
+        maxDays = _min(maxDays, MAX_LOCK_DAYS);
         if (lockDays_ > maxDays) revert Staking__LockExceedsEmissionEnd();
 
         _updateGlobal();
@@ -802,7 +824,7 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
 
         // Decreasing countdown: the lock may never extend past the emission close.
         uint256 maxDays = (emissionEnd - block.timestamp) / 1 days;
-        if (maxDays > MAX_LOCK_DAYS) maxDays = MAX_LOCK_DAYS;
+        maxDays = _min(maxDays, MAX_LOCK_DAYS);
         if (lockDays_ > maxDays) revert Staking__LockExceedsEmissionEnd();
 
         _updateGlobal();
@@ -905,12 +927,12 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
 
         uint256 bonus  = ML.mulDiv(debt, LIQ_BONUS_BPS, 10_000);
         uint256 seized = debt + bonus;
-        if (seized > stake) seized = stake;
+        seized = _min(seized, stake);
 
-        uint256 leftover = stake > seized ? stake - seized : 0;
-        keeperBonus      = seized > debt ? seized - debt : 0;   // surplus -> keeper (conservation-consistent)
+        uint256 leftover = _sub0(stake, seized);
+        keeperBonus      = _sub0(seized, debt);   // surplus -> keeper (conservation-consistent)
 
-        uint256 badDebt  = stake < debt ? debt - stake : 0;
+        uint256 badDebt  = _sub0(debt, stake);
         uint256 covered  = 0;
         if (badDebt > 0 && protocolReserve > 0) {
             covered = badDebt > protocolReserve ? protocolReserve : badDebt;
@@ -963,8 +985,8 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
         if (last != 0 && block.timestamp > last) {
             c += (block.timestamp - last) / MAINT_GAP_UNIT;
         }
-        if (c > MAINT_MAX_SCAN) c = MAINT_MAX_SCAN;
-        if (c > len) c = len;
+        c = _min(c, MAINT_MAX_SCAN);
+        c = _min(c, len);
     }
     function _maintBudget() internal view returns (uint256) { return _windowBudget(_borrowers.length); }
     function _lockBudget()  internal view returns (uint256) { return _windowBudget(_lockers.length); }
@@ -1112,8 +1134,8 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
         _resync(who);   // clears the lock, de-registers `who`, releases the excess weight
         unchecked { ++totalLockSweeps; }
         emit LockSwept(beneficiary, who,
-            relBE > u.trackedBoostedEffective ? relBE - u.trackedBoostedEffective : 0,
-            relBP > u.trackedBoostedPure      ? relBP - u.trackedBoostedPure      : 0);
+            _sub0(relBE, u.trackedBoostedEffective),
+            _sub0(relBP, u.trackedBoostedPure));
     }
 
     // ── Borrower registry: enables both autonomous maintenance and on-chain keeper discovery ──
@@ -1169,7 +1191,7 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
         total = _lockers.length;
         if (offset >= total || limit == 0) return (new address[](0), total);
         uint256 end = offset + limit;
-        if (end > total) end = total;
+        end = _min(end, total);
         out = new address[](end - offset);
         for (uint256 i = offset; i < end; ) { out[i - offset] = _lockers[i]; unchecked { ++i; } }
     }
@@ -1192,7 +1214,7 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
         total = _lockers.length;
         if (offset >= total || limit == 0) return (new address[](0), 0, 0, total);
         uint256 end = offset + limit;
-        if (end > total) end = total;
+        end = _min(end, total);
 
         address[] memory buf = new address[](end - offset);
         uint256 n;
@@ -1220,7 +1242,7 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
         total = _borrowers.length;
         if (offset >= total || limit == 0) return (new address[](0), total);
         uint256 end = offset + limit;
-        if (end > total) end = total;
+        end = _min(end, total);
         out = new address[](end - offset);
         for (uint256 i = offset; i < end; ) { out[i - offset] = _borrowers[i]; unchecked { ++i; } }
     }
@@ -1242,7 +1264,7 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
         // carries over unchanged — only the curve's shape moved from flat to biennial halving.
         uint256 reward  = _emittedAt(t) - _emittedAt(lastRewardTime);
         if (tbe < MIN_EMISSION_WEIGHT) reward = ML.mulDiv(reward, tbe, MIN_EMISSION_WEIGHT);
-        if (reward > rewardReserve) reward = rewardReserve;
+        reward = _min(reward, rewardReserve);
         if (reward == 0) { lastRewardTime = block.timestamp; return; }
         accRewardPerShare      += ML.mulDiv(reward, WAD, tbe);
         rewardReserve          -= reward;
@@ -1466,10 +1488,26 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
     ///      path already resyncs through this writer before the tx ends, so the derived value is
     ///      exact over stored state. (emergencyWithdraw's kill path zeroes u.staked/u.debt before
     ///      its _applyBoost(u,0,0) precisely so this derivation releases, not resurrects, its equity.)
+    /// @dev Saturating subtraction. This shape appeared inline 15 times across the contract —
+    ///      exit paths, liquidation, the solvency views — and each copy re-emitted the same
+    ///      branch. One copy is cheaper and, more to the point, one copy cannot drift from
+    ///      itself. `unchecked` is safe by construction, not by assumption: the taken branch
+    ///      is guarded by `a > b`, so `a - b` provably cannot underflow, and the checked
+    ///      subtraction Solidity would otherwise emit is dead weight on every one of them.
+    function _sub0(uint256 a, uint256 b) internal pure returns (uint256) {
+        unchecked { return a > b ? a - b : 0; }
+    }
+
+    /// @dev Upper clamp. The `if (x > cap) x = cap;` shape appeared inline 17 times; naming it
+    ///      makes the intent (a ceiling, not a guard) legible at the call site.
+    function _min(uint256 a, uint256 b) internal pure returns (uint256) {
+        return a < b ? a : b;
+    }
+
     function _applyBoost(UserInfo storage u, uint256 newBE, uint256 newBP) internal {
         totalBoostedEffective = totalBoostedEffective - u.trackedBoostedEffective + newBE;
         totalBoostedPure      = totalBoostedPure      - u.trackedBoostedPure      + newBP;
-        uint256 newEq = u.staked > u.debt ? u.staked - u.debt : 0;
+        uint256 newEq = _sub0(u.staked, u.debt);
         totalPositiveEquity   = totalPositiveEquity   - u.trackedEquity           + newEq;
         u.trackedBoostedEffective = newBE;
         u.trackedBoostedPure      = newBP;
@@ -1518,7 +1556,7 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
             util = WAD;
         } else {
             util = ML.mulDiv(totalDebt, WAD, totalStaked);
-            if (util > WAD) util = WAD;   // reconcile with simulateRate(): both cap at WAD
+            util = _min(util, WAD);   // reconcile with simulateRate(): both cap at WAD
         }
         if (util <= RATE_UK) rateBps = RATE_R0 + ML.mulDiv(util, RATE_S1, WAD);
         else                 rateBps = RATE_RK + ML.mulDiv(util - RATE_UK, RATE_S2, WAD);
@@ -1533,17 +1571,17 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
     ///      net of recorded (already-realised) bad debt.
     function _owed() internal view returns (uint256 owed_) {
         uint256 ledgerSum = totalStaked + rewardReserve + protocolReserve;
-        uint256 ledgerNet = ledgerSum > totalDebt ? ledgerSum - totalDebt : 0;
-        uint256 acc = totalRewardDistributed > totalRewardsPaid ? totalRewardDistributed - totalRewardsPaid : 0;
+        uint256 ledgerNet = _sub0(ledgerSum, totalDebt);
+        uint256 acc = _sub0(totalRewardDistributed, totalRewardsPaid);
         owed_ = ledgerNet + acc;
-        owed_ = owed_ > totalBadDebt ? owed_ - totalBadDebt : 0;   // recorded losses are netted out
+        owed_ = _sub0(owed_, totalBadDebt);   // recorded losses are netted out
     }
 
     /// @dev Accrued-but-unpaid reward / pure-yield still owed to positions. paid <= distributed
     ///      by construction, so the guard never fires — it only prevents an underflow. Used by
     ///      the conserves identity so the check stays floor-free and linear in every regime.
     function _pendingDistribution() internal view returns (uint256) {
-        return totalRewardDistributed > totalRewardsPaid ? totalRewardDistributed - totalRewardsPaid : 0;
+        return _sub0(totalRewardDistributed, totalRewardsPaid);
     }
 
     /// @dev hard, one-sided: contract must hold at least what it owes (minus dust).
@@ -1595,16 +1633,15 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
         uint256 o   = _owed();
         r.backing             = bal;
         r.owed                = o;
-        r.surplus             = bal > o ? bal - o : 0;
-        r.deficit             = o > bal ? o - bal : 0;
+        r.surplus             = _sub0(bal, o);
+        r.deficit             = _sub0(o, bal);
         r.solvent             = bal + CONSERVATION_DUST >= o;
         r.collateralRatioWad  = o == 0 ? type(uint256).max : ML.mulDiv(bal, WAD, o);
         r.totalStaked         = totalStaked;
         r.totalDebt           = totalDebt;
         r.rewardReserve       = rewardReserve;
         r.protocolReserve     = protocolReserve;
-        r.pendingDistribution = totalRewardDistributed > totalRewardsPaid
-            ? totalRewardDistributed - totalRewardsPaid : 0;
+        r.pendingDistribution = _sub0(totalRewardDistributed, totalRewardsPaid);
         r.totalBadDebt              = totalBadDebt;
         r.totalUncollectedInterest  = totalUncollectedInterest;
     }
@@ -1638,7 +1675,7 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
     ///      reading route through these, so a quoted maximum can never be a figure the borrow
     ///      path would reject.
     function _effective(UserInfo storage u) internal view returns (uint256) {
-        return u.staked > u.debt ? u.staked - u.debt : 0;
+        return _sub0(u.staked, u.debt);
     }
     function _ltvCap(UserInfo storage u) internal view returns (uint256) {
         return ML.mulDiv(_effective(u), MAX_LTV, 100);
@@ -1697,7 +1734,7 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
     function maxBorrowOf(address user_) external view returns (uint256) {
         UserInfo storage u = _users[user_];
         uint256 cap = _ltvCap(u);
-        return cap > u.debt ? cap - u.debt : 0;
+        return _sub0(cap, u.debt);
     }
     function remainingStakeCapacity(address user_) external view returns (uint256) {
         uint256 s = _users[user_].staked;
@@ -1734,7 +1771,7 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
     function maxLockDaysAvailable() public view returns (uint256) {
         if (block.timestamp >= emissionEnd) return 0;
         uint256 d = (emissionEnd - block.timestamp) / 1 days;
-        if (d > MAX_LOCK_DAYS) d = MAX_LOCK_DAYS;
+        d = _min(d, MAX_LOCK_DAYS);
         return d;
     }
     /// @notice Fraction of TOTAL_REWARDS the schedule has released so far, in WAD. This tracks
@@ -1745,10 +1782,10 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
         return ML.mulDiv(_emittedAt(block.timestamp), WAD, TOTAL_REWARDS);
     }
     function timeSinceEmissionStart() external view returns (uint256) {
-        return block.timestamp >= emissionStart ? block.timestamp - emissionStart : 0;
+        return _sub0(block.timestamp, emissionStart);
     }
     function timeUntilEmissionEnd() external view returns (uint256) {
-        return block.timestamp < emissionEnd ? emissionEnd - block.timestamp : 0;
+        return _sub0(emissionEnd, block.timestamp);
     }
     function timeUntilUnlock(address user_) external view returns (uint256) {
         UserInfo storage u = _users[user_];
@@ -1778,11 +1815,11 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
             // Same closed-form delta `_updateGlobal` will integrate — quote == execution.
             uint256 r = _emittedAt(t) - _emittedAt(lastRewardTime);
             if (totalBoostedEffective < MIN_EMISSION_WEIGHT) r = ML.mulDiv(r, totalBoostedEffective, MIN_EMISSION_WEIGHT);
-            if (r > rewardReserve) r = rewardReserve;
+            r = _min(r, rewardReserve);
             acc += ML.mulDiv(r, WAD, totalBoostedEffective);
         }
         uint256 g = ML.mulDiv(u.trackedBoostedEffective, acc, WAD);
-        return g > u.rewardDebt ? g - u.rewardDebt : 0;
+        return _sub0(g, u.rewardDebt);
     }
 
     function _pendingPure(UserInfo storage u) internal view returns (uint256) {
@@ -1792,12 +1829,12 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
         if (elapsed > 0 && totalDebt > 0 && totalBoostedPure > 0) {
             uint256 d = ML.mulDivSafe(ML.mulDivSafe(WAD, _interestRate(), 10_000), elapsed, SECONDS_PER_YEAR);
             uint256 slice = ML.mulDivSafe(totalDebt, d, WAD);
-            if (slice > totalStaked) slice = totalStaked;
+            slice = _min(slice, totalStaked);
             uint256 toPool = slice - ML.mulDiv(slice, RESERVE_FACTOR_BPS, 10_000);
             if (toPool > 0) acc += ML.mulDiv(toPool, WAD, totalBoostedPure);
         }
         uint256 gross = ML.mulDiv(u.trackedBoostedPure, acc, WAD);
-        return gross > u.pureYieldDebt ? gross - u.pureYieldDebt : 0;
+        return _sub0(gross, u.pureYieldDebt);
     }
 
     function pendingPureYield(address user_) external view returns (uint256) {
@@ -1813,7 +1850,7 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
         staked = u.staked; debt = u.debt;
         effectiveStake = _effective(u);
         uint256 cap = _ltvCap(u);
-        maxBorrowAvailable = cap > u.debt ? cap - u.debt : 0;
+        maxBorrowAvailable = _sub0(cap, u.debt);
         health = _health(u);
         rateBps = _interestRate();
         daysLeft = _daysToLiqInternal(u);
@@ -1846,7 +1883,7 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
         maxDaysNow = maxLockDaysAvailable();
     }
     function simulateRate(uint256 utilizationWad_) external pure returns (uint256 rateBps) {
-        if (utilizationWad_ > WAD) utilizationWad_ = WAD;
+        utilizationWad_ = _min(utilizationWad_, WAD);
         if (utilizationWad_ <= RATE_UK) rateBps = RATE_R0 + ML.mulDiv(utilizationWad_, RATE_S1, WAD);
         else                            rateBps = RATE_RK + ML.mulDiv(utilizationWad_ - RATE_UK, RATE_S2, WAD);
     }
