@@ -67,6 +67,7 @@ contract PureYieldDustDenominatorTest is Test {
     address treasury = address(0x713A5);
     address bob      = address(0x2);
     address mallory  = address(0x9);
+    address carol    = address(0x3);
 
     uint256 constant WAD = 1e18;
     uint256 constant INITIAL_BAL = 500_000_000e18;
@@ -82,7 +83,7 @@ contract PureYieldDustDenominatorTest is Test {
         token = new MockERC20PY();
         vm.prank(admin);
         staking = new BlazePhoenixStaking(address(token), treasury);
-        _fund(admin); _fund(bob); _fund(mallory);
+        _fund(admin); _fund(bob); _fund(mallory); _fund(carol);
     }
 
     /// O livro em que o denominador do juro é residual: um mutuário (peso pure 0 por ter dívida)
@@ -188,5 +189,52 @@ contract PureYieldDustDenominatorTest is Test {
         uint256 quotedLater  = staking.pendingPureYield(mallory);
 
         assertEq(quotedLater, quotedAtHalt, "a view acumulou juro que a execucao congelou");
+    }
+
+    /// PURE-04 — a APR publicada estava MORTA, e era tambem a terceira projecao sem amortecedor.
+    ///
+    /// DOIS DEFEITOS NO MESMO SITIO. (a) `share = totalDebt * boost / tbp` tem unidades de racio
+    /// (~1e4: os montantes cancelam-se), e a linha seguinte dividia por WAD — truncagem para ZERO
+    /// em todos os regimes. Medido antes do fix: livro com 400.000e18 de divida, 611.941e18 de
+    /// peso pure e taxa de 299 bps anunciava 0,00%. (b) e o canal do juro tem TRES sitios que
+    /// dividem pelo mesmo denominador; PURE-01 corrigiu a execucao, PURE-02 a view do pendente, e
+    /// esta ficou.
+    ///
+    /// Uma view morta e pior que uma view errada: nao dispara alarme nenhum, e o integrador poe o
+    /// zero no ecra a achar que o protocolo nao paga juro.
+    function test_PublishedAprIsAliveAndDamped() public {
+        // (a) LIVRO SAUDAVEL: a APR tem de ser um numero real, nao zero.
+        vm.prank(bob);     staking.deposit(1_000_000e18, 90);
+        vm.prank(bob);     staking.borrow(400_000e18);
+        vm.prank(carol);   staking.deposit(600_000e18, 90);
+
+        uint256 tbpSaudavel = staking.totalBoostedPure();
+        assertGt(tbpSaudavel, staking.MIN_EMISSION_WEIGHT(), "pre-condicao: denominador saudavel");
+
+        uint256 aprSaudavel = staking.pureStakerApr(90);
+        assertGt(aprSaudavel, 0, "a APR publicada devolvia ZERO em todos os regimes (escala errada)");
+
+        // Sanidade de ordem de grandeza: ~400k de divida a 299 bps sobre ~612k de peso pure da
+        // uma APR da ordem de 1-3%. Uma banda larga chega para apanhar erros de escala de 1e18.
+        assertLt(aprSaudavel, 10_000, "APR acima de 100% num livro saudavel: escala outra vez errada");
+        assertGt(aprSaudavel, 10,     "APR abaixo de 0,1% num livro saudavel: escala outra vez errada");
+    }
+
+    /// (b) O amortecedor, isolado: com denominador residual a APR anunciada tem de cair na mesma
+    /// proporcao em que a distribuicao real cai (tbp/MIN), senao promete o que nao paga.
+    function test_PublishedAprCarriesTheDamper() public {
+        _residualPureBook();
+
+        uint256 tbp = staking.totalBoostedPure();
+        assertLt(tbp, staking.MIN_EMISSION_WEIGHT(), "pre-condicao: denominador residual");
+
+        uint256 aprResidual = staking.pureStakerApr(90);
+        assertGt(aprResidual, 0, "a APR nao pode ser zero - isso era o defeito de escala");
+
+        // Sem amortecedor a APR seria ~MIN/tbp vezes maior (aqui ~980x). Exigir que seja pelo
+        // menos 100x menor do que essa versao discrimina com folga e sem ser fragil.
+        uint256 semAmortecedor = aprResidual * (staking.MIN_EMISSION_WEIGHT() / tbp);
+        assertLt(aprResidual * 100, semAmortecedor,
+            "a APR publicada nao leva o amortecedor MIN_EMISSION_WEIGHT (terceira projecao)");
     }
 }

@@ -1825,11 +1825,31 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
     }
     /// @notice Indicative pure-staker APR (bps) for a given lock duration, from current interest flow.
     function pureStakerApr(uint256 lockDays_) external view returns (uint256 aprBps) {
-        if (totalBoostedPure == 0) return 0;
-        uint256 rate     = _interestRate();
-        uint256 share    = ML.mulDiv(totalDebt, boostByDays(lockDays_), totalBoostedPure);
-        uint256 grossBps = ML.mulDiv(rate, share, WAD);
-        aprBps = ML.mulDiv(grossBps, 10_000 - RESERVE_FACTOR_BPS, 10_000);
+        uint256 tbp = totalBoostedPure;
+        if (tbp == 0) return 0;
+
+        // A ESCALA. A versao anterior calculava `share = totalDebt * boost / tbp` e depois dividia
+        // por WAD. Mas `totalDebt` e `tbp` sao ambos montantes de token: as unidades cancelam-se e
+        // `share` fica na ordem de BOOST_BASE (~1e4), nao em WAD. Dividir 1e4 por 1e18 trunca para
+        // ZERO — e por isso esta view devolvia 0 em TODOS os regimes, saudavel ou residual.
+        // Medido em 2026-08-20: livro com 400.000e18 de divida, 611.941e18 de peso pure e taxa de
+        // 299 bps anunciava 0,00% de APR.
+        //
+        // A DERIVACAO. Os mutuarios pagam `totalDebt * rate / 10_000` por ano. Um staker com peso
+        // `w` recebe a fatia `w / tbp`, e o peso dele e `stake * boost / BOOST_BASE`. Logo a APR
+        // sobre o capital DELE nao depende do tamanho do stake:
+        //     aprBps = (totalDebt * rate / tbp) * (boost / BOOST_BASE) * (1 - reserva)
+        uint256 base = ML.mulDiv(totalDebt, _interestRate(), tbp);
+        base = ML.mulDiv(base, boostByDays(lockDays_), BOOST_BASE);
+
+        // O MESMO amortecedor que a execucao e a view do pendente aplicam. Este canal tem TRES
+        // sitios que dividem pelo denominador do peso pure — a execucao (`_updateInterestIndex`),
+        // a cotacao do pendente (`_pendingPure`) e a APR publicada, aqui. PURE-01 corrigiu o
+        // primeiro, PURE-02 o segundo, e este era o irmao que faltava: sem ele a APR anuncia uma
+        // taxa que o protocolo nao paga quando o denominador e residual.
+        if (tbp < MIN_EMISSION_WEIGHT) base = ML.mulDiv(base, tbp, MIN_EMISSION_WEIGHT);
+
+        aprBps = ML.mulDiv(base, 10_000 - RESERVE_FACTOR_BPS, 10_000);
     }
     function pendingRewards(address user_) external view returns (uint256) {
         return _pendingReward(_users[user_]);
