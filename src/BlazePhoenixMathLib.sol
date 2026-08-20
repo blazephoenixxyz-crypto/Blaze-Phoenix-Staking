@@ -49,6 +49,9 @@ library BlazePhoenixMathLib {
                 // library is the sibling copy that did not.
                 twos := add(div(sub(0, twos), twos), 1)
                 lo := or(lo, mul(hi, twos))
+                // Newton-Raphson inverse seed — the xor IS the construction (Remco/Solady),
+                // not a typo'd exponentiation. Same triage as the Dex Core's sibling line.
+                // slither-disable-next-line incorrect-exp
                 let inv := xor(mul(3, d), 2)
                 inv := mul(inv, sub(2, mul(d, inv)))
                 inv := mul(inv, sub(2, mul(d, inv)))
@@ -81,6 +84,7 @@ library BlazePhoenixMathLib {
                     // Same two lines as mulDiv above, for the same reason.
                     twos := add(div(sub(0, twos), twos), 1)
                     lo := or(lo, mul(hi, twos))
+                    // slither-disable-next-line incorrect-exp
                     let inv := xor(mul(3, d), 2)
                     inv := mul(inv, sub(2, mul(d, inv)))
                     inv := mul(inv, sub(2, mul(d, inv)))
