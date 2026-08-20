@@ -37,6 +37,18 @@ library BlazePhoenixMathLib {
                 let twos := and(sub(0, d), d)
                 d := div(d, twos)
                 lo := div(lo, twos)
+                // Shift the bits that the twos-division moved OUT of the high
+                // word back INTO the low one. Dividing `lo` alone drops them:
+                // the canonical construction folds them in with 2^256/twos.
+                // Without these two lines the high word never reaches the
+                // result, and mulDiv silently returns a wrong number whenever
+                // the denominator is EVEN and a*b overflows 256 bits — with
+                // WAD (1e18, even) as the denominator that is the whole
+                // 512-bit regime this branch exists to serve. The Dex Core's
+                // mulDiv (BlazePhoenixCore.sol) has always carried them; this
+                // library is the sibling copy that did not.
+                twos := add(div(sub(0, twos), twos), 1)
+                lo := or(lo, mul(hi, twos))
                 let inv := xor(mul(3, d), 2)
                 inv := mul(inv, sub(2, mul(d, inv)))
                 inv := mul(inv, sub(2, mul(d, inv)))
@@ -66,6 +78,9 @@ library BlazePhoenixMathLib {
                     let twos := and(sub(0, d), d)
                     d := div(d, twos)
                     lo := div(lo, twos)
+                    // Same two lines as mulDiv above, for the same reason.
+                    twos := add(div(sub(0, twos), twos), 1)
+                    lo := or(lo, mul(hi, twos))
                     let inv := xor(mul(3, d), 2)
                     inv := mul(inv, sub(2, mul(d, inv)))
                     inv := mul(inv, sub(2, mul(d, inv)))
