@@ -776,7 +776,15 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
 
         _updateInterestIndex();      // price the elapsed slice before totalStaked moves the rate
         u.staked    -= amount_;
-        totalStaked -= amount_;
+        // SATURANTE, como `emergencyWithdraw` sempre fez. Assimetria apanhada em 2026-08-19:
+        // o canal de emergencia saturava, mas `withdraw` e `liquidate` faziam `-=` cru. O debito
+        // global de juro e EAGER sobre o livro inteiro e a cobranca por-utilizador e LAZY, logo se
+        // `totalStaked` alguma vez ficar abaixo de Sigma u.staked o canal de saida NORMAL fazia
+        // panic underflow e prendia fundos enquanto o de emergencia passava — o canal desprotegido
+        // era exatamente o que toda a gente usa. Nao ha exploit demonstrado: isto elimina a CLASSE,
+        // nao um bug conhecido. Assimetria de custos: saturar custa uma comparacao; nao saturar
+        // custa o ultimo utilizador nao conseguir sair.
+        totalStaked = _sub0(totalStaked, amount_);
 
         _resync(msg.sender);
 
@@ -940,7 +948,8 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
         }
         uint256 uncovered = badDebt - covered;
 
-        totalStaked -= seized;          // the (seized - bonus == debt) part stays, offsetting the borrow
+        // saturante — ver a nota em `withdraw` (assimetria de canais, 2026-08-19)
+        totalStaked = _sub0(totalStaked, seized);   // (seized - bonus == debt) fica, a compensar o borrow
         totalDebt   -= debt;
         u.debt   = 0;
         u.staked = leftover;
