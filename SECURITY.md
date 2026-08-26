@@ -93,7 +93,7 @@ test before the fix is written. Credits live in the Security Hall of Fame.
 
 ## Bounty programme
 
-**40,000,000 BZPX is allocated to security research** — 4% of a fixed
+**50,000,000 BZPX is allocated to security research** — 5% of a fixed
 1,000,000,000 supply, carved out of the token allocation for this and nothing
 else. The pool is shared with
 [BlazePhoenix-Dex](https://github.com/blazephoenixxyz-crypto/Blaze-Phoenix-Dex);
@@ -116,10 +116,10 @@ eyes rather than discover the terms after doing the work:
 
 | Severity | Award |
 |---|---|
-| Critical — direct theft or permanent freezing of user funds; a reachable insolvent state | 2,000,000 – 6,000,000 BZPX |
-| High — theft under specific conditions, or a redistribution that systematically pays the wrong party | 500,000 – 2,000,000 BZPX |
-| Medium — griefing, temporary denial of service, recoverable residue reaching the wrong party | 100,000 – 500,000 BZPX |
-| Low — demonstrated impact below the above | up to 100,000 BZPX |
+| Critical — direct theft or permanent freezing of user funds; a reachable insolvent state | 2,500,000 – 7,500,000 BZPX |
+| High — theft under specific conditions, or a redistribution that systematically pays the wrong party | 625,000 – 2,500,000 BZPX |
+| Medium — griefing, temporary denial of service, recoverable residue reaching the wrong party | 125,000 – 625,000 BZPX |
+| Low — demonstrated impact below the above | up to 125,000 BZPX |
 
 A report must be previously unknown to us and must demonstrate impact rather than
 describe a theoretical concern. Duplicates are settled by the timestamp of the

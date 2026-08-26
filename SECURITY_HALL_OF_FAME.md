@@ -29,6 +29,8 @@ us privately what they found — thank you. You made BlazePhoenix safer.
 - **siam siddik**
 - **Thomas**
 - **llen**
+- **destinyae**
+- **superagent**
 - **Anonymous**
 
 ---
