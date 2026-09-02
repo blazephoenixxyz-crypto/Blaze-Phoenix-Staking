@@ -31,6 +31,12 @@ us privately what they found — thank you. You made BlazePhoenix safer.
 - **llen**
 - **destinyae**
 - **superagent**
+- **Mohd Huzaifa**
+- **Raditya**
+- **bai bo**
+- **Josh W**
+- **Borutobro**
+- **mohaseenkatika**
 - **Anonymous**
 
 ---
