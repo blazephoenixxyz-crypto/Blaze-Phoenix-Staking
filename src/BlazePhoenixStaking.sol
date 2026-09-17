@@ -1416,9 +1416,31 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
         uint256 toPool     = slice - reserveCut;
         protocolReserve   += reserveCut;
         if (toPool > 0) {
-            if (totalBoostedPure > 0) {
-                accPureYieldPerShare   += ML.mulDiv(toPool, WAD, totalBoostedPure);
-                totalRewardDistributed += toPool;
+            uint256 tbp = totalBoostedPure;
+            if (tbp > 0) {
+                // MESMO amortecedor do canal irmao (`_updateGlobal`), pela mesma razao e com a
+                // mesma constante. Ambos os canais dividem uma quantia por um peso agregado; a
+                // emissao ja reconhecia que um denominador RESIDUAL deixa uma posicao-po capturar
+                // o fluxo inteiro, e escalava a quantia por tbe/MIN_EMISSION_WEIGHT. Este canal
+                // dividia por `totalBoostedPure` cru e fazia a escolha oposta em silencio.
+                //
+                // Medido (PureYieldDustDenominator.t.sol): com o livro em 40% de utilizacao e uma
+                // unica posicao pure de 1 token, um ano de juro rendia-lhe 11.601 tokens — 97% de
+                // TODA a receita de juro do protocolo, um retorno de 11.601x. Nao e yield por
+                // criar: a fatia ja foi debitada do colateral dos mutuarios, e sem posicao pure
+                // teria ido para `protocolReserve` (o ramo `else` mesmo aqui em baixo).
+                //
+                // O que nao se distribui NAO evapora. `slice` ja saiu de `totalStaked`, portanto
+                // tem de aterrar nalgum sitio ou a identidade de conservacao de `conserves()`
+                // rompe-se no proprio bloco: reserveCut + share + (toPool - share) == slice.
+                uint256 share = tbp < MIN_EMISSION_WEIGHT
+                    ? ML.mulDiv(toPool, tbp, MIN_EMISSION_WEIGHT)
+                    : toPool;
+                if (share > 0) {
+                    accPureYieldPerShare   += ML.mulDiv(share, WAD, tbp);
+                    totalRewardDistributed += share;
+                }
+                protocolReserve += toPool - share;
             } else {
                 protocolReserve += toPool;
             }
@@ -1803,11 +1825,31 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
     }
     /// @notice Indicative pure-staker APR (bps) for a given lock duration, from current interest flow.
     function pureStakerApr(uint256 lockDays_) external view returns (uint256 aprBps) {
-        if (totalBoostedPure == 0) return 0;
-        uint256 rate     = _interestRate();
-        uint256 share    = ML.mulDiv(totalDebt, boostByDays(lockDays_), totalBoostedPure);
-        uint256 grossBps = ML.mulDiv(rate, share, WAD);
-        aprBps = ML.mulDiv(grossBps, 10_000 - RESERVE_FACTOR_BPS, 10_000);
+        uint256 tbp = totalBoostedPure;
+        if (tbp == 0) return 0;
+
+        // A ESCALA. A versao anterior calculava `share = totalDebt * boost / tbp` e depois dividia
+        // por WAD. Mas `totalDebt` e `tbp` sao ambos montantes de token: as unidades cancelam-se e
+        // `share` fica na ordem de BOOST_BASE (~1e4), nao em WAD. Dividir 1e4 por 1e18 trunca para
+        // ZERO — e por isso esta view devolvia 0 em TODOS os regimes, saudavel ou residual.
+        // Medido em 2026-08-20: livro com 400.000e18 de divida, 611.941e18 de peso pure e taxa de
+        // 299 bps anunciava 0,00% de APR.
+        //
+        // A DERIVACAO. Os mutuarios pagam `totalDebt * rate / 10_000` por ano. Um staker com peso
+        // `w` recebe a fatia `w / tbp`, e o peso dele e `stake * boost / BOOST_BASE`. Logo a APR
+        // sobre o capital DELE nao depende do tamanho do stake:
+        //     aprBps = (totalDebt * rate / tbp) * (boost / BOOST_BASE) * (1 - reserva)
+        uint256 base = ML.mulDiv(totalDebt, _interestRate(), tbp);
+        base = ML.mulDiv(base, boostByDays(lockDays_), BOOST_BASE);
+
+        // O MESMO amortecedor que a execucao e a view do pendente aplicam. Este canal tem TRES
+        // sitios que dividem pelo denominador do peso pure — a execucao (`_updateInterestIndex`),
+        // a cotacao do pendente (`_pendingPure`) e a APR publicada, aqui. PURE-01 corrigiu o
+        // primeiro, PURE-02 o segundo, e este era o irmao que faltava: sem ele a APR anuncia uma
+        // taxa que o protocolo nao paga quando o denominador e residual.
+        if (tbp < MIN_EMISSION_WEIGHT) base = ML.mulDiv(base, tbp, MIN_EMISSION_WEIGHT);
+
+        aprBps = ML.mulDiv(base, 10_000 - RESERVE_FACTOR_BPS, 10_000);
     }
     function pendingRewards(address user_) external view returns (uint256) {
         return _pendingReward(_users[user_]);
@@ -1834,13 +1876,25 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
     function _pendingPure(UserInfo storage u) internal view returns (uint256) {
         if (u.trackedBoostedPure == 0) return 0;
         uint256 acc = accPureYieldPerShare;
-        uint256 elapsed = block.timestamp - lastInterestTime;
-        if (elapsed > 0 && totalDebt > 0 && totalBoostedPure > 0) {
+        uint256 tbp = totalBoostedPure;
+        // `emergencyMode` congela o relogio do juro no canal de EXECUCAO (`_updateInterestIndex`
+        // desliza `lastInterestTime` e devolve sem cobrar), logo projetar aqui cotaria uma fatia
+        // que nunca sera paga: medido, um ano de halt inflava a cotacao de 0,97e18 para 11.641e18.
+        // O congelamento EMG-01/02 foi so a metade que executa; esta e a metade que cota.
+        uint256 elapsed = emergencyMode ? 0 : _sub0(block.timestamp, lastInterestTime);
+        if (elapsed > 0 && totalDebt > 0 && tbp > 0) {
             uint256 d = ML.mulDivSafe(ML.mulDivSafe(WAD, _interestRate(), 10_000), elapsed, SECONDS_PER_YEAR);
             uint256 slice = ML.mulDivSafe(totalDebt, d, WAD);
             slice = _min(slice, totalStaked);
             uint256 toPool = slice - ML.mulDiv(slice, RESERVE_FACTOR_BPS, 10_000);
-            if (toPool > 0) acc += ML.mulDiv(toPool, WAD, totalBoostedPure);
+            // O MESMO amortecedor que o canal de execucao aplica. "Both project the un-settled
+            // slice, so a quote read in a block equals what a claim in that same block pays" e
+            // garantia declarada no NatSpec destas duas views — sem esta linha a cotacao
+            // sobre-estimava 981x com denominador residual (medido).
+            uint256 share = tbp < MIN_EMISSION_WEIGHT
+                ? ML.mulDiv(toPool, tbp, MIN_EMISSION_WEIGHT)
+                : toPool;
+            if (share > 0) acc += ML.mulDiv(share, WAD, tbp);
         }
         uint256 gross = ML.mulDiv(u.trackedBoostedPure, acc, WAD);
         return _sub0(gross, u.pureYieldDebt);
