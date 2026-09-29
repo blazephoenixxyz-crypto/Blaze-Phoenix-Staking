@@ -40,7 +40,7 @@ and the reporting window.
 
 - Third-party code: pools, tokens, bridges, wallets, RPC providers, Cloudflare, GitHub, unless our code consumes them unsafely.
 - Limits the whitepaper already states and bounds (for example the ≈2.7 % sandwich cap on a 1 %-of-depth trade, or quote staleness under your signed minimum), unless you beat the stated bound.
-- Anything already in `/security/advisories` or a Hall of Fame register. Duplicates go to the first report by timestamp.
+- Anything already in `/security/advisories` or a Hall of Fame register: a finding that is already fixed and published.
 - Price movement, MEV and front-running that settle at or above the minimum the user signed.
 - Attacks that need a compromised private key, admin key, or the victim's own device.
 - Volumetric DoS, load testing, spam, and rate-limit exhaustion of the free public API.
@@ -162,8 +162,13 @@ eyes rather than discover the terms after doing the work:
 | Low — demonstrated impact below the above | up to 125,000 BZPX |
 
 A report must be previously unknown to us and must demonstrate impact rather than
-describe a theoretical concern. Duplicates are settled by the timestamp of the
-first report received.
+describe a theoretical concern. 
+
+**Duplicate reports.** If several researchers report the same finding before it is
+fixed and published, one award is paid for that finding and split equally among all
+of them. A finding reported by a single researcher is paid to that researcher. This
+applies to reports received from 30 September 2026; earlier reports are settled
+under the rule in force when they were received.
 
 One note specific to this protocol, and it is the whole reason the taxonomy above
 exists: **a finding does not have to break conservation to be Critical here.**
