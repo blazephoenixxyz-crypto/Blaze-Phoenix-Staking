@@ -1746,9 +1746,12 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
         // immediately liquidatable. Interest accrual reaches that state on its
         // own (see `_accrue`: interest is clamped to the stake and the remainder
         // becomes uncollected), so it is ordinary, not adversarial.
-        if (u.debt == 0)        return WAD;
-        if (u.debt >= u.staked) return 0;
-        return ML.mulDiv(u.staked - u.debt, WAD, u.staked);
+        // Read off the post-accrual stake (`_projected`): every entry point, `liquidate` included,
+        // accrues before it judges, so the stored stake overstates health after any idle interval.
+        if (u.debt == 0) return WAD;
+        (uint256 s, ) = _projected(u);
+        if (u.debt >= s) return 0;
+        return ML.mulDiv(s - u.debt, WAD, s);
     }
 
     function effectiveStakeOf(address user_) external view returns (uint256) {
@@ -1772,12 +1775,14 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
         // `_isLiquidatable`. The old `|| u.staked == 0` reported "never" for
         // exactly the positions a liquidator most needs to find — the ones with
         // no collateral left, which are where bad debt accumulates.
-        if (u.debt == 0)                              return type(uint256).max;
-        if (u.debt * 100 >= u.staked * LIQ_THRESHOLD) return 0;
+        // Post-accrual stake, for the same reason as `_health`.
+        if (u.debt == 0)                       return type(uint256).max;
+        (uint256 s, ) = _projected(u);
+        if (u.debt * 100 >= s * LIQ_THRESHOLD) return 0;
         uint256 stakeAtLiq = ML.mulDiv(u.debt, 100, LIQ_THRESHOLD) + 1;
-        if (u.staked <= stakeAtLiq) return 0;
+        if (s <= stakeAtLiq) return 0;
         uint256 daily = ML.mulDivSafe(ML.mulDivSafe(u.debt, _interestRate(), 10_000), 1 days, SECONDS_PER_YEAR);
-        return daily == 0 ? type(uint256).max : (u.staked - stakeAtLiq) / daily;
+        return daily == 0 ? type(uint256).max : (s - stakeAtLiq) / daily;
     }
     function daysToLiquidation(address user_) external view returns (uint256) { return _daysToLiqInternal(_users[user_]); }
     function currentInterestRateBps() external view returns (uint256) { return _interestRate(); }
