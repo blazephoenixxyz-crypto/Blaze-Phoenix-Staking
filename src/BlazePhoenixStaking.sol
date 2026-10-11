@@ -1416,14 +1416,32 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
         uint256 toPool     = slice - reserveCut;
         protocolReserve   += reserveCut;
         if (toPool > 0) {
-            if (totalBoostedPure > 0) {
-                accPureYieldPerShare   += ML.mulDiv(toPool, WAD, totalBoostedPure);
-                totalRewardDistributed += toPool;
+            uint256 tbp = totalBoostedPure;
+            if (tbp > 0) {
+                // The same damper the emission channel applies in `_updateGlobal`, for the same
+                // reason and with the same constant: a residual denominator must not let a dust
+                // position capture the whole flow. Without it a single 1-token pure position took
+                // ~97% of the protocol's interest (test/fix205/PureYieldDustDenominator.t.sol).
+                // The undistributed remainder is not lost: `slice` already left `totalStaked`, so
+                // it lands in `protocolReserve` exactly as it would with no pure position at all,
+                // and reserveCut + share + (toPool − share) == slice keeps the identity exact.
+                uint256 share = _dampPure(toPool, tbp);
+                if (share > 0) {
+                    accPureYieldPerShare   += ML.mulDiv(share, WAD, tbp);
+                    totalRewardDistributed += share;
+                }
+                protocolReserve += toPool - share;
             } else {
                 protocolReserve += toPool;
             }
         }
         unchecked { totalInterestAccruedGlobal += slice; }
+    }
+
+    /// @dev Pure-yield damper shared by execution and every quote: below MIN_EMISSION_WEIGHT the
+    ///      distributable amount scales by tbp / MIN_EMISSION_WEIGHT, exactly as emission does.
+    function _dampPure(uint256 amount, uint256 tbp) internal pure returns (uint256) {
+        return tbp < MIN_EMISSION_WEIGHT ? ML.mulDiv(amount, tbp, MIN_EMISSION_WEIGHT) : amount;
     }
 
     function _accrueInterestFor(address user_) internal {
@@ -1840,6 +1858,8 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
             uint256 slice = ML.mulDivSafe(totalDebt, d, WAD);
             slice = _min(slice, totalStaked);
             uint256 toPool = slice - ML.mulDiv(slice, RESERVE_FACTOR_BPS, 10_000);
+            // Same damper as execution, so the quote stays equal to what a claim pays.
+            toPool = _dampPure(toPool, totalBoostedPure);
             if (toPool > 0) acc += ML.mulDiv(toPool, WAD, totalBoostedPure);
         }
         uint256 gross = ML.mulDiv(u.trackedBoostedPure, acc, WAD);
