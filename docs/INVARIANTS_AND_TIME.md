@@ -13,6 +13,7 @@ A conservation invariant is a statement about **quantity**. It answers *how much
 A system that accrues over time also needs statements about **trajectory** — *when* value was
 earned, and *who was present while it accrued*. Those are different questions, and no amount of
 conservation checking answers them.
+A balanced ledger is a necessary witness, never a sufficient one.
 
 > A ledger can balance to the wei on every single block and still hand the wrong person the money.
 

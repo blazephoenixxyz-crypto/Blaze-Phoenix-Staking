@@ -4,6 +4,8 @@ pragma solidity 0.8.28;
 // ─────────────────────────────────────────────────────────────────────────────────────────────
 // BlazePhoenix Staking — one-shot deploy + full 180M emission funding.
 //
+// Read this script top to bottom before running it; nothing in it is meant to be clever.
+//
 // What it does, atomically, from the deployer account:
 //   1. Deploys BlazePhoenixStaking(bzpx, treasury)
 //   2. Approves the staking contract to pull exactly TOTAL_REWARDS (180,000,000 BZPX)
