@@ -768,6 +768,11 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
         if (u.lockDays > 0 && block.timestamp < u.unlockTime)    revert Staking__StillLocked();
 
         _updateGlobal();
+        // A full-value exit out of a pot that cannot cover every claim is first-come-first-served:
+        // the first exiter takes 100% and the shortfall lands on whoever is left. Under a hard
+        // breach the only fair exit is the pro-rata one, so the normal channel closes and the
+        // permissionless `tripBreaker` opens `emergencyWithdraw` with its haircut.
+        if (_hardBreach()) revert Staking__InvariantBreached();
         _settlePendingRewards(msg.sender);
         _settlePendingPureYield(msg.sender);
         _processLockExpiry(msg.sender);
