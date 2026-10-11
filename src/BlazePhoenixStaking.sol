@@ -926,7 +926,14 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
         if (!_isLiquidatable(_users[user_])) revert Staking__NotLiquidatable();
         uint256 bonus = _executeLiquidation(user_, msg.sender);
         if (bonus > 0) {
-            if (!ML.rawTransfer(bzpx, msg.sender, bonus)) revert Staking__TransferFailed();
+            // The bonus pays a third party for closing someone else's position. A borrower closing
+            // its own would be paid LIQ_BONUS_BPS of its debt out of its own seized collateral,
+            // turning the penalty into a refund; the sweep already never liquidates its caller.
+            // Self-liquidation still goes through, so the position closes, but the bonus stays in
+            // the protocol: Δ(totalStaked + protocolReserve) = −seized + bonus = −debt = ΔtotalDebt,
+            // with the balance untouched, so the conservation identity holds as before.
+            if (msg.sender == user_) protocolReserve += bonus;
+            else if (!ML.rawTransfer(bzpx, msg.sender, bonus)) revert Staking__TransferFailed();
         }
     }
 
