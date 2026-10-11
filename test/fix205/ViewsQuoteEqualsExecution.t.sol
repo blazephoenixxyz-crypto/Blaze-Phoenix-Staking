@@ -2,11 +2,12 @@
 pragma solidity ^0.8.20;
 
 // =============================================================================
-//  RED TESTS — a public view must quote what the executing function will do.
+//  REGRESSION TESTS — a public view must quote what the executing function will do.
 //
 //  Each test reads a view, then runs the function the view describes in the
-//  SAME block, and requires the two to agree. They fail today because the views
-//  read stored state while the executors first run accrual / extra caps.
+//  SAME block, and requires the two to agree. They failed before the fixes
+//  because the views read stored state while the executors first run accrual
+//  and extra caps.
 //
 //  Toolchain note: this forge build can reuse the result of a textually
 //  repeated call site (warp, roll or the same external view called twice in one

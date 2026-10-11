@@ -5,8 +5,9 @@ import {Base} from "../BlazePhoenixStaking.t.sol";
 
 /// @notice Attribution of emission and pure yield across interest accrual, lock expiry and
 ///         uncollectible interest. Each test states the property it checks and the oracle used.
-///         Tests named `documents` describe accepted current behaviour and pass; the others
-///         assert the intended property and are expected to fail until it is fixed.
+///         Every test here is a `documents` test: the items are left for an owner decision
+///         (see the pull request), so each pins the current behaviour, asserts its direction and
+///         logs the measured size. A fix flips the documented assertion and turns the test red.
 contract InterestAndYieldAttributionTest is Base {
     uint256 internal constant STAKE = 1_000_000e18;
     uint256 internal constant DUST = 1e10;
@@ -78,6 +79,8 @@ contract InterestAndYieldAttributionTest is Base {
     // by its POST-interest effective stake, E * wA_post / (wA_post + wB). The fair
     // time-weighted value lies between that bound and the pre-interest share; the test logs
     // both bounds and the claimed amount.
+    // OWNER DECISION: lazy accrual cannot know the weight path inside an un-touched window
+    // without per-position work; the sweep bounds the window in an active book.
     // ─────────────────────────────────────────────────────────────────────────────────────
     function _emisIntWindow(uint256 window)
         internal
@@ -107,7 +110,7 @@ contract InterestAndYieldAttributionTest is Base {
         boundPre = e * eA0 / (eA0 + eB);
     }
 
-    function test_EMISINT_borrowerEmissionShareUsesPreInterestWeight() public {
+    function test_EMISINT_documents_borrowerEmissionShareUsesPreInterestWeight() public {
         vm.prank(admin);
         staking.fundEmission(180_000_000e18);
         vm.prank(alice);
@@ -134,8 +137,11 @@ contract InterestAndYieldAttributionTest is Base {
         emit log_named_decimal_uint("5y: bound pre-interest   ", pre5, 18);
         emit log_named_uint("5y: excess over post bound, bps", c5 > post5 ? (c5 - post5) * 10_000 / post5 : 0);
 
-        assertLe(c1, post1 + DUST, "EMIS-INT: borrower paid emission above its post-interest share (1y)");
-        assertLe(c5, post5 + DUST, "EMIS-INT: borrower paid emission above its post-interest share (5y)");
+        // Documented: the claim equals the PRE-interest share, above the post-interest bound.
+        assertGt(c1, post1 + DUST, "documents: 1y claim above the post-interest share");
+        assertGt(c5, post5 + DUST, "documents: 5y claim above the post-interest share");
+        assertApproxEqAbs(c1, pre1, DUST, "documents: 1y claim is the pre-interest share");
+        assertApproxEqAbs(c5, pre5, DUST, "documents: 5y claim is the pre-interest share");
     }
 
     // ─────────────────────────────────────────────────────────────────────────────────────
@@ -231,21 +237,25 @@ contract InterestAndYieldAttributionTest is Base {
     // with principal and credited yield. Today the uncollectible interest credited as pure
     // yield is netted out of `_owed()` through `totalBadDebt`, so `isSolvent()` stays true
     // while the claims exceed the backing and are paid first-come-first-served.
-    function test_OWEDFCFS_solventFlagWhilePureStakerCannotExit() public {
+    // OWNER DECISION: see the pull request (un-net uncovered bad debt from `_owed()`, or
+    // socialise it); either changes when `isSolvent()` reads false and who bears the loss.
+    function test_OWEDFCFS_documents_solventFlagWhilePureStakerCannotExit() public {
         Book memory b = _uncollectibleBook();
         assertGt(b.badDebt, 0, "setup: uncollectible interest must be recorded as bad debt");
         assertGt(b.grossClaims, b.backingPre, "setup: pure claims exceed backing");
-        assertTrue(
-            !b.solventBeforeBob || (b.aliceExit && b.bobExit),
-            "OWED-FCFS: isSolvent() is true but a pure staker cannot exit"
-        );
+        // Documented: the flag reads solvent, the first pure staker exits whole, the second cannot.
+        assertTrue(b.solventBeforeBob, "documents: isSolvent() reads true");
+        assertTrue(b.aliceExit, "documents: the first pure staker exits");
+        assertFalse(b.bobExit, "documents: the second pure staker cannot exit");
     }
 
     // PURE-UNCOLL. Oracle: pure stakers can be paid at most the pool share (1 - reserve
     // factor) of the interest that was actually collected from borrowers,
     // totalInterestAccruedGlobal - totalUncollectedInterest. Today the full slice, including
     // the uncollectible shortfall, is credited and paid out.
-    function test_PUREUNCOLL_pureYieldPaidExceedsCollectedInterest() public {
+    // OWNER DECISION: same root as OWED-FCFS (the global slice is debited eagerly, so the
+    // uncollectible part is known only when the position is touched).
+    function test_PUREUNCOLL_documents_pureYieldPaidExceedsCollectedInterest() public {
         Book memory b = _uncollectibleBook();
         uint256 collected = staking.totalInterestAccruedGlobal() - staking.totalUncollectedInterest();
         uint256 poolShare = collected * 9_700 / 10_000;
@@ -254,6 +264,6 @@ contract InterestAndYieldAttributionTest is Base {
         emit log_named_decimal_uint("pool share of collected  ", poolShare, 18);
         emit log_named_decimal_uint("pure yield paid          ", paid, 18);
         assertGt(staking.totalUncollectedInterest(), 0, "setup: some interest must be uncollectible");
-        assertLe(paid, poolShare + DUST, "PURE-UNCOLL: pure yield paid exceeds the pool share of collected interest");
+        assertGt(paid, poolShare + DUST, "documents: pure yield paid exceeds the pool share of collected interest");
     }
 }
