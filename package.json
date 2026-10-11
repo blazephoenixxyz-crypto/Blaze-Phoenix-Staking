@@ -1,20 +1,27 @@
 {
   "name": "blaze-phoenix-staking",
-  "version": "1.0.0",
-  "description": "",
-  "main": "index.js",
+  "version": "4.0.0",
+  "private": true,
+  "description": "BlazePhoenix Staking: single-asset staking and lending with no price oracle, and solvency the contract proves on every transaction.",
   "directories": {
     "doc": "docs"
   },
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "compile": "node compile.js"
   },
   "repository": {
     "type": "git",
-    "url": "https://github.com/blazephoenixxyz-crypto/Blaze-Phoenix-Staking.git"
+    "url": "git+https://github.com/blazephoenixxyz-crypto/Blaze-Phoenix-Staking.git"
   },
-  "keywords": [],
-  "author": "",
+  "homepage": "https://github.com/blazephoenixxyz-crypto/Blaze-Phoenix-Staking#readme",
+  "bugs": "https://github.com/blazephoenixxyz-crypto/Blaze-Phoenix-Staking/issues",
+  "keywords": [
+    "blazephoenix",
+    "staking",
+    "lending",
+    "solidity",
+    "defi"
+  ],
   "license": "BUSL-1.1",
   "dependencies": {
     "@ethereumjs/block": "^10.1.2",
