@@ -1823,11 +1823,15 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
     }
     /// @notice Indicative pure-staker APR (bps) for a given lock duration, from current interest flow.
     function pureStakerApr(uint256 lockDays_) external view returns (uint256 aprBps) {
-        if (totalBoostedPure == 0) return 0;
-        uint256 rate     = _interestRate();
-        uint256 share    = ML.mulDiv(totalDebt, boostByDays(lockDays_), totalBoostedPure);
-        uint256 grossBps = ML.mulDiv(rate, share, WAD);
-        aprBps = ML.mulDiv(grossBps, 10_000 - RESERVE_FACTOR_BPS, 10_000);
+        uint256 tbp = totalBoostedPure;
+        if (tbp == 0) return 0;
+        // Borrowers pay totalDebt·rate/10_000 a year; the pool keeps (1 − reserve) of it and a
+        // position of stake s and boost b holds the fraction (s·b/BOOST_BASE)/tbp. Divided by s:
+        //     aprBps = totalDebt·rate/tbp · b/BOOST_BASE · (1 − reserve)   (independent of s)
+        // The old form divided a token/token ratio (~1e4) by WAD and returned 0 in every regime.
+        uint256 base = ML.mulDiv(ML.mulDiv(totalDebt, _interestRate(), tbp), boostByDays(lockDays_), BOOST_BASE);
+        // Execution damps a residual denominator; the published rate must too.
+        aprBps = ML.mulDiv(_dampPure(base, tbp), 10_000 - RESERVE_FACTOR_BPS, 10_000);
     }
     function pendingRewards(address user_) external view returns (uint256) {
         return _pendingReward(_users[user_]);
