@@ -15,7 +15,7 @@
   },
   "keywords": [],
   "author": "",
-  "license": "ISC",
+  "license": "BUSL-1.1",
   "dependencies": {
     "@ethereumjs/block": "^10.1.2",
     "@ethereumjs/common": "^10.1.2",
