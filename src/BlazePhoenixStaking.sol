@@ -554,6 +554,13 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
     ///         contract is in a breached state.
     function emergencyWithdraw() external nonReentrant {
         if (!emergencyMode) revert Staking__EmergencyNotActive();
+        // Close the emission window on the weights that were actually present BEFORE this exit
+        // removes its share. Without it the window since lastRewardTime is integrated later over
+        // the stayers alone, and each stayer is paid the exiter's part on top of its own. The
+        // exiter's own part is forfeited as before (no reward maths on this path); what moves is
+        // only who the window is divided among. Interest is frozen in emergency, so the index
+        // update inside only slides the clock.
+        _updateGlobal();
         _accrueInterestFor(msg.sender);   // attribute what this position already owes before exiting
         UserInfo storage u = _users[msg.sender];
         uint256 principal = u.staked;
