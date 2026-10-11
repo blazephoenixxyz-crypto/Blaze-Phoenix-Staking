@@ -1852,7 +1852,9 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
     function _pendingPure(UserInfo storage u) internal view returns (uint256) {
         if (u.trackedBoostedPure == 0) return 0;
         uint256 acc = accPureYieldPerShare;
-        uint256 elapsed = block.timestamp - lastInterestTime;
+        // `_updateInterestIndex` charges nothing while `emergencyMode` is set (it only slides the
+        // clock), so projecting a slice here would quote yield that execution never pays.
+        uint256 elapsed = emergencyMode ? 0 : block.timestamp - lastInterestTime;
         if (elapsed > 0 && totalDebt > 0 && totalBoostedPure > 0) {
             uint256 d = ML.mulDivSafe(ML.mulDivSafe(WAD, _interestRate(), 10_000), elapsed, SECONDS_PER_YEAR);
             uint256 slice = ML.mulDivSafe(totalDebt, d, WAD);
