@@ -234,10 +234,17 @@ contract PureYieldDustDenominatorTest is Test {
         uint256 aprResidual = staking.pureStakerApr(90);
         assertGt(aprResidual, 0, "the APR must not be zero - that was the scale defect");
 
-        // Without the damper the APR would be ~MIN/tbp times larger (here ~980x). Requiring it to
-        // be at least 100x smaller than that version discriminates with margin and is not fragile.
-        uint256 undamped = aprResidual * (staking.MIN_EMISSION_WEIGHT() / tbp);
+        // Undamped value computed independently from the inputs (BOOST_BASE = 10_000):
+        //     totalDebt·rate/tbp · boost/10_000 · (1 − reserve)
+        // The damper scales it by tbp/MIN (here ~1/980). Deriving `undamped` from the contract's
+        // inputs, not from its output, is what lets a missing damper fail this assertion.
+        uint256 undamped = staking.totalDebt() * staking.currentInterestRateBps() / tbp
+            * staking.boostByDays(90) / 10_000 * (10_000 - staking.RESERVE_FACTOR_BPS()) / 10_000;
+        assertGt(undamped, 0, "precondition: a live undamped rate");
         assertLt(aprResidual * 100, undamped,
             "the published APR does not carry the MIN_EMISSION_WEIGHT damper (third projection)");
+        // Whole basis points, so the tolerance is one unit of flooring.
+        assertApproxEqAbs(aprResidual, undamped * tbp / staking.MIN_EMISSION_WEIGHT(), 1,
+            "the published APR is the undamped rate scaled by tbp/MIN");
     }
 }
