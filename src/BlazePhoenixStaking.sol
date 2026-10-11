@@ -1709,6 +1709,29 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
     function _ltvCap(UserInfo storage u) internal view returns (uint256) {
         return ML.mulDiv(_effective(u), MAX_LTV, 100);
     }
+    /// @dev The position's stake, and the book's totalStaked, as the NEXT state-changing call
+    ///      would see them once it has run `_updateInterestIndex` and `_accrueInterestFor(user)`:
+    ///      the same slice, the same per-debt charge, the same shortfall restore. A view that
+    ///      publishes a limit or a health reading off the stored stake describes a position that
+    ///      no longer exists the moment the owner acts, because every entry point accrues first.
+    function _projected(UserInfo storage u) internal view returns (uint256 s, uint256 ts) {
+        s = u.staked; ts = totalStaked;
+        uint256 acc = accInterestPerDebt;
+        uint256 elapsed = emergencyMode ? 0 : block.timestamp - lastInterestTime;
+        if (elapsed > 0 && totalDebt > 0) {
+            (uint256 d, uint256 sl) = _interestSlice(totalDebt, elapsed);
+            if (sl > 0) { acc += d; ts -= sl; }
+        }
+        if (u.debt == 0) return (s, ts);
+        uint256 i = ML.mulDivSafe(u.debt, acc - u.interestIndex, WAD);
+        if (i > s) { ts += i - s; i = s; }
+        s -= i;
+    }
+    /// @dev What `borrow` would accept right now: the LTV room on the post-accrual stake.
+    function _maxBorrow(UserInfo storage u) internal view returns (uint256) {
+        (uint256 s, ) = _projected(u);
+        return _sub0(ML.mulDiv(_sub0(s, u.debt), MAX_LTV, 100), u.debt);
+    }
     function _health(UserInfo storage u) internal view returns (uint256) {
         // Only a debt-free position is unconditionally healthy. A position whose
         // stake has been consumed to zero while debt remains is the WORST state
@@ -1761,9 +1784,7 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
         return ML.mulDiv(totalDebt, WAD, totalStaked);
     }
     function maxBorrowOf(address user_) external view returns (uint256) {
-        UserInfo storage u = _users[user_];
-        uint256 cap = _ltvCap(u);
-        return _sub0(cap, u.debt);
+        return _maxBorrow(_users[user_]);
     }
     function remainingStakeCapacity(address user_) external view returns (uint256) {
         uint256 s = _users[user_].staked;
@@ -1886,8 +1907,7 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
         UserInfo storage u = _users[user_];
         staked = u.staked; debt = u.debt;
         effectiveStake = _effective(u);
-        uint256 cap = _ltvCap(u);
-        maxBorrowAvailable = _sub0(cap, u.debt);
+        maxBorrowAvailable = _maxBorrow(u);
         health = _health(u);
         rateBps = _interestRate();
         daysLeft = _daysToLiqInternal(u);
