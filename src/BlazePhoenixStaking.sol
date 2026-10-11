@@ -1727,10 +1727,15 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
         if (i > s) { ts += i - s; i = s; }
         s -= i;
     }
-    /// @dev What `borrow` would accept right now: the LTV room on the post-accrual stake.
+    /// @dev What `borrow` would accept right now: the smaller of the LTV room on the post-accrual
+    ///      stake and the aggregate utilisation room (H-04). borrow reverts iff
+    ///      ⌊(D + a)·WAD / S⌋ > MAX_PROTOCOL_UTIL_WAD, and D + a ≤ ⌊S·MAX/WAD⌋ implies
+    ///      (D + a)·WAD ≤ S·MAX, so a = ⌊S·MAX/WAD⌋ − D is always accepted.
     function _maxBorrow(UserInfo storage u) internal view returns (uint256) {
-        (uint256 s, ) = _projected(u);
-        return _sub0(ML.mulDiv(_sub0(s, u.debt), MAX_LTV, 100), u.debt);
+        (uint256 s, uint256 ts) = _projected(u);
+        return _min(
+            _sub0(ML.mulDiv(_sub0(s, u.debt), MAX_LTV, 100), u.debt),
+            _sub0(ML.mulDiv(ts, MAX_PROTOCOL_UTIL_WAD, WAD), totalDebt));
     }
     function _health(UserInfo storage u) internal view returns (uint256) {
         // Only a debt-free position is unconditionally healthy. A position whose
