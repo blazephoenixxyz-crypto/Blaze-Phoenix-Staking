@@ -117,6 +117,23 @@ jobs:
           fi
           echo "### Yul evaluation-order guard: clean" >> "$GITHUB_STEP_SUMMARY"
 
+  mutant-guards:
+    name: Mutant list and profile parity (no compile)
+    # Two cheap checks that keep the heavier assurance honest without running it:
+    #  - check_targets.py: every curated mutant in .github/scripts/mutants.py still finds its
+    #    target exactly once, so a source edit cannot silently shrink the mutation guard;
+    #  - profile_parity.py: every foundry profile generates the same code as `default`, so the
+    #    in-suite EIP-170 gate and the mutants measure the bytecode that ships.
+    # The mutants themselves run locally (`python3 .github/scripts/mutants.py`) on a green suite.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: foundry-rs/foundry-toolchain@v1
+      - name: Mutant targets exist exactly once
+        run: python3 .github/scripts/check_targets.py
+      - name: Every profile generates the same code
+        run: python3 .github/scripts/profile_parity.py
+
   formal:
     name: formal verification (Halmos symbolic, report-only)
     runs-on: ubuntu-latest
