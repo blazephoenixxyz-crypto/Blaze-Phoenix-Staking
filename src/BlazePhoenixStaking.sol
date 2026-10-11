@@ -1375,39 +1375,8 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
         uint256 debtNow = totalDebt;
         if (debtNow == 0) return;
 
-        uint256 delta = ML.mulDivSafe(ML.mulDivSafe(WAD, _interestRate(), 10_000), elapsed, SECONDS_PER_YEAR);
-        if (delta == 0) return;
-
-        // The slice of interest the whole book generated over `elapsed`, settled NOW against the
-        // denominators that existed NOW. Distribution and collection move together, so the ledger
-        // never claims more than it holds:
-        //     Δowed = −slice + reserveCut + toPool = 0,   Δbalance = 0
-        uint256 slice = ML.mulDivSafe(debtNow, delta, WAD);
-        if (slice == 0) return;
-        if (slice > totalStaked) {
-            // C-03 index-clamp coupling. The clamp binds (terminal distress): the global can
-            // only debit `totalStaked`, so reduce the per-debt index advance to match. Otherwise
-            // per-user charges (computed off the full delta) sum to MORE than was debited and the
-            // shortfall reconcile in _accrueInterestFor over-restores totalStaked into a phantom
-            // that re-opens clamp headroom and is paid out as unbacked yield. When the clamp does
-            // NOT bind (the healthy regime) delta is used UNCHANGED, so interest is bit-identical
-            // to pre-fix (no rounding drift, existing assertions unaffected). Either way
-            // Σ per-user charges == the global debit.
-            slice = totalStaked;
-            delta = ML.mulDiv(slice, WAD, debtNow);
-            if (delta == 0) return;   // sub-unit rounding at terminal totalStaked: charge nothing this window
-            // Re-derive the global debit from the FLOORED delta. `delta` above rounds down, so
-            // debiting the pre-floor `slice` (== totalStaked) would remove dust the index can
-            // never attribute back to any position: totalStaked lands BELOW Σ u.staked and the
-            // next checked `totalStaked -= seized` (liquidate) or `-= amount_` (withdraw) hits
-            // a panic underflow — re-freezing liquidation in terminal distress, the exact DoS
-            // LIQ-01 exists to remove. Recomputing makes the debit ⌊debtNow·δ/WAD⌋, the same
-            // rounding contract the healthy branch has always had (global debit >= Σ per-user
-            // ⌊dᵢ·δ/WAD⌋, equal in the single-borrower case), so the clamp binds without ever
-            // pushing the global total under what positions still hold.
-            slice = ML.mulDivSafe(debtNow, delta, WAD);
-            if (slice == 0) return;
-        }
+        (uint256 delta, uint256 slice) = _interestSlice(debtNow, elapsed);
+        if (slice == 0) return;   // a non-zero slice implies a non-zero delta
         // Checked on purpose (a wrapped index would silently mis-price every position; ~1e32 away).
         accInterestPerDebt += delta;
         totalStaked -= slice;
@@ -1436,6 +1405,39 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
             }
         }
         unchecked { totalInterestAccruedGlobal += slice; }
+    }
+
+    /// @dev SINGLE SOURCE for the slice of interest the book generates over `elapsed`, used by
+    ///      execution (`_updateInterestIndex`) and by the `_pendingPure` quote, so the two cannot
+    ///      round differently. Caller guarantees debtNow > 0.
+    function _interestSlice(uint256 debtNow, uint256 elapsed) internal view returns (uint256 delta, uint256 slice) {
+        delta = ML.mulDivSafe(ML.mulDivSafe(WAD, _interestRate(), 10_000), elapsed, SECONDS_PER_YEAR);
+        // The slice of interest the whole book generated over `elapsed`, settled NOW against the
+        // denominators that existed NOW. Distribution and collection move together, so the ledger
+        // never claims more than it holds:
+        //     Δowed = −slice + reserveCut + toPool = 0,   Δbalance = 0
+        slice = ML.mulDivSafe(debtNow, delta, WAD);
+        if (slice > totalStaked) {
+            // C-03 index-clamp coupling. The clamp binds (terminal distress): the global can
+            // only debit `totalStaked`, so reduce the per-debt index advance to match. Otherwise
+            // per-user charges (computed off the full delta) sum to MORE than was debited and the
+            // shortfall reconcile in _accrueInterestFor over-restores totalStaked into a phantom
+            // that re-opens clamp headroom and is paid out as unbacked yield. When the clamp does
+            // NOT bind (the healthy regime) delta is used UNCHANGED, so interest is bit-identical
+            // to pre-fix (no rounding drift, existing assertions unaffected). Either way
+            // Σ per-user charges == the global debit.
+            delta = ML.mulDiv(totalStaked, WAD, debtNow);   // 0 on sub-unit rounding: charge nothing
+            // Re-derive the global debit from the FLOORED delta. `delta` above rounds down, so
+            // debiting the pre-floor `slice` (== totalStaked) would remove dust the index can
+            // never attribute back to any position: totalStaked lands BELOW Σ u.staked and the
+            // next checked `totalStaked -= seized` (liquidate) or `-= amount_` (withdraw) hits
+            // a panic underflow — re-freezing liquidation in terminal distress, the exact DoS
+            // LIQ-01 exists to remove. Recomputing makes the debit ⌊debtNow·δ/WAD⌋, the same
+            // rounding contract the healthy branch has always had (global debit >= Σ per-user
+            // ⌊dᵢ·δ/WAD⌋, equal in the single-borrower case), so the clamp binds without ever
+            // pushing the global total under what positions still hold.
+            slice = ML.mulDivSafe(debtNow, delta, WAD);
+        }
     }
 
     /// @dev Pure-yield damper shared by execution and every quote: below MIN_EMISSION_WEIGHT the
@@ -1856,9 +1858,9 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
         // clock), so projecting a slice here would quote yield that execution never pays.
         uint256 elapsed = emergencyMode ? 0 : block.timestamp - lastInterestTime;
         if (elapsed > 0 && totalDebt > 0 && totalBoostedPure > 0) {
-            uint256 d = ML.mulDivSafe(ML.mulDivSafe(WAD, _interestRate(), 10_000), elapsed, SECONDS_PER_YEAR);
-            uint256 slice = ML.mulDivSafe(totalDebt, d, WAD);
-            slice = _min(slice, totalStaked);
+            // The execution's own slice, clamp re-derivation included: a bare min(slice,
+            // totalStaked) skipped the floored re-derivation and over-quoted in terminal distress.
+            (, uint256 slice) = _interestSlice(totalDebt, elapsed);
             uint256 toPool = slice - ML.mulDiv(slice, RESERVE_FACTOR_BPS, 10_000);
             // Same damper as execution, so the quote stays equal to what a claim pays.
             toPool = _dampPure(toPool, totalBoostedPure);
