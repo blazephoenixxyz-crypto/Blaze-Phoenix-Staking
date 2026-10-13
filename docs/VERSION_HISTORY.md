@@ -19,6 +19,23 @@ from v1 re-added.
 
 ---
 
+## v4 pre-deployment surface trim (October 2026)
+
+v4 is not deployed yet, so its ABI can still shrink without breaking a caller. Seven views that
+nothing reads (no test, script, SDK, MCP server or website call) were removed to return 831 bytes
+of runtime under the EIP-170 ceiling. Each is derivable from state that stays public:
+
+| Removed | Read instead |
+|---|---|
+| `timeSinceEmissionStart()` | `block.timestamp - emissionStart()` |
+| `timeUntilEmissionEnd()` | `emissionEnd() - block.timestamp` (0 once past) |
+| `emissionProgress()` | `emittedAt(block.timestamp) * 1e18 / TOTAL_REWARDS()` (WAD; the removed view returned exactly `1e18` from `emissionEnd` on) |
+| `timeUntilUnlock(address)` | `unlockTime` from `lockInfoOf(address)` |
+| `borrowerAt(uint256)`, `getBorrowers(uint256,uint256)` | `activeBorrowerCount()`, `isTrackedBorrower(address)`, and the `Borrowed`/`Repaid` events |
+| `lockerAt(uint256)` | `getLockers(offset, limit)` |
+
+---
+
 ## v4 hardened — the terminal-distress round (August 2026)
 
 An internal adversarial pass (devil's-advocate review, two independent skeptics) plus one

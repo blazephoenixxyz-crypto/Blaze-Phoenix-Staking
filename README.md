@@ -219,7 +219,7 @@ There is no liquid staking — **every deposit is a locked commitment** measured
   early-exit-with-debt path, and therefore **no exit penalty**.
 
 `lock(uint256 lockDays)` also exists to extend an existing commitment without depositing. Inspect
-with `lockInfoOf(user)`, `timeUntilUnlock(user)`, `maxLockDaysAvailable()`, `boostByDays(days)`,
+with `lockInfoOf(user)` (its `unlockTime` gives the time left), `maxLockDaysAvailable()`, `boostByDays(days)`,
 `effectiveBoostOf(user)`, `effectiveLockDaysOf(user)`, `hasStaleBoost(user)`.
 
 ---

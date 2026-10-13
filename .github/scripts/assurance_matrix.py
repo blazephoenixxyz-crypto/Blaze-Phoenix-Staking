@@ -23,11 +23,11 @@ AREAS = [
     ("withdraw", r"\.withdraw\("),
     ("borrow / repay", r"\.borrow\(|\.repay\(|maxBorrowOf"),
     ("interest", r"totalInterestAccruedGlobal|accInterestPerDebt|currentInterestRateBps|simulateRate|utilizationRate|rateBps"),
-    ("emission / rewards", r"claimRewards|pendingRewards|fundEmission|emittedAt|currentRewardPerSec|rewardReserve|totalRewardDistributed|accRewardPerShare|emissionEnd|emissionProgress"),
+    ("emission / rewards", r"claimRewards|pendingRewards|fundEmission|emittedAt|currentRewardPerSec|rewardReserve|totalRewardDistributed|accRewardPerShare|emissionEnd"),
     ("pure yield", r"claimPureYield|pendingPureYield|pureStakerApr|totalBoostedPure|accPureYieldPerShare"),
     ("liquidation", r"\.liquidate\(|healthFactor|daysToLiquidation|LIQ_THRESHOLD|LIQ_BONUS"),
-    ("maintenance windows", r"maintStep|maintenanceBudget|activeBorrowerCount|borrowerAt|getBorrowers|isTrackedBorrower"),
-    ("lock sweep / poke", r"pokeExpiredLock|lockStep|lockSweepBudget|expiredLockScan|getLockers|activeLockerCount|lockerAt|isTrackedLocker|hasStaleBoost|lockInfoOf|effectiveLockDaysOf"),
+    ("maintenance windows", r"maintStep|maintenanceBudget|activeBorrowerCount|isTrackedBorrower"),
+    ("lock sweep / poke", r"pokeExpiredLock|lockStep|lockSweepBudget|expiredLockScan|getLockers|activeLockerCount|isTrackedLocker|hasStaleBoost|lockInfoOf|effectiveLockDaysOf"),
     ("emergency / breaker", r"emergencyWithdraw|declareEmergency|cancelEmergency|tripBreaker|emergencyMode|\.pause\(|\.unpause\("),
     ("admin / reserves", r"withdrawReserve|sweepUndistributedEmission|fundEmission|protocolReserve|grantRole|revokeRole|ROLE_"),
     ("views / solvency", r"\.owed\(|\.backing\(|isSolvent|collateralRatio|\.solvency\(|auditInvariants|touchAuditSnapshot|getGlobalStats|getUserInfo|effectiveStakeOf|totalEffectiveStaked|remainingStakeCapacity"),
@@ -37,7 +37,7 @@ AREAS = [
 # a Foundry test of this repository (stated in MATRIX.md), and the cell is reported as "-".
 AXES = [
     ("P", "proxy / upgrade", None),
-    ("A", "arrays / iteration", r"pokeExpiredLocks|getLockers|getBorrowers|expiredLockScan|borrowerAt|lockerAt|activeBorrowerCount|activeLockerCount|new address\[\]\("),
+    ("A", "arrays / iteration", r"pokeExpiredLocks|getLockers|expiredLockScan|activeBorrowerCount|activeLockerCount|new address\[\]\("),
     ("D", "dimensions / casts / bits", r"type\(u?int\d*\)\.(max|min)|\bu?int(8|16|32|40|48|64|96|128)\(|>>|<<"),
     ("V", "vectors / hashes", r"keccak256|abi\.encode(Packed|WithSelector|Call)?\("),
     ("Q", "quantities / thresholds", r"MAX_STAKE_PER_WALLET|MAX_LTV|LIQ_THRESHOLD|LIQ_BONUS|RESERVE_FACTOR_BPS|MIN_EMISSION_WEIGHT|TOTAL_REWARDS|HALVING_PERIOD|EMISSION_PERIODS|INITIAL_REWARD_PER_SEC|MIN_DEPOSIT_BLOCKS|MAX_LOCK_DAYS|CONSERVATION_DUST|_LITERAL\b|\bCAP\b|EIP_170"),

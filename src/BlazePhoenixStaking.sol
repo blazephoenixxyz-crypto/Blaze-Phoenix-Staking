@@ -1216,11 +1216,9 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
     }
 
     function activeBorrowerCount() external view returns (uint256) { return _borrowers.length; }
-    function borrowerAt(uint256 i) external view returns (address) { return _borrowers[i]; }
     function isTrackedBorrower(address who) external view returns (bool) { return _borrowerIdx[who] != 0; }
     function maintenanceBudget() external view returns (uint256) { return _maintBudget(); }
     function activeLockerCount() external view returns (uint256) { return _lockers.length; }
-    function lockerAt(uint256 i) external view returns (address) { return _lockers[i]; }
     function isTrackedLocker(address who) external view returns (bool) { return _lockerIdx[who] != 0; }
     function lockSweepBudget() external view returns (uint256) { return _lockBudget(); }
     function getLockers(uint256 offset, uint256 limit)
@@ -1272,17 +1270,6 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
         }
         users = new address[](n);
         for (uint256 i = 0; i < n; ) { users[i] = buf[i]; unchecked { ++i; } }
-    }
-
-    function getBorrowers(uint256 offset, uint256 limit)
-        external view returns (address[] memory out, uint256 total)
-    {
-        total = _borrowers.length;
-        if (offset >= total || limit == 0) return (new address[](0), total);
-        uint256 end = offset + limit;
-        end = _min(end, total);
-        out = new address[](end - offset);
-        for (uint256 i = offset; i < end; ) { out[i - offset] = _borrowers[i]; unchecked { ++i; } }
     }
 
     // ════════════════════════════════════════════════════════════════════════════════════
@@ -1860,24 +1847,6 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
         uint256 d = (emissionEnd - block.timestamp) / 1 days;
         d = _min(d, MAX_LOCK_DAYS);
         return d;
-    }
-    /// @notice Fraction of TOTAL_REWARDS the schedule has released so far, in WAD. This tracks
-    ///         the halving CURVE, not the clock — 50% is reached at year 2, not year 8. Returns
-    ///         exactly WAD once the programme closes (the 2^-8 tail is closed, not pending).
-    function emissionProgress() external view returns (uint256) {
-        if (block.timestamp >= emissionEnd) return WAD;
-        return ML.mulDiv(_emittedAt(block.timestamp), WAD, TOTAL_REWARDS);
-    }
-    function timeSinceEmissionStart() external view returns (uint256) {
-        return _sub0(block.timestamp, emissionStart);
-    }
-    function timeUntilEmissionEnd() external view returns (uint256) {
-        return _sub0(emissionEnd, block.timestamp);
-    }
-    function timeUntilUnlock(address user_) external view returns (uint256) {
-        UserInfo storage u = _users[user_];
-        if (u.lockDays == 0) return 0;
-        return block.timestamp < u.unlockTime ? uint256(u.unlockTime) - block.timestamp : 0;
     }
     /// @notice Indicative pure-staker APR (bps) for a given lock duration, from current interest flow.
     function pureStakerApr(uint256 lockDays_) external view returns (uint256 aprBps) {
