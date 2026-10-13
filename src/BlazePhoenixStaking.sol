@@ -1378,8 +1378,7 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
     {
         total = _lockers.length;
         if (offset >= total || limit == 0) return (new address[](0), total);
-        uint256 end = offset + limit;
-        end = _min(end, total);
+        uint256 end = offset + _min(limit, total - offset);   // no overflow for limit = max
         out = new address[](end - offset);
         for (uint256 i = offset; i < end; ) { out[i - offset] = _lockers[i]; unchecked { ++i; } }
     }
@@ -1401,8 +1400,7 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
     {
         total = _lockers.length;
         if (offset >= total || limit == 0) return (new address[](0), 0, 0, total);
-        uint256 end = offset + limit;
-        end = _min(end, total);
+        uint256 end = offset + _min(limit, total - offset);   // no overflow for limit = max
 
         address[] memory buf = new address[](end - offset);
         uint256 n;

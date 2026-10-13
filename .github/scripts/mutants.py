@@ -307,6 +307,16 @@ M = [
       old="        // stays credited for when the loss is absorbed, or is forfeited to the pro-rata exit.\n        if (_hardBreach()) revert Staking__InvariantBreached();",
       new="        // stays credited for when the loss is absorbed, or is forfeited to the pro-rata exit.\n        // MUTANT",
       teste="test_PUREUNCOLL_bookingTxPaysNoUncollectedPureYield"),
+ dict(nome="getLockers: the page end overflows again for limit = max",
+      f=F,
+      old="        if (offset >= total || limit == 0) return (new address[](0), total);\n        uint256 end = offset + _min(limit, total - offset);",
+      new="        if (offset >= total || limit == 0) return (new address[](0), total);\n        uint256 end = _min(offset + limit, total);",
+      teste="test_B92_getLockersAcceptsMaxLimit"),
+ dict(nome="expiredLockScan: the page end overflows again for limit = max",
+      f=F,
+      old="        if (offset >= total || limit == 0) return (new address[](0), 0, 0, total);\n        uint256 end = offset + _min(limit, total - offset);",
+      new="        if (offset >= total || limit == 0) return (new address[](0), 0, 0, total);\n        uint256 end = _min(offset + limit, total);",
+      teste="test_B92_expiredLockScanAcceptsMaxLimit"),
 ]
 
 CONTRACTS = ("BlazePhoenixStaking",)
