@@ -54,11 +54,13 @@ import {ReentrancyGuard}            from "@openzeppelin/contracts/utils/Reentran
 ///     │          +  protocolReserve                      // protocol revenue              │
 ///     │          +  (totalRewardDistributed − totalRewardsPaid)  // accrued, not-yet-paid │
 ///     │                                                                                  │
-///     │  The right-hand side is `_owed()`. SOLVENCY ⇔ balance ≥ owed. Every value-moving │
-///     │  entry-point is wrapped in `conserves`, which proves the PER-TX change in the    │
-///     │  real balance equals the change in `_owed()` (within dust). A bug that would let │
-///     │  the ledger claim more than the contract holds reverts the whole transaction —   │
-///     │  an insolvent state is unreachable, not merely observable.                       │
+///     │  `_owed()` is the right-hand side NET of `totalBadDebt` (losses already realised │
+///     │  and recorded). `isSolvent()` ⇔ balance + dust ≥ owed: it detects an UNRECORDED  │
+///     │  shortfall (a bug or a theft), not recorded bad debt, which is published on its  │
+///     │  own as `totalBadDebt`. Every value-moving entry-point is wrapped in `conserves`, │
+///     │  which proves the PER-TX change of the identity is zero (within dust). A bug     │
+///     │  that would let the ledger claim more than the contract holds reverts the whole  │
+///     │  transaction. The protocol reserve absorbs a realised loss before it is booked.  │
 ///     │                                                                                  │
 ///     │  ANYONE can verify the identity on-chain for free: `solvency()`, `isSolvent()`,  │
 ///     │  `collateralRatio()`. No trust, no oracle, no off-chain indexer required.        │
@@ -318,6 +320,7 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
     // ── Errors ──────────────────────────────────────────────────────────────────────────
     error Staking__ZeroAmount();
     error Staking__ZeroAddress();
+    error Staking__TokenHasNoCode();
     error Staking__InsufficientStake();
     error Staking__LTVExceeded();
     error Staking__UtilTooHigh();
@@ -408,6 +411,12 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
 
     constructor(address bzpx_, address treasury_) {
         if (bzpx_ == address(0) || treasury_ == address(0)) revert Staking__ZeroAddress();
+        // The raw token calls treat empty returndata as success (non-standard tokens return
+        // nothing), and a call to an account without code also succeeds with empty returndata.
+        // `conserves` would still reject every deposit (the balance never moves), so a codeless
+        // token is a dead deployment rather than a theft; this makes it fail at deployment.
+        // Constructor-only: no runtime bytes.
+        if (bzpx_.code.length == 0) revert Staking__TokenHasNoCode();
         bzpx          = bzpx_;
         treasury      = treasury_;
         emissionStart = block.timestamp;
@@ -788,14 +797,14 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
 
         _updateInterestIndex();      // price the elapsed slice before totalStaked moves the rate
         u.staked    -= amount_;
-        // SATURANTE, como `emergencyWithdraw` sempre fez. Assimetria apanhada em 2026-08-19:
-        // o canal de emergencia saturava, mas `withdraw` e `liquidate` faziam `-=` cru. O debito
-        // global de juro e EAGER sobre o livro inteiro e a cobranca por-utilizador e LAZY, logo se
-        // `totalStaked` alguma vez ficar abaixo de Sigma u.staked o canal de saida NORMAL fazia
-        // panic underflow e prendia fundos enquanto o de emergencia passava — o canal desprotegido
-        // era exatamente o que toda a gente usa. Nao ha exploit demonstrado: isto elimina a CLASSE,
-        // nao um bug conhecido. Assimetria de custos: saturar custa uma comparacao; nao saturar
-        // custa o ultimo utilizador nao conseguir sair.
+        // SATURATING, as `emergencyWithdraw` always was. Asymmetry found on 2026-08-19: the
+        // emergency channel saturated, but `withdraw` and `liquidate` used a raw `-=`. The global
+        // interest debit is EAGER over the whole book while per-user collection is LAZY, so if
+        // `totalStaked` ever fell below Sigma u.staked the NORMAL exit channel would panic on
+        // underflow and lock funds while the emergency one went through — the unprotected channel
+        // was exactly the one everybody uses. No exploit was demonstrated: this removes the CLASS,
+        // not a known bug. Cost asymmetry: saturating costs one comparison; not saturating costs
+        // the last user being unable to exit.
         totalStaked = _sub0(totalStaked, amount_);
 
         _resync(msg.sender);
@@ -933,14 +942,8 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
         if (!_isLiquidatable(_users[user_])) revert Staking__NotLiquidatable();
         uint256 bonus = _executeLiquidation(user_, msg.sender);
         if (bonus > 0) {
-            // The bonus pays a third party for closing someone else's position. A borrower closing
-            // its own would be paid LIQ_BONUS_BPS of its debt out of its own seized collateral,
-            // turning the penalty into a refund; the sweep already never liquidates its caller.
-            // Self-liquidation still goes through, so the position closes, but the bonus stays in
-            // the protocol: Δ(totalStaked + protocolReserve) = −seized + bonus = −debt = ΔtotalDebt,
-            // with the balance untouched, so the conservation identity holds as before.
-            if (msg.sender == user_) protocolReserve += bonus;
-            else if (!ML.rawTransfer(bzpx, msg.sender, bonus)) revert Staking__TransferFailed();
+            // A self-liquidation returns bonus == 0: `_executeLiquidation` keeps it in the reserve.
+            if (!ML.rawTransfer(bzpx, msg.sender, bonus)) revert Staking__TransferFailed();
         }
     }
 
@@ -958,6 +961,13 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
 
         uint256 leftover = _sub0(stake, seized);
         keeperBonus      = _sub0(seized, debt);   // surplus -> keeper (conservation-consistent)
+        // The bonus pays a third party for closing someone else's position. A borrower closing
+        // its own would be paid LIQ_BONUS_BPS of its debt out of its own seized collateral,
+        // turning the penalty into a refund. Self-liquidation still closes the position, but the
+        // bonus stays in the protocol: Δ(totalStaked + protocolReserve) = −seized + bonus = −debt
+        // = ΔtotalDebt, with the balance untouched, so the identity holds. Decided HERE, before
+        // the event, so `Liquidated.keeperBonus` reports what the caller is actually paid (0).
+        if (keeper_ == user_) { protocolReserve += keeperBonus; keeperBonus = 0; }
 
         uint256 badDebt  = _sub0(debt, stake);
         uint256 covered  = 0;
@@ -967,8 +977,8 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
         }
         uint256 uncovered = badDebt - covered;
 
-        // saturante — ver a nota em `withdraw` (assimetria de canais, 2026-08-19)
-        totalStaked = _sub0(totalStaked, seized);   // (seized - bonus == debt) fica, a compensar o borrow
+        // saturating — see the note in `withdraw` (channel asymmetry, 2026-08-19)
+        totalStaked = _sub0(totalStaked, seized);   // (seized - bonus == debt) offsets the borrow
         totalDebt   -= debt;
         u.debt   = 0;
         u.staked = leftover;
@@ -1492,11 +1502,16 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
             // floor-free identity: +shortfall on the RHS (totalStaked) is matched by
             // +shortfall on the LHS (totalBadDebt). totalUncollectedInterest stays as
             // telemetry of the cumulative uncollectible interest.
+            // The protocol reserve absorbs the loss first, exactly as `_executeLiquidation` and
+            // `emergencyWithdraw` do for the same event; only the uncovered rest is recorded as
+            // bad debt (−covered on the RHS, −covered on the LHS: still conserves-neutral).
             uint256 shortfall = interest - u.staked;
+            uint256 covered = shortfall > protocolReserve ? protocolReserve : shortfall;
+            protocolReserve -= covered;
             unchecked {
                 totalUncollectedInterest += shortfall;
                 totalStaked              += shortfall;
-                totalBadDebt             += shortfall;
+                totalBadDebt             += shortfall - covered;
             }
             interest = u.staked;
         }
@@ -1513,9 +1528,13 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
     ///      rather than against stored state. Boost is the premium for illiquidity: the instant
     ///      `block.timestamp >= unlockTime` the capital is withdrawable again, so the effective
     ///      commitment is 0 days (1.00x) — whatever `lockDays` still holds in storage and whether
-    ///      or not anybody has gotten around to normalising the position yet. Every weight in the
-    ///      protocol is derived through here, so an un-swept expired lock can never be re-priced
-    ///      at its historical multiplier by ANY code path.
+    ///      or not anybody has gotten around to normalising the position yet. Every weight the
+    ///      protocol WRITES is derived through here, so a resync can never re-price an expired
+    ///      lock at its historical multiplier. Note the bound: reward settlement pays with the
+    ///      TRACKED weight (`trackedBoostedEffective`), which only moves on a resync (the
+    ///      position's own action, `pokeExpiredLock`, or the lock sweep). Between `unlockTime`
+    ///      and that resync the position keeps earning at its last tracked multiplier; the
+    ///      permissionless poke and the sweep exist to bound that window, not to remove it.
     function _effectiveLockDays(UserInfo storage u) internal view returns (uint256) {
         if (u.lockDays == 0) return 0;
         return block.timestamp >= u.unlockTime ? 0 : uint256(u.lockDays);

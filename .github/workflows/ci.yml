@@ -83,6 +83,29 @@ jobs:
             exit 1
           fi
 
+      - name: INV-16 walk — deterministic, GATES
+        # The report-only step below prescribes this promotion itself: "If one of these ever
+        # discharges deterministically, promote it into the gate and drop the `|| true`".
+        # FullSurfaceConservationTest walks the conserves surface in a FIXED order
+        # (test/InvariantsFullSurface.t.sol): no fuzz input reaches it, so its answer
+        # cannot move with --fuzz-runs. The CAMPAIGN in the same file is NOT promoted — it
+        # stays report-only, where its variance belongs.
+        run: |
+          set -o pipefail
+          if forge test --match-contract FullSurfaceConservationTest -vv 2>&1 | tee walk.log; then
+            n=$(grep -c '^\[PASS\]' walk.log || true)
+            if [ "$n" -lt 3 ]; then
+              echo "::error title=INV-16 walk::only $n tests ran — a lane that builds nothing measures nothing"
+              exit 1
+            fi
+            echo "### INV-16 walk: OK ($n deterministic tests)" >> "$GITHUB_STEP_SUMMARY"
+          else
+            digest=$(grep -E '^\[FAIL|^Suite result|^Error' walk.log | head -25)
+            [ -n "$digest" ] || digest=$(tail -25 walk.log)
+            echo "::error title=INV-16 walk failed::$(echo "$digest" | sed ':a;N;$!ba;s/\n/%0A/g')"
+            exit 1
+          fi
+
       - name: Deeper invariant/fuzz pass (REPORT-ONLY — never gates)
         # `|| true` is deliberate: a deep campaign is a search, not a bound, and
         # its variance would make the gating job flaky. Labelled so nobody reads
@@ -133,6 +156,30 @@ jobs:
         run: python3 .github/scripts/check_targets.py
       - name: Every profile generates the same code
         run: python3 .github/scripts/profile_parity.py
+
+  shared-quantities:
+    name: Shared-quantity register (no compile)
+    # Keeps SHARED_QUANTITIES.md from lying: every PINNED row must name a test file that
+    # exists and mentions the quantity; every SINGLE row's named guard must be here.
+    # Costs ~1 s, no compiler — the same shape as the mutant-guards job above.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Register agrees with the repository
+        run: bash .github/scripts/shared-quantities.sh SHARED_QUANTITIES.md
+      - name: One producer — boostByDays (Producer copy guard)
+        # The register grades `boostByDays` SINGLE, and this is the guard it names: one
+        # definition and the two arithmetic lines exactly once each. A copy that
+        # reimplements the curve in ANOTHER shape escapes a grep — the metamorphic CO-B
+        # test is what rules on the values; this guard is what notices a copy of the body.
+        run: |
+          n=$(grep -cF 'function boostByDays' src/BlazePhoenixStaking.sol || true)
+          l=$(grep -cF 'BOOST_LINEAR * lockDays_' src/BlazePhoenixStaking.sol || true)
+          q=$(grep -cF 'BOOST_QUAD * lockDays_ * lockDays_' src/BlazePhoenixStaking.sol || true)
+          if [ "$n" -ne 1 ] || [ "$l" -ne 1 ] || [ "$q" -ne 1 ]; then
+            echo "::error title=Producer copy guard::boostByDays defined $n times; linear line $l; quadratic line $q (expected 1/1/1) — the boost curve has a second producer."
+            exit 1
+          fi
 
   formal:
     name: formal verification (Halmos symbolic, report-only)
