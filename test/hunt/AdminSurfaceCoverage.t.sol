@@ -20,6 +20,8 @@ pragma solidity 0.8.28;
 
 import {Base} from "../BlazePhoenixStaking.t.sol";
 import {BlazePhoenixStaking} from "../../src/BlazePhoenixStaking.sol";
+import {IAccessControl} from "@openzeppelin/contracts/access/IAccessControl.sol";
+import {Pausable} from "@openzeppelin/contracts/utils/Pausable.sol";
 
 contract AdminSurfaceCoverageTest is Base {
     uint256 constant DUST = 1e10;
@@ -42,7 +44,7 @@ contract AdminSurfaceCoverageTest is Base {
     function test_WithdrawReserve_OnlyAdmin() public {
         _seed();
         vm.prank(bob);
-        vm.expectRevert();
+        vm.expectRevert(abi.encodeWithSelector(IAccessControl.AccessControlUnauthorizedAccount.selector, bob, keccak256("ADMIN_ROLE")));
         staking.withdrawReserve(1);
     }
 
@@ -112,7 +114,7 @@ contract AdminSurfaceCoverageTest is Base {
         (,,,,,,,,, uint256 fim,,,,,,) = staking.getGlobalStats();
         vm.warp(fim + 1);
         vm.prank(bob);
-        vm.expectRevert();
+        vm.expectRevert(abi.encodeWithSelector(IAccessControl.AccessControlUnauthorizedAccount.selector, bob, keccak256("ADMIN_ROLE")));
         staking.sweepUndistributedEmission();
     }
 
@@ -176,7 +178,7 @@ contract AdminSurfaceCoverageTest is Base {
         vm.prank(keeper);
         staking.declareEmergency();
         vm.prank(bob);
-        vm.expectRevert();
+        vm.expectRevert(abi.encodeWithSelector(IAccessControl.AccessControlUnauthorizedAccount.selector, bob, keccak256("ADMIN_ROLE")));
         staking.cancelEmergency();
     }
 
@@ -203,7 +205,7 @@ contract AdminSurfaceCoverageTest is Base {
         // ANTES de `whenNotEmergency`, por isso é o guard de pausa que dispara.
         // Duas fechaduras na mesma porta — o que importa é que a porta fecha.
         vm.prank(bob);
-        vm.expectRevert();
+        vm.expectRevert(Pausable.EnforcedPause.selector);
         staking.deposit(1_000e18, 90);
 
         vm.startPrank(admin);
