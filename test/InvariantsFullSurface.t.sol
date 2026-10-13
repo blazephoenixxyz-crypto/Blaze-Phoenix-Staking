@@ -294,9 +294,10 @@ contract InvariantsFullSurfaceTest is StdInvariant, Base {
     }
 
     /// Solvency stated as the protocol states it, kept as a separate assertion
-    /// so a failure tells you WHICH of the two broke.
+    /// so a failure tells you WHICH of the two broke. `owed()` counts uncovered bad debt,
+    /// so the only gap it may show over backing is the loss already recorded.
     function invariant_INV16_backingCoversOwed() public view {
-        assertGe(staking.backing() + DUST, staking.owed(), "INV-16: backing < owed");
+        assertGe(staking.backing() + staking.totalBadDebt() + DUST, staking.owed(), "INV-16: backing + bad debt < owed");
     }
 
     // ── the Panic 0x11 direction ─────────────────────────────────────────────

@@ -24,6 +24,16 @@ pragma solidity 0.8.28;
 //   forge script script/Deploy.s.sol:Deploy --rpc-url "$RPC_URL" --broadcast -vvvv
 //
 //   (add --verify --etherscan-api-key $KEY to verify sources on a supported explorer)
+//
+// AFTER THE RUN (required before the contract is live):
+//   The constructor grants only DEFAULT_ADMIN_ROLE and ADMIN_ROLE, both to the deployer.
+//   No account holds GUARDIAN_ROLE, so pause() and declareEmergency() revert for everyone
+//   until it is granted. tripBreaker() needs no role (anyone can call it on a proven breach).
+//   Grant the guardian from the deployer, then confirm it:
+//     cast send <staking> "grantRole(bytes32,address)" $(cast keccak "GUARDIAN_ROLE") <guardian> \
+//       --rpc-url "$RPC_URL" --private-key "$PRIVATE_KEY"
+//     cast call <staking> "hasRole(bytes32,address)(bool)" $(cast keccak "GUARDIAN_ROLE") <guardian> \
+//       --rpc-url "$RPC_URL"                                  # must print true
 // ─────────────────────────────────────────────────────────────────────────────────────────────
 
 import {Script, console2} from "forge-std/Script.sol";
@@ -82,6 +92,8 @@ contract Deploy is Script {
         console2.log("=== DEPLOY + 180M EMISSION FUNDING COMPLETE ===");
         console2.log("Grant GUARDIAN_ROLE before using pause()/declareEmergency():");
         console2.log("  cast send", address(staking));
-        console2.log("  \"grantRole(bytes32,address)\" <keccak GUARDIAN_ROLE> <guardian>");
+        console2.log("  \"grantRole(bytes32,address)\" <GUARDIAN_ROLE> <guardian>");
+        console2.log("GUARDIAN_ROLE   :");
+        console2.logBytes32(keccak256("GUARDIAN_ROLE"));
     }
 }

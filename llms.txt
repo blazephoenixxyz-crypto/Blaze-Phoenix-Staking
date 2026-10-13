@@ -125,7 +125,8 @@ unreachable, not merely observable.
 - **Two halt paths, one of them objective.** A guardian may halt at discretion;
   separately, *anyone* may trip the breaker, but only when the chain itself
   proves insolvency (`balance + dust < owed`) — an un-spoofable condition,
-  reversible once it clears.
+  reversible once it clears. Recorded bad debt counts in `owed` (never netted):
+  anyone may recapitalise it with `absorbBadDebt(amount)`, reserve first.
 
 ## Emission — 180M BZPX on a biennial-halving curve (v4)
 

@@ -100,7 +100,7 @@ The right-hand side is `_owed()`. **Solvency is equivalent to `balance ≥ owed`
 | Term | Meaning |
 |---|---|
 | `balanceOf(contract)` | Physical BZPX the contract holds right now (raw `staticcall`, not a ledger variable) |
-| `totalBadDebt` | Recorded losses from liquidations where `stake < debt` |
+| `totalBadDebt` | Recorded losses the protocol reserve could not cover (liquidation or exit with `stake < debt`, uncollectible interest). Still owed: while it exceeds the dust the protocol reads insolvent until `absorbBadDebt` recapitalises it |
 | `totalStaked − totalDebt` | Net principal: stakers' capital minus what has been lent out |
 | `rewardReserve` | Emission funding deposited by admin but not yet distributed |
 | `protocolReserve` | Revenue accrued from the reserve factor (3% of interest) |
@@ -600,7 +600,10 @@ Two halt paths exist:
 | `tripBreaker()` | `_hardBreach()` proven on-chain | Objective insolvency only |
 
 Both are **pull-only**: `emergencyWithdraw()` returns a user's net equity
-(`staked − debt`). No admin can sweep funds.
+(`staked − debt`), scaled down pro-rata when the pot cannot cover every claim.
+No admin can sweep funds. Recorded bad debt is recapitalised by anyone through
+`absorbBadDebt(amount)` (protocol reserve first, then the caller's tokens, capped at
+the loss); once the breach clears the admin may cancel the emergency.
 
 In a **breached** emergency the contract may physically hold less than the sum of
 net equities. Paying full equity first-come-first-served would let early exiters

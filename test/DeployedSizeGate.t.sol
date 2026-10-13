@@ -27,7 +27,8 @@ contract DeployedSizeGateTest is Test {
 
     function _deploy() internal returns (address) {
         // Any non-zero addresses: the constructor only stores them, and immutables do not
-        // change the runtime length.
+        // change the runtime length. The token address must carry code (constructor check).
+        vm.etch(address(0xB2), hex"00");
         return address(new BlazePhoenixStaking(address(0xB2), address(0x713A5)));
     }
 

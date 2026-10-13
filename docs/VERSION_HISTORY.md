@@ -19,6 +19,33 @@ from v1 re-added.
 
 ---
 
+## v4 pre-deployment surface trim (October 2026)
+
+v4 is not deployed yet, so its ABI can still shrink without breaking a caller. Seven views that
+nothing reads (no test, script, SDK, MCP server or website call) were removed to return 831 bytes
+of runtime under the EIP-170 ceiling. Each is derivable from state that stays public:
+
+| Removed | Read instead |
+|---|---|
+| `timeSinceEmissionStart()` | `block.timestamp - emissionStart()` |
+| `timeUntilEmissionEnd()` | `emissionEnd() - block.timestamp` (0 once past) |
+| `emissionProgress()` | `emittedAt(block.timestamp) * 1e18 / TOTAL_REWARDS()` (WAD; the removed view returned exactly `1e18` from `emissionEnd` on) |
+| `timeUntilUnlock(address)` | `unlockTime` from `lockInfoOf(address)` |
+| `borrowerAt(uint256)`, `getBorrowers(uint256,uint256)` | `activeBorrowerCount()`, `isTrackedBorrower(address)`, and the `Borrowed`/`Repaid` events |
+| `lockerAt(uint256)` | `getLockers(offset, limit)` |
+
+### Uncovered bad debt is owed (October 2026)
+
+`_owed()` used to subtract `totalBadDebt`, so a loss the protocol reserve could not cover left
+`isSolvent()` reading true while claims exceeded the backing; exits were then paid
+first-come-first-served. It now counts the loss: the protocol reads insolvent, the full-value
+channels (`withdraw`, `deposit`, `borrow`, `claimRewards`, `claimPureYield`, `withdrawReserve`)
+close together, anyone may trip the breaker into the pro-rata exit, and anyone may recapitalise
+the loss with the new `absorbBadDebt(uint256)` (reserve first, capped at the loss, pays the
+caller nothing). New event: `BadDebtAbsorbed(address indexed by, uint256 fromReserve, uint256 fromCaller)`.
+
+---
+
 ## v4 hardened — the terminal-distress round (August 2026)
 
 An internal adversarial pass (devil's-advocate review, two independent skeptics) plus one

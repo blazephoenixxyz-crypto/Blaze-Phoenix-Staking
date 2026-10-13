@@ -106,31 +106,3 @@ jobs:
         with:
           name: solhint-report
           path: solhint-report.txt
-
-  certora:
-    name: Certora Prover (INV-20 effV4Fee fail-closed)
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          submodules: recursive
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-      - name: Install certora-cli + solc 0.8.36
-        run: |
-          pip install certora-cli solc-select
-          solc-select install 0.8.36
-          solc-select use 0.8.36
-          # Certora resolves the "solc0.8.36" name from PATH.
-          ln -sf "$(command -v solc)" /usr/local/bin/solc0.8.36
-      - name: Run Certora (skips gracefully until CERTORAKEY is set)
-        env:
-          CERTORAKEY: ${{ secrets.CERTORAKEY }}
-        run: |
-          if [ -z "$CERTORAKEY" ]; then
-            echo "CERTORAKEY not set — Certora scaffold is ready; add the repo secret to run the proof."
-            exit 0
-          fi
-          certoraRun certora/conf/effv4fee.conf

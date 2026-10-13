@@ -64,7 +64,7 @@ Each item links to the place where it can be checked. The full list is at [https
 
 - **Verified contracts:** source-verified on Sourcify and the chain explorers; every address per chain at [/api/deployments](https://blazephoenix.xyz/api/deployments).
 - **Source available:** the contract source is public under the [Business Source License 1.1](https://github.com/blazephoenixxyz-crypto/Blaze-Phoenix-Dex/blob/main/LICENSE), converting to GPL-2.0-or-later on 2030-06-01.
-- **Public CI:** [GitHub Actions](https://github.com/blazephoenixxyz-crypto/Blaze-Phoenix-Dex/actions) on every push, including the Certora Prover and Halmos.
+- **Public CI:** [GitHub Actions](https://github.com/blazephoenixxyz-crypto/Blaze-Phoenix-Staking/actions) on every push: Foundry build, size gate and tests, mutant and shared-quantity guards, Slither, Aderyn, Solhint, and a report-only Halmos run.
 - **Bug bounty:** a [public programme](https://blazephoenix.xyz/bounty) with [credited researchers](https://blazephoenix.xyz/security/researchers) and [published advisories](https://blazephoenix.xyz/security/advisories).
 - **Whitepaper DOI:** [10.5281/zenodo.23084091](https://doi.org/10.5281/zenodo.23084091); papers timestamped with [OpenTimestamps](https://blazephoenix.xyz/provenance/provenance.json).
 - **Contact:** contact@blazephoenix.xyz ([security.txt](https://blazephoenix.xyz/.well-known/security.txt)); official channels at [/official](https://blazephoenix.xyz/official).
@@ -100,6 +100,13 @@ balanceOf(contract) + totalBadDebt
 
 The right-hand side is computed by `_owed()`. **Solvency ⇔ `balance ≥ owed`.**
 
+Recorded bad debt is counted in `owed`, never netted out: a loss the protocol reserve could not
+cover is still a claim the contract cannot pay. While any of it is uncovered the protocol reads
+insolvent, the full-value channels (`withdraw`, `claimRewards`, `claimPureYield`, `deposit`,
+`borrow`, `withdrawReserve`) close together, and anyone may either trip the breaker into the
+pro-rata exit or recapitalise the loss with `absorbBadDebt(amount)` (protocol reserve first, then
+the caller's tokens, capped at the uncovered loss; it pays the caller nothing).
+
 This identity is enforced in two complementary ways:
 
 - **Per-transaction (preventive).** Every value-moving entry-point is wrapped in the `conserves`
@@ -118,9 +125,10 @@ This identity is enforced in two complementary ways:
   the protocol, but *only* when the chain itself proves insolvency: it requires `_hardBreach()`
   (`balance + dust < owed`), an objective, un-spoofable on-chain condition. Nobody can lower the
   contract's balance except through flows that lower `owed` by the same amount, and donations only
-  raise it — so the breaker can fire **only on a genuine shortfall** (a real bug/theft or a
-  token-level failure), never on healthy state. It is **reversible**: if the reading was transient,
-  the admin calls `cancelEmergency()` once `_hardBreach()` clears, so the worst a spurious trip can
+  raise it — so the breaker can fire **only on a genuine shortfall** (a real bug/theft, a
+  token-level failure, or recorded bad debt the reserve could not cover), never on healthy state. It is **reversible**: if the reading was transient,
+  the admin calls `cancelEmergency()` once `_hardBreach()` clears (for recorded bad debt, after
+  `absorbBadDebt` covers it), so the worst a spurious trip can
   do is a temporary, admin-undoable pause — not a permanent freeze.
 - **Discretionary halt (guardian).** Independently, the **GUARDIAN** may call `declareEmergency()`
   for an issue discovered off-chain (no on-chain breach required).
@@ -219,7 +227,7 @@ There is no liquid staking — **every deposit is a locked commitment** measured
   early-exit-with-debt path, and therefore **no exit penalty**.
 
 `lock(uint256 lockDays)` also exists to extend an existing commitment without depositing. Inspect
-with `lockInfoOf(user)`, `timeUntilUnlock(user)`, `maxLockDaysAvailable()`, `boostByDays(days)`,
+with `lockInfoOf(user)` (its `unlockTime` gives the time left), `maxLockDaysAvailable()`, `boostByDays(days)`,
 `effectiveBoostOf(user)`, `effectiveLockDaysOf(user)`, `hasStaleBoost(user)`.
 
 ---

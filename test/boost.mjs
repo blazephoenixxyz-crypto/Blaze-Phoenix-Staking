@@ -204,7 +204,16 @@ await test('B3 registry: every live commitment is tracked, and every exit path d
   chain.warp(80n * 365n * DAY); chain.mine(3);
   await staking.send(keeper, 'liquidate', [carol.hex]);
   ok((await staking.call('isTrackedLocker', [carol.hex])) === false, 'a wiped-out position leaves no ghost registry entry');
-  await mustStaySolvent(staking, 'B3 post-liquidation');
+  // 80 untouched years outgrow the collateral: the loss the reserve could not cover is booked
+  // and still owed, so the book reads short by exactly that amount until someone recapitalises it.
+  const bad = BigInt(await staking.call('totalBadDebt'));
+  const owedNow = await staking.call('owed'), backingNow = await staking.call('backing');
+  ok(bad > 10n ** 10n, 'B3 post-liquidation: the uncovered loss is booked');
+  approx(owedNow, backingNow + bad, 10n ** 10n, 'B3 post-liquidation: owed == backing + uncovered loss');
+  ok((await staking.call('isSolvent')) === false, 'B3 post-liquidation: an uncovered loss reads insolvent');
+  await staking.send(keeper, 'absorbBadDebt', [bad]);
+  eq(await staking.call('totalBadDebt'), 0, 'B3 absorbBadDebt: the loss is recapitalised');
+  await mustStaySolvent(staking, 'B3 post-absorb');
 
   // EXIT 3 — emergencyWithdraw destroys the position
   const st = await setup();
