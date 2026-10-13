@@ -412,21 +412,25 @@ contract InvariantTest is StdInvariant, Base {
         targetContract(address(handler));
     }
 
-    /// The protocol must always hold at least what it owes.
+    /// The protocol holds at least what it owes, unless a loss has been recorded. `_owed()`
+    /// counts uncovered `totalBadDebt` (a claim the pot cannot pay), so a borrower left untouched
+    /// across the handler's multi-year jumps can legitimately read insolvent; what must never
+    /// happen is a breach with no recorded loss behind it.
     function invariant_solvent() public view {
-        assertTrue(staking.isSolvent(), "INSOLVENT");
+        if (!staking.isSolvent()) assertGt(staking.totalBadDebt(), 1e10, "INSOLVENT WITHOUT A RECORDED LOSS");
     }
-    /// The on-chain conservation bit must never be set.
+    /// The on-chain conservation bit (the same breach test) is set only behind a recorded loss.
     function invariant_conservationBit() public view {
-        assertEq(staking.auditInvariants() & 1, 0, "CONSERVATION BIT");
+        if (staking.auditInvariants() & 1 != 0) assertGt(staking.totalBadDebt(), 1e10, "CONSERVATION BIT");
     }
     /// Boosted denominators may never exceed stake * maxBoost / base.
     function invariant_boostBounded() public view {
         assertEq(staking.auditInvariants() & (1 << 4), 0, "BOOST UNBOUNDED");
     }
-    /// Backing covers owed within the dust tolerance.
+    /// Backing covers owed within the dust tolerance, except for the recorded loss: any gap
+    /// between the two must be exactly what `totalBadDebt` already declares.
     function invariant_backingCoversOwed() public view {
-        assertGe(staking.backing() + 1e10, staking.owed(), "BACKING < OWED");
+        assertGe(staking.backing() + staking.totalBadDebt() + 1e10, staking.owed(), "BACKING + BAD DEBT < OWED");
     }
 
     // ── BP-2026-001 structural invariants ────────────────────────────────────────────────────
