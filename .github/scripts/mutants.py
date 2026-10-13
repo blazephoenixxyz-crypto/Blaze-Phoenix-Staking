@@ -302,6 +302,11 @@ M = [
       old="        if (keeper_ == user_) { protocolReserve += keeperBonus; keeperBonus = 0; }",
       new="        if (keeper_ == user_) { protocolReserve += keeperBonus; } // MUTANT",
       teste="test_E_Liquidated_self_reports_bonus_actually_paid"),
+ dict(nome="pure-yield settle: the breach check is deleted (uncollected interest paid at par)",
+      f=F,
+      old="        // stays credited for when the loss is absorbed, or is forfeited to the pro-rata exit.\n        if (_hardBreach()) revert Staking__InvariantBreached();",
+      new="        // stays credited for when the loss is absorbed, or is forfeited to the pro-rata exit.\n        // MUTANT",
+      teste="test_PUREUNCOLL_bookingTxPaysNoUncollectedPureYield"),
 ]
 
 CONTRACTS = ("BlazePhoenixStaking",)

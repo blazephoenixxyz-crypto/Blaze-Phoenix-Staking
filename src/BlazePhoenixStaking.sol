@@ -1503,6 +1503,13 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
         if (u.trackedBoostedPure == 0) return;
         uint256 gross = ML.mulDiv(u.trackedBoostedPure, accPureYieldPerShare, WAD);
         if (gross <= u.pureYieldDebt) return;
+        // PURE-UNCOLL. Pure yield is credited when interest accrues, before `_accrueInterestFor`
+        // learns how much of it a borrower can actually pay; an uncollectible shortfall the
+        // reserve cannot cover lands in `totalBadDebt` and reads as a breach. From then on no
+        // pure yield leaves at par, in any transaction, the one that booked the loss included:
+        // the sweep skips the position (try/catch) and the owner's own call reverts. The claim
+        // stays credited for when the loss is absorbed, or is forfeited to the pro-rata exit.
+        if (_hardBreach()) revert Staking__InvariantBreached();
         uint256 due = gross - u.pureYieldDebt;
         u.pureYieldDebt = gross;
         totalRewardsPaid += due;

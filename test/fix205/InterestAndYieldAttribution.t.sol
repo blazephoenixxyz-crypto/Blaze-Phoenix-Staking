@@ -263,11 +263,11 @@ contract InterestAndYieldAttributionTest is Base {
 
     // PURE-UNCOLL. Oracle: pure stakers can be paid at most the pool share (1 - reserve
     // factor) of the interest that was actually collected from borrowers,
-    // totalInterestAccruedGlobal - totalUncollectedInterest. Today the full slice, including
-    // the uncollectible shortfall, is credited and paid out.
-    // OWNER DECISION: same root as OWED-FCFS (the global slice is debited eagerly, so the
-    // uncollectible part is known only when the position is touched).
-    function test_PUREUNCOLL_documents_pureYieldPaidExceedsCollectedInterest() public {
+    // totalInterestAccruedGlobal - totalUncollectedInterest. Before the fix the keeper's touch
+    // booked the loss and the same transaction's lock window then paid alice 1,455,000 BZPX at
+    // par. `_settlePendingPureYield` now refuses to pay while the book reads a hard breach.
+    // Residual below the clamp: test/hardening/PureYieldNeverFromUncollected.t.sol.
+    function test_PUREUNCOLL_pureYieldPaidNeverExceedsCollectedInterest() public {
         Book memory b = _uncollectibleBook();
         uint256 collected = staking.totalInterestAccruedGlobal() - staking.totalUncollectedInterest();
         uint256 poolShare = collected * 9_700 / 10_000;
@@ -276,6 +276,6 @@ contract InterestAndYieldAttributionTest is Base {
         emit log_named_decimal_uint("pool share of collected  ", poolShare, 18);
         emit log_named_decimal_uint("pure yield paid          ", paid, 18);
         assertGt(staking.totalUncollectedInterest(), 0, "setup: some interest must be uncollectible");
-        assertGt(paid, poolShare + DUST, "documents: pure yield paid exceeds the pool share of collected interest");
+        assertLe(paid, poolShare + DUST, "pure yield paid exceeds the pool share of collected interest");
     }
 }
