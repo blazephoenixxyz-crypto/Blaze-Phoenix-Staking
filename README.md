@@ -100,6 +100,13 @@ balanceOf(contract) + totalBadDebt
 
 The right-hand side is computed by `_owed()`. **Solvency ⇔ `balance ≥ owed`.**
 
+Recorded bad debt is counted in `owed`, never netted out: a loss the protocol reserve could not
+cover is still a claim the contract cannot pay. While any of it is uncovered the protocol reads
+insolvent, the full-value channels (`withdraw`, `claimRewards`, `claimPureYield`, `deposit`,
+`borrow`, `withdrawReserve`) close together, and anyone may either trip the breaker into the
+pro-rata exit or recapitalise the loss with `absorbBadDebt(amount)` (protocol reserve first, then
+the caller's tokens, capped at the uncovered loss; it pays the caller nothing).
+
 This identity is enforced in two complementary ways:
 
 - **Per-transaction (preventive).** Every value-moving entry-point is wrapped in the `conserves`
@@ -118,9 +125,10 @@ This identity is enforced in two complementary ways:
   the protocol, but *only* when the chain itself proves insolvency: it requires `_hardBreach()`
   (`balance + dust < owed`), an objective, un-spoofable on-chain condition. Nobody can lower the
   contract's balance except through flows that lower `owed` by the same amount, and donations only
-  raise it — so the breaker can fire **only on a genuine shortfall** (a real bug/theft or a
-  token-level failure), never on healthy state. It is **reversible**: if the reading was transient,
-  the admin calls `cancelEmergency()` once `_hardBreach()` clears, so the worst a spurious trip can
+  raise it — so the breaker can fire **only on a genuine shortfall** (a real bug/theft, a
+  token-level failure, or recorded bad debt the reserve could not cover), never on healthy state. It is **reversible**: if the reading was transient,
+  the admin calls `cancelEmergency()` once `_hardBreach()` clears (for recorded bad debt, after
+  `absorbBadDebt` covers it), so the worst a spurious trip can
   do is a temporary, admin-undoable pause — not a permanent freeze.
 - **Discretionary halt (guardian).** Independently, the **GUARDIAN** may call `declareEmergency()`
   for an issue discovered off-chain (no on-chain breach required).

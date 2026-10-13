@@ -28,7 +28,7 @@ AREAS = [
     ("liquidation", r"\.liquidate\(|healthFactor|daysToLiquidation|LIQ_THRESHOLD|LIQ_BONUS"),
     ("maintenance windows", r"maintStep|maintenanceBudget|activeBorrowerCount|isTrackedBorrower"),
     ("lock sweep / poke", r"pokeExpiredLock|lockStep|lockSweepBudget|expiredLockScan|getLockers|activeLockerCount|isTrackedLocker|hasStaleBoost|lockInfoOf|effectiveLockDaysOf"),
-    ("emergency / breaker", r"emergencyWithdraw|declareEmergency|cancelEmergency|tripBreaker|emergencyMode|\.pause\(|\.unpause\("),
+    ("emergency / breaker", r"emergencyWithdraw|declareEmergency|cancelEmergency|tripBreaker|absorbBadDebt|emergencyMode|\.pause\(|\.unpause\("),
     ("admin / reserves", r"withdrawReserve|sweepUndistributedEmission|fundEmission|protocolReserve|grantRole|revokeRole|ROLE_"),
     ("views / solvency", r"\.owed\(|\.backing\(|isSolvent|collateralRatio|\.solvency\(|auditInvariants|touchAuditSnapshot|getGlobalStats|getUserInfo|effectiveStakeOf|totalEffectiveStaked|remainingStakeCapacity"),
 ]

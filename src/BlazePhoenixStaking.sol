@@ -54,13 +54,14 @@ import {ReentrancyGuard}            from "@openzeppelin/contracts/utils/Reentran
 ///     │          +  protocolReserve                      // protocol revenue              │
 ///     │          +  (totalRewardDistributed − totalRewardsPaid)  // accrued, not-yet-paid │
 ///     │                                                                                  │
-///     │  `_owed()` is the right-hand side NET of `totalBadDebt` (losses already realised │
-///     │  and recorded). `isSolvent()` ⇔ balance + dust ≥ owed: it detects an UNRECORDED  │
-///     │  shortfall (a bug or a theft), not recorded bad debt, which is published on its  │
-///     │  own as `totalBadDebt`. Every value-moving entry-point is wrapped in `conserves`, │
-///     │  which proves the PER-TX change of the identity is zero (within dust). A bug     │
-///     │  that would let the ledger claim more than the contract holds reverts the whole  │
-///     │  transaction. The protocol reserve absorbs a realised loss before it is booked.  │
+///     │  `_owed()` is the full right-hand side: every claim on the contract, so a loss   │
+///     │  booked as `totalBadDebt` is a shortfall, not a write-off. `isSolvent()` ⇔       │
+///     │  balance + dust ≥ owed fails on recorded bad debt as on an unrecorded one, and   │
+///     │  `absorbBadDebt` recapitalises it. Every value-moving entry-point wears          │
+///     │  `conserves`, which proves the PER-TX change of the identity is zero (within     │
+///     │  dust). A bug that would let the ledger claim more than the contract holds       │
+///     │  reverts the whole transaction. The protocol reserve absorbs a realised loss     │
+///     │  before it is booked.                                                            │
 ///     │                                                                                  │
 ///     │  ANYONE can verify the identity on-chain for free: `solvency()`, `isSolvent()`,  │
 ///     │  `collateralRatio()`. No trust, no oracle, no off-chain indexer required.        │
@@ -315,6 +316,7 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
     event LockExpired        (address indexed user);
     event EmergencyDeclared  (address indexed by, uint256 timestamp, bool permissionless);
     event EmergencyCancelled (address indexed by, uint256 timestamp);
+    event BadDebtAbsorbed    (address indexed by, uint256 fromReserve, uint256 fromCaller);
     event EmergencyWithdrawn (address indexed user, uint256 principal);
 
     // ── Errors ──────────────────────────────────────────────────────────────────────────
@@ -472,6 +474,9 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
         external nonReentrant onlyRole(ROLE_ADMIN) whenNotEmergency conserves
     {
         if (amount_ == 0) revert Staking__ZeroAmount();
+        // Revenue leaves only while every claim is covered; under a breach the reserve goes to
+        // `absorbBadDebt` first.
+        if (_hardBreach()) revert Staking__InvariantBreached();
         amount_ = _min(amount_, protocolReserve);
         protocolReserve -= amount_;
         if (!ML.rawTransfer(bzpx, treasury, amount_)) revert Staking__TransferFailed();
@@ -518,11 +523,13 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
     ///         insolvency. It requires `_hardBreach()` (real BZPX balance + dust < `_owed()`), an
     ///         objective, on-chain, un-spoofable condition: nobody can lower the contract's balance
     ///         except through flows that lower `_owed()` by the same amount, and donations only
-    ///         raise the balance. So this can fire only on a genuine shortfall (a real bug/theft),
-    ///         never on healthy state. It is also REVERSIBLE: if the reading was transient, the
-    ///         admin calls `cancelEmergency()` once `_hardBreach()` clears and the protocol
-    ///         resumes — so the worst a spurious trip can do is a temporary, admin-undoable pause,
-    ///         not a permanent freeze. Cannot move funds.
+    ///         raise the balance. So this can fire only on a genuine shortfall (a real bug, a
+    ///         theft, or recorded bad debt the reserve could not cover), never on healthy state. It
+    ///         is also REVERSIBLE: if the reading was transient, the admin calls
+    ///         `cancelEmergency()` once `_hardBreach()` clears (for recorded bad debt, after
+    ///         `absorbBadDebt` recapitalises it) and the protocol resumes — so the worst a spurious
+    ///         trip can do is a temporary, admin-undoable pause, not a permanent freeze. Cannot
+    ///         move funds.
     function tripBreaker() external {
         if (emergencyMode) revert Staking__EmergencyActive();
         if (!_hardBreach()) revert Staking__NoBreach();
@@ -554,6 +561,25 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
         lastInterestTime = block.timestamp;
         emergencyMode = false; emergencyTrippedAt = 0;
         emit EmergencyCancelled(msg.sender, block.timestamp);
+    }
+
+    /// @notice Recapitalise recorded bad debt. Anyone may call it, paused or in emergency: the
+    ///         protocol reserve covers first (the order every loss path already follows), then
+    ///         up to `amount_` BZPX is pulled from the caller, capped at what is still uncovered.
+    ///         Each covered token lowers `totalBadDebt` and raises the balance (or lowers
+    ///         `protocolReserve`) by the same amount, so the identity is unchanged and `conserves`
+    ///         proves it. It moves nothing out and pays the caller nothing. Once the uncovered
+    ///         loss is back within the dust, `isSolvent()` reads true and `cancelEmergency` passes.
+    function absorbBadDebt(uint256 amount_) external nonReentrant conserves {
+        uint256 bad = totalBadDebt;
+        uint256 fromReserve = _min(bad, protocolReserve);
+        uint256 fromCaller  = _min(amount_, bad - fromReserve);
+        if (fromReserve + fromCaller == 0) revert Staking__ZeroAmount();
+        protocolReserve -= fromReserve;
+        totalBadDebt     = bad - fromReserve - fromCaller;
+        if (fromCaller != 0 && !ML.rawTransferFrom(bzpx, msg.sender, address(this), fromCaller))
+            revert Staking__TransferFailed();
+        emit BadDebtAbsorbed(msg.sender, fromReserve, fromCaller);
     }
 
     /// @notice During emergency, pull your OWN net equity (staked - debt). Debt is netted
@@ -605,7 +631,7 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
         // An under-water exit realises a loss, exactly as a liquidation does. Removing more debt
         // than collateral shrinks the `− totalDebt` term of `_owed()` with nothing to offset it,
         // so the shortfall MUST be recorded here for the identity to survive the exit:
-        //     Δowed = −principal − covered + debt − (badDebt − covered) = 0
+        //     Δ(owed − totalBadDebt) = −principal − covered + debt − (badDebt − covered) = 0
         // This mirrors `_executeLiquidation`, which has always handled the same event correctly.
         if (debt > principal) {
             uint256 badDebt = debt - principal;
@@ -659,6 +685,8 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
         maxDays = _min(maxDays, MAX_LOCK_DAYS);
         if (lockDays_ > maxDays) revert Staking__LockExceedsEmissionEnd();
 
+        // No new money into a pot that cannot cover its claims: it would only fund the shortfall.
+        if (_hardBreach()) revert Staking__InvariantBreached();
         _updateGlobal();
         _settlePendingRewards(msg.sender);
         _settlePendingPureYield(msg.sender);
@@ -718,6 +746,8 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
     {
         if (amount_ == 0) revert Staking__ZeroAmount();
 
+        // Lending out of a short pot pays the borrower at par and shrinks everyone else's share.
+        if (_hardBreach()) revert Staking__InvariantBreached();
         _updateGlobal();
         _settlePendingRewards(msg.sender);
         _settlePendingPureYield(msg.sender);
@@ -815,6 +845,8 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
     }
 
     function claimRewards() external nonReentrant whenNotEmergency conserves {
+        // Same rule as `withdraw`: no full-value payout while the pot cannot cover every claim.
+        if (_hardBreach()) revert Staking__InvariantBreached();
         _updateGlobal();
         _settlePendingRewards(msg.sender);
         _settlePendingPureYield(msg.sender);
@@ -828,6 +860,7 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
         UserInfo storage u = _users[msg.sender];
         if (u.debt != 0) revert Staking__HasDebt();
         if (block.number <= u.depositBlock + MIN_DEPOSIT_BLOCKS) revert Staking__FlashLoanProtection();
+        if (_hardBreach()) revert Staking__InvariantBreached();
         _updateGlobal();
         _settlePendingRewards(msg.sender);
         _settlePendingPureYield(msg.sender);
@@ -1621,14 +1654,15 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
     // ════════════════════════════════════════════════════════════════════════════════════
 
     /// @dev The right-hand side of the Master Conservation Identity: everything the protocol
-    ///      owes to stakers, borrowers' collateral, reserves and accrued-but-unpaid rewards,
-    ///      net of recorded (already-realised) bad debt.
+    ///      owes to stakers, borrowers' collateral, reserves and accrued-but-unpaid rewards.
+    ///      Recorded bad debt is NOT netted out: those claims are still owed, and the identity
+    ///      makes `owed == balance + totalBadDebt`, so any uncovered loss above the dust reads
+    ///      as a breach. Netting it hid an insolvency the claimants then paid first-come-first-
+    ///      served: `isSolvent()` read true while the last staker could not exit.
     function _owed() internal view returns (uint256 owed_) {
         uint256 ledgerSum = totalStaked + rewardReserve + protocolReserve;
         uint256 ledgerNet = _sub0(ledgerSum, totalDebt);
-        uint256 acc = _sub0(totalRewardDistributed, totalRewardsPaid);
-        owed_ = ledgerNet + acc;
-        owed_ = _sub0(owed_, totalBadDebt);   // recorded losses are netted out
+        owed_ = ledgerNet + _sub0(totalRewardDistributed, totalRewardsPaid);
     }
 
     /// @dev Accrued-but-unpaid reward / pure-yield still owed to positions. paid <= distributed

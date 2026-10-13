@@ -234,19 +234,31 @@ contract InterestAndYieldAttributionTest is Base {
     }
 
     // OWED-FCFS. Oracle: if the protocol reports itself solvent, every pure staker can exit
-    // with principal and credited yield. Today the uncollectible interest credited as pure
-    // yield is netted out of `_owed()` through `totalBadDebt`, so `isSolvent()` stays true
-    // while the claims exceed the backing and are paid first-come-first-served.
-    // OWNER DECISION: see the pull request (un-net uncovered bad debt from `_owed()`, or
-    // socialise it); either changes when `isSolvent()` reads false and who bears the loss.
-    function test_OWEDFCFS_documents_solventFlagWhilePureStakerCannotExit() public {
+    // with principal and credited yield. Uncovered bad debt is a claim the contract cannot pay,
+    // so `_owed()` counts it: `isSolvent()` reads false, the full-value exit closes for everyone
+    // (no first-come-first-served), and the permissionless breaker opens the pro-rata exit.
+    // Before the fix `_owed()` netted `totalBadDebt` out, the flag read true, the first pure
+    // staker exited whole and the second could not exit at all.
+    function test_OWEDFCFS_uncoveredLossReadsInsolventAndExitIsProRata() public {
         Book memory b = _uncollectibleBook();
         assertGt(b.badDebt, 0, "setup: uncollectible interest must be recorded as bad debt");
         assertGt(b.grossClaims, b.backingPre, "setup: pure claims exceed backing");
-        // Documented: the flag reads solvent, the first pure staker exits whole, the second cannot.
-        assertTrue(b.solventBeforeBob, "documents: isSolvent() reads true");
-        assertTrue(b.aliceExit, "documents: the first pure staker exits");
-        assertFalse(b.bobExit, "documents: the second pure staker cannot exit");
+        assertFalse(b.solventPost, "uncovered bad debt reads insolvent");
+        assertFalse(b.aliceExit, "no full-value exit for the first staker");
+        assertFalse(b.bobExit, "nor for the second");
+        vm.prank(keeper);
+        staking.tripBreaker();
+        uint256 pot = staking.backing();
+        uint256 a0 = token.balanceOf(alice);
+        uint256 bo0 = token.balanceOf(bob);
+        vm.prank(alice);
+        staking.emergencyWithdraw();
+        vm.prank(bob);
+        staking.emergencyWithdraw();
+        uint256 pa = token.balanceOf(alice) - a0;
+        uint256 pb = token.balanceOf(bob) - bo0;
+        assertApproxEqAbs(pa, pb, 1e10, "equal principals exit equal, whatever the order");
+        assertLe(pa + pb, pot, "never more than the pot");
     }
 
     // PURE-UNCOLL. Oracle: pure stakers can be paid at most the pool share (1 - reserve
