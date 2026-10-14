@@ -4,6 +4,8 @@ pragma solidity 0.8.28;
 // =============================================================================
 //  FULL-SURFACE INVARIANTS — INV-16 … INV-20, pinned by name.
 //
+//  Conservation is checked after every call in the sequence, not once at the end of the run.
+//
 //  Why this file exists alongside the invariant block in BlazePhoenixStaking.t.sol:
 //
 //  1. COVERAGE. INV-16 claims that EVERY value-moving entry point conserves.

@@ -2,6 +2,8 @@
 
 Two complementary suites.
 
+A disclosed report leaves a regression test behind, and this file keeps the name of whoever found it.
+
 **Security credits.** `boost.mjs` and the `test_StaleBoost_*` / `test_stress_lockerRegistryFlood_*`
 Foundry cases exist because of **BP-2026-001 — "Stale Boost Persistence in Pure Stakers"**,
 disclosed on 28 July 2026 by **[NetGakarot](https://github.com/NetGakarot)** ("Gakarot").

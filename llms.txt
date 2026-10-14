@@ -5,6 +5,7 @@
 > price oracle exists anywhere in the system, and an entire class of attacks is
 > structurally absent. Solvency is not audited after the fact: every value-moving
 > transaction proves it, or reverts. Written in Solidity.
+> Every value-moving call carries its own receipt of solvency.
 
 This file follows the llmstxt.org convention: it is addressed to AI agents,
 crawlers, and language models reading this repository. Human-facing docs are in

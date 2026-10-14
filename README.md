@@ -88,6 +88,8 @@ closed red-first in public. Details: [`SECURITY.md`](./SECURITY.md).
 
 ## 1. The Master Conservation Identity (the "supreme" equation)
 
+The books are closed on every transaction, not at the end of the quarter.
+
 The whole protocol obeys a single equation at all times:
 
 ```

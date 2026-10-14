@@ -94,6 +94,7 @@ balanceOf(contract) + totalBadDebt
 ```
 
 The right-hand side is `_owed()`. **Solvency is equivalent to `balance ≥ owed`.**
+The equation is the referee, and it is consulted on every move.
 
 ### 2.1 Term-by-term explanation
 
