@@ -573,6 +573,7 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
     ///
     ///         `_updateGlobal()` runs first so every token that is still legitimately payable is
     ///         settled into the accumulator before the remainder is treated as undistributable.
+    ///         Refused when the book would read a hard breach after it.
     function sweepUndistributedEmission()
         external nonReentrant onlyRole(ROLE_ADMIN) whenNotEmergency conserves
     {
@@ -582,6 +583,12 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
         if (residue == 0) revert Staking__ZeroAmount();
         rewardReserve = 0;
         if (!ML.rawTransfer(bzpx, treasury, residue)) revert Staking__TransferFailed();
+        // Same rule as `withdrawReserve`, read AFTER the sweep: the residue sits in `_owed()` and in
+        // the pot, and once a hidden loss has pushed `totalStaked + protocolReserve` below
+        // `totalDebt` it is what keeps the pot covering every claim, so taking it opens a breach on
+        // a book that read solvent. A sweep never shrinks the deficit, so the same read also refuses
+        // a sweep out of a book already in breach.
+        if (_hardBreach()) revert Staking__InvariantBreached();
         emit UndistributedEmissionSwept(treasury, residue);
     }
 
@@ -776,7 +783,7 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
         // No new money into a pot that cannot cover its claims: it would only fund the shortfall.
         if (_hardBreach()) revert Staking__InvariantBreached();
         _updateGlobal();
-        _settlePendingRewards(msg.sender);
+        _settlePendingRewards(msg.sender, 0);
         _settlePendingPureYield(msg.sender);
         _accrueInterestFor(msg.sender);
         _processLockExpiry(msg.sender);
@@ -842,7 +849,7 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
         // Lending out of a short pot pays the borrower at par and shrinks everyone else's share.
         if (_hardBreach()) revert Staking__InvariantBreached();
         _updateGlobal();
-        _settlePendingRewards(msg.sender);
+        _settlePendingRewards(msg.sender, 0);
         _settlePendingPureYield(msg.sender);
         _accrueInterestFor(msg.sender);
         _processLockExpiry(msg.sender);
@@ -879,7 +886,7 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
         UserInfo storage u = _users[msg.sender];
         if (u.debt == 0) revert Staking__NoDebt();
 
-        _settlePendingRewards(msg.sender);
+        _settlePendingRewards(msg.sender, 0);
         _settlePendingPureYield(msg.sender);
         _accrueInterestFor(msg.sender);
         _processLockExpiry(msg.sender);
@@ -917,7 +924,7 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
         // breach the only fair exit is the pro-rata one, so the normal channel closes and the
         // permissionless `tripBreaker` opens `emergencyWithdraw` with its haircut.
         if (_hardBreach()) revert Staking__InvariantBreached();
-        _settlePendingRewards(msg.sender);
+        _settlePendingRewards(msg.sender, 0);
         _settlePendingPureYield(msg.sender);
         _processLockExpiry(msg.sender);
 
@@ -948,7 +955,7 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
         // Same rule as `withdraw`: no full-value payout while the pot cannot cover every claim.
         if (_hardBreach()) revert Staking__InvariantBreached();
         _updateGlobal();
-        _settlePendingRewards(msg.sender);
+        _settlePendingRewards(msg.sender, 0);
         _settlePendingPureYield(msg.sender);
         _accrueInterestFor(msg.sender);
         _processLockExpiry(msg.sender);
@@ -964,7 +971,7 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
         if (block.number <= u.depositBlock + MIN_DEPOSIT_BLOCKS) revert Staking__FlashLoanProtection();
         if (_hardBreach()) revert Staking__InvariantBreached();
         _updateGlobal();
-        _settlePendingRewards(msg.sender);
+        _settlePendingRewards(msg.sender, 0);
         _settlePendingPureYield(msg.sender);
         _resync(msg.sender);
         _autoMaintain(msg.sender);
@@ -993,7 +1000,7 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
         if (lockDays_ > maxDays) revert Staking__LockExceedsEmissionEnd();
 
         _updateGlobal();
-        _settlePendingRewards(msg.sender);
+        _settlePendingRewards(msg.sender, 0);
         _settlePendingPureYield(msg.sender);
         _accrueInterestFor(msg.sender);
 
@@ -1073,7 +1080,8 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
     //  LIQUIDATION — permissionless, keeper-incentivised, no global iteration
     // ════════════════════════════════════════════════════════════════════════════════════
     /// @notice Liquidate `user_` when its debt is ≥ LIQ_THRESHOLD % of its stake, measured after
-    ///         accruing its interest. Its pending rewards are paid out, its debt is cleared,
+    ///         accruing its interest. Its pending rewards are paid out (or deferred, when the loss
+    ///         this liquidation books leaves the pot short: EMIS-DEFER), its debt is cleared,
     ///         debt + LIQ_BONUS_BPS is seized from its stake (capped at the stake), the bonus goes
     ///         to the caller and any leftover stays staked for the owner. Debt the stake cannot
     ///         cover is taken from `protocolReserve` first and only the rest is booked as
@@ -1094,12 +1102,16 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
     }
 
     function _executeLiquidation(address user_, address keeper_) internal returns (uint256 keeperBonus) {
-        _settlePendingRewards(user_);    // pay the position's earned emission before zeroing
-        _settlePendingPureYield(user_);
-
         UserInfo storage u = _users[user_];
         uint256 stake = u.staked;
         uint256 debt  = u.debt;
+
+        // Settle the earned emission before zeroing, against the pot AFTER the loss this
+        // liquidation books below: the uncovered part of `debt − stake` (a bad-debt seizure pays
+        // no bonus, so the reserve is untouched until then). Read before it, the deferral saw a
+        // solvent book and paid at par out of the pot the same transaction leaves short.
+        _settlePendingRewards(user_, _sub0(_sub0(debt, stake), protocolReserve));
+        _settlePendingPureYield(user_);
 
         uint256 bonus  = ML.mulDiv(debt, LIQ_BONUS_BPS, 10_000);
         uint256 seized = debt + bonus;
@@ -1287,7 +1299,7 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
         } else {
             // Full poke — identical to `who` touching their own position, so their reward
             // weight (tracked boost) never goes stale relative to their accrued stake.
-            _settlePendingRewards(who);
+            _settlePendingRewards(who, 0);
             _settlePendingPureYield(who);
             _resync(who);
             unchecked { ++_maintCursor; }
@@ -1313,7 +1325,7 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
 
         // Settle FIRST: everything earned up to this instant was genuinely earned at the boosted
         // weight, and is paid at that weight. Only the FUTURE is re-priced.
-        _settlePendingRewards(who);
+        _settlePendingRewards(who, 0);
         _settlePendingPureYield(who);
         _accrueInterestFor(who);
 
@@ -1501,7 +1513,9 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
     }
 
     // ── settle (CEI: count, write debt, then pay) ─────────────────────────────────────────
-    function _settlePendingRewards(address user_) internal {
+    /// @param loss_ an uncovered loss the calling transaction books after this settle (0 everywhere
+    ///        but `_executeLiquidation`): the breach is read on the pot as it will be after it.
+    function _settlePendingRewards(address user_, uint256 loss_) internal {
         UserInfo storage u = _users[user_];
         uint256 due = _rewardDeferred[user_];
         uint256 gross = ML.mulDiv(u.trackedBoostedEffective, accRewardPerShare, WAD);
@@ -1513,7 +1527,11 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
         // it defers instead of reverting: the slice moves out of the accumulator into the
         // position's credit, which a `_resync` cannot reprice, and the first settle after the
         // breach clears pays it. Nothing is counted as paid, so `_owed()` still carries it.
-        if (_hardBreach()) { _rewardDeferred[user_] = due; return; }
+        // `_hardBreach()` with the caller's pending loss on the owed side (a loss raises `_owed()`
+        // by its uncovered part and leaves the balance where it is).
+        if (ML.rawBalanceOf(bzpx, address(this)) + CONSERVATION_DUST < _owed() + loss_) {
+            _rewardDeferred[user_] = due; return;
+        }
         _rewardDeferred[user_] = 0;
         totalRewardsPaid += due;
         emit RewardClaimed(user_, due);

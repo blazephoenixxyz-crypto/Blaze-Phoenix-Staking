@@ -17,6 +17,14 @@ contract EmissionDeferredUnderBreachTest is Base {
     address internal dave = address(0xD4);
 
     function _breachedBook() internal {
+        _untouchedBook();
+        vm.prank(keeper);
+        staking.liquidate(bob);
+        assertFalse(staking.isSolvent(), "setup: hard breach");
+        assertGt(staking.totalBadDebt(), DUST, "setup: an uncovered loss is recorded");
+    }
+
+    function _untouchedBook() internal {
         _fund(dave);
         vm.prank(admin);
         staking.fundEmission(2_000_000e18);
@@ -37,10 +45,26 @@ contract EmissionDeferredUnderBreachTest is Base {
         staking.borrow(500e18);
         vm.warp(block.timestamp + 100 days + 60 * 365 days);
         vm.roll(block.number + 30);
+    }
+
+    /// The liquidation that BOOKS the uncovered loss reads the pot after that loss. The book reads
+    /// solvent before; seizing bob records a loss the reserve cannot cover, so the same transaction
+    /// leaves the pot short and pays bob none of his emission: it stays credited.
+    /// Red at d9b9b16: bob was paid 274,188e18 at par and the same tx booked 162.5e18 of bad debt.
+    function test_EMISDEFER_liquidationThatBooksTheLossReadsThePotAfterIt() public {
+        _untouchedBook();
+        assertTrue(staking.isSolvent(), "setup: the book reads solvent before the liquidation");
+        uint256 pend = staking.pendingRewards(bob);
+        assertGt(pend, DUST, "setup: bob has earned emission");
+        uint256 paidBefore = staking.totalRewardsPaid();
+        uint256 b0 = token.balanceOf(bob);
         vm.prank(keeper);
         staking.liquidate(bob);
-        assertFalse(staking.isSolvent(), "setup: hard breach");
-        assertGt(staking.totalBadDebt(), DUST, "setup: an uncovered loss is recorded");
+        assertFalse(staking.isSolvent(), "setup: the liquidation left the pot short");
+        assertGt(staking.totalBadDebt(), DUST, "setup: the loss is recorded");
+        assertEq(token.balanceOf(bob), b0, "emission paid at par by the tx that left the pot short");
+        assertEq(staking.totalRewardsPaid(), paidBefore, "no emission counted as paid");
+        assertGe(staking.pendingRewards(bob), pend, "the earned emission stays credited");
     }
 
     function test_EMISDEFER_repayUnderBreachPaysNoEmissionAndKeepsTheCredit() public {

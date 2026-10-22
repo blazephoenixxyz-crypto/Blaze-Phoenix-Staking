@@ -527,7 +527,9 @@ The programme hard-closes after 8 full periods: by then 255/256 of the budget
 (179,296,875 BZPX) is out and the running rate is below 0.8% of the initial
 one, so the close is a fade into real yield (borrow interest + DEX fee-share),
 not a cliff. The exact residue — `180M >> 8 = 703,125 BZPX` — is recoverable to
-the treasury via `sweepUndistributedEmission`, pro-protocol, never pro-user.
+the treasury via `sweepUndistributedEmission`, pro-protocol, never pro-user, and only
+while the contract still reads solvent after the sweep: a residue the pot needs to cover what it
+owes stays in the pot.
 
 Why halving instead of linear: a flat schedule ends abruptly, and the
 mercenary-capital exodus at linear cliffs is well documented; a halving tail
@@ -621,7 +623,8 @@ transfer into it.
 While the contract reads breached, emission is not paid at par from the short pot by the
 paths that stay open (`repay`, `liquidate`, the lock pokes): the amount a position earned is
 kept as a deferred credit, still shown by `pendingRewards`, and paid by the first settlement
-after the breach clears.
+after the breach clears. A liquidation reads the breach after the loss it records, so the
+liquidation that opens a breach defers the liquidated position's emission too.
 
 In a **breached** emergency the contract may physically hold less than the sum of
 net equities. Paying full equity first-come-first-served would let early exiters

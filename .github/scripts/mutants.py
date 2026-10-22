@@ -320,7 +320,7 @@ M = [
  # ── EMIS-DEFER: no emission at par under a hard breach (test/hardening/EmissionDeferredUnderBreach.t.sol)
  dict(nome="emission settle: the breach deferral is deleted (emission paid at par from a short pot)",
       f=F,
-      old="        if (_hardBreach()) { _rewardDeferred[user_] = due; return; }\n",
+      old="        if (ML.rawBalanceOf(bzpx, address(this)) + CONSERVATION_DUST < _owed() + loss_) {\n            _rewardDeferred[user_] = due; return;\n        }\n",
       new="        // MUTANT\n",
       teste="test_EMISDEFER_repayUnderBreachPaysNoEmissionAndKeepsTheCredit"),
  dict(nome="emission settle: a paid deferred credit is not cleared (paid twice)",
@@ -365,8 +365,30 @@ M = [
       old="        uint256 ledgerNet = _sub0(ledgerSum, totalDebt);\n        owed_ = ledgerNet + _sub0(totalRewardDistributed, totalRewardsPaid);",
       new="        owed_ = _sub0(ledgerSum + _sub0(totalRewardDistributed, totalRewardsPaid), totalDebt); // MUTANT",
       teste="test_OWEDREAD_unbookedLossReadsAsABreachBoundedByTheRealDeficit"),
+ # ── EMIS-DEFER at liquidation: the settle reads the pot after the loss it books (test/hardening/EmissionDeferredUnderBreach.t.sol)
+ dict(nome="_executeLiquidation: the emission settle ignores the loss the liquidation books",
+      f=F,
+      old="        _settlePendingRewards(user_, _sub0(_sub0(debt, stake), protocolReserve));",
+      new="        _settlePendingRewards(user_, 0); // MUTANT",
+      teste="test_EMISDEFER_liquidationThatBooksTheLossReadsThePotAfterIt"),
+ # ── TERM-DISTRESS: the withdraw site of _debitStaked and the shared end state (test/hardening/TerminalDistressOrdering.t.sol)
+ dict(nome="withdraw: the stake debit saturates at zero instead of carrying the overdraw",
+      f=F,
+      old="        _debitStaked(amount_);",
+      new="        totalStaked = _sub0(totalStaked, amount_); // MUTANT",
+      teste="test_TERMDISTRESS_pureStakerWithdrawPastTotalStakedCarriesTheOverdraw"),
+ dict(nome="maintStep: the borrower is not accrued before the liquidatable check",
+      f=F,
+      old="        _accrueInterestFor(who);\n        if (_isLiquidatable(_users[who])) {",
+      new="        if (_isLiquidatable(_users[who])) { // MUTANT",
+      teste="test_TERMDISTRESS_neutralTouchAndSeizureSucceedWhenTheUnderWaterSideIsSeizedFirst"),
+ # ── SWEEP-SOLVENT: the residue leaves only from a book that reads solvent after it (test/hardening/EmissionSweepKeepsTheBookSolvent.t.sol)
+ dict(nome="sweepUndistributedEmission: the post-sweep breach check is deleted",
+      f=F,
+      old="        if (_hardBreach()) revert Staking__InvariantBreached();\n        emit UndistributedEmissionSwept",
+      new="        // MUTANT\n        emit UndistributedEmissionSwept",
+      teste="test_SWEEP_residueThatCoversTheClaimsStaysInThePot"),
 ]
-
 CONTRACTS = ("BlazePhoenixStaking",)
 
 

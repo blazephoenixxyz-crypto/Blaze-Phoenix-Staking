@@ -37,14 +37,27 @@ contract TerminalDistressOrderingTest is Base {
         vm.warp(block.timestamp + yearsAhead * 365 days);
     }
 
-    function test_TERMDISTRESS_neutralTouchAndSeizureSucceedWhenTheUnderWaterSideIsSeizedFirst() public {
-        _book(100);
-        uint256 snap = vm.snapshotState();
-        // A neutral touch whose maintenance window reaches bob first.
-        vm.prank(keeper);
-        staking.claimRewards();
-        vm.revertToState(snap);
-        // The direct seizure of bob first, then carol.
+    /// Every ledger term, every party's balance and both positions: the end state the orders share.
+    function _endState() internal view returns (uint256[] memory e) {
+        e = new uint256[](16);
+        e[0] = staking.totalStaked();
+        e[1] = staking.stakedOverdraw();
+        e[2] = staking.totalBadDebt();
+        e[3] = staking.protocolReserve();
+        e[4] = staking.totalDebt();
+        e[5] = staking.totalRewardsPaid();
+        e[6] = staking.totalUncollectedInterest();
+        e[7] = staking.backing();
+        e[8] = staking.owed();
+        e[9] = token.balanceOf(keeper);
+        e[10] = token.balanceOf(bob);
+        e[11] = token.balanceOf(carol);
+        (e[12], e[13],,,,,,,,,,,,) = staking.getUserInfo(bob);
+        (e[14], e[15],,,,,,,,,,,,) = staking.getUserInfo(carol);
+    }
+
+    /// The direct seizure, bob (the under-water side of the overdraw) first, then carol.
+    function _bobFirst() internal returns (uint256[] memory) {
         vm.prank(keeper);
         staking.liquidate(bob);
         assertGt(staking.stakedOverdraw(), 0, "setup: seizing bob first overdrew totalStaked");
@@ -53,16 +66,67 @@ contract TerminalDistressOrderingTest is Base {
         assertEq(staking.stakedOverdraw(), 0, "carol's attribution settled the overdraw");
         assertFalse(staking.isTrackedBorrower(bob), "bob closed");
         assertFalse(staking.isTrackedBorrower(carol), "carol closed");
+        assertTrue(staking.isSolvent(), "the reserve covered the loss");
+        return _endState();
+    }
+
+    function test_TERMDISTRESS_neutralTouchAndSeizureSucceedWhenTheUnderWaterSideIsSeizedFirst() public {
+        _book(100);
+        uint256 snap = vm.snapshotState();
+        // A neutral touch whose maintenance window reaches bob first.
+        vm.prank(keeper);
+        staking.claimRewards();
+        uint256[] memory touched = _endState();
+        vm.revertToState(snap);
+        assertEq(touched, _bobFirst(), "the neutral touch reaches the end state of the direct seizure");
     }
 
     function test_TERMDISTRESS_liquidatingTheOverWaterPositionFirstRestoresLiveness() public {
         _book(100);
+        uint256 snap = vm.snapshotState();
+        uint256[] memory bobFirst = _bobFirst();
+        vm.revertToState(snap);
         vm.prank(keeper);
         staking.liquidate(carol);
         assertGt(staking.totalUncollectedInterest(), 0, "setup: carol's excess must be restored");
         vm.prank(keeper);
         staking.claimRewards();
         assertFalse(staking.isTrackedBorrower(carol), "carol closed");
+        assertEq(_endState(), bobFirst, "carol first reaches the end state of bob first");
+    }
+
+    /// The withdraw site of `_debitStaked`. A pure staker's exit in the clamped regime: carol's
+    /// interest has outgrown her stake and is not attributed yet, so `totalStaked` sits below
+    /// alice's stake while the emission residue left after `emissionEnd` (the 2^-8 tail) keeps
+    /// `totalStaked + rewardReserve + protocolReserve >= totalDebt`, i.e. the book reads solvent and
+    /// the withdraw door is open. The debit crosses zero and the excess is carried in
+    /// `stakedOverdraw`. Paused, so the maintenance window does not attribute carol in the same tx
+    /// and the carried overdraw is observable. A saturating debit there drops the excess from the
+    /// identity and `conserves` reverts the exit.
+    function test_TERMDISTRESS_pureStakerWithdrawPastTotalStakedCarriesTheOverdraw() public {
+        vm.prank(admin);
+        staking.fundEmission(180_000_000e18);
+        vm.prank(alice);
+        staking.deposit(10_000e18, 90);
+        vm.prank(carol);
+        staking.deposit(STAKE, 90);
+        vm.roll(block.number + 11);
+        uint256 maxC = staking.maxBorrowOf(carol);
+        vm.prank(carol);
+        staking.borrow(maxC);
+        vm.roll(block.number + 11);
+        vm.warp(block.timestamp + 58 * 365 days);
+        vm.startPrank(admin);
+        staking.grantRole(keccak256("GUARDIAN_ROLE"), admin);
+        staking.pause();
+        vm.stopPrank();
+        assertTrue(staking.isSolvent(), "setup: the book reads solvent, the withdraw door is open");
+        uint256 b0 = token.balanceOf(alice);
+        vm.prank(alice);
+        staking.withdraw(10_000e18);
+        assertGe(token.balanceOf(alice) - b0, 10_000e18, "alice exits with her stake");
+        assertEq(staking.totalStaked(), 0, "setup: the debit crossed zero");
+        assertGt(staking.stakedOverdraw(), 0, "the excess is carried, not dropped");
     }
 
     /// The healthy horizon of the same book does not enter the regime.

@@ -4,8 +4,8 @@ Which areas of the contract the Foundry suite exercises, on which axis, and wher
 Rows are areas (groups of entry points and internal mechanisms); columns are the 24 axes below.
 Each cell is the **number of tests** that exercise that area on that axis, measured by grep.
 
-Measured at `cedd80d` plus the assurance and hardening tests of this branch: **253 tests in 31
-`.t.sol` files**.
+Re-measured on `fix-staking-1022` (base `d9b9b16` plus the emission-settle, terminal-distress and sweep
+tests of the follow-up commit): **288 tests in 41 `.t.sol` files**.
 Regenerate with:
 
 ```bash
@@ -81,20 +81,20 @@ zero is a fact about the suite and the place to look first.
 
 | area | P | A | D | V | Q | S | G | T | E | Y | M | I | H | R | Z | K | W | O | X | C | N | U | L | J |
 |---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
-| deposit / top-up / lock | - | 16 | 26 | 26 | 18 | 2 | 36 | 116 | 21 | 40 | 28 | 11 | 3 | - | - | 12 | 26 | 30 | **0** | 54 | 46 | **0** | - | - |
-| withdraw | - | 1 | 1 | 1 | 3 | 1 | 9 | 13 | 1 | 5 | 8 | **0** | **0** | - | - | 1 | 1 | **0** | **0** | 4 | 1 | **0** | - | - |
-| borrow / repay | - | 4 | 16 | 14 | 13 | 1 | 12 | 69 | 12 | 22 | 9 | 5 | 3 | - | - | 3 | 14 | 16 | **0** | 26 | 34 | **0** | - | - |
-| interest | - | **0** | 2 | 1 | 5 | **0** | **0** | 10 | 4 | 1 | **0** | **0** | **0** | - | - | 1 | 1 | 5 | **0** | 2 | 11 | **0** | - | - |
-| emission / rewards | - | 8 | 20 | 15 | 12 | 2 | 20 | 62 | 9 | 23 | 14 | 3 | 1 | - | - | 21 | 15 | 13 | **0** | 50 | 28 | **0** | - | - |
-| pure yield | - | 2 | 1 | 1 | 6 | 1 | 3 | 15 | 2 | 5 | 2 | 2 | 1 | - | - | 1 | 1 | 4 | **0** | 6 | 12 | **0** | - | - |
-| liquidation | - | 1 | 2 | 1 | 2 | **0** | 6 | 11 | 3 | 5 | 4 | 2 | **0** | - | - | **0** | 1 | **0** | **0** | 3 | 6 | **0** | - | - |
-| maintenance windows | - | 3 | 6 | 1 | 3 | **0** | 6 | 13 | **0** | 3 | 6 | **0** | **0** | - | - | 1 | 1 | 4 | **0** | 2 | 3 | **0** | - | - |
-| lock sweep / poke | - | 17 | 11 | 1 | **0** | **0** | 12 | 23 | 2 | 10 | 10 | 4 | **0** | - | - | 2 | 1 | 6 | **0** | 8 | 8 | **0** | - | - |
-| emergency / breaker | - | 5 | 5 | 27 | 1 | 2 | 40 | 26 | 6 | 87 | 15 | 2 | 1 | - | - | 2 | 29 | 10 | **0** | 42 | 12 | **0** | - | - |
-| admin / reserves | - | 6 | 12 | 27 | 7 | 1 | 15 | 54 | 9 | 37 | 9 | 2 | 2 | - | - | 11 | 29 | 17 | **0** | 67 | 24 | **0** | - | - |
-| views / solvency | - | 7 | 15 | 16 | 8 | 6 | 11 | 53 | 4 | 23 | 9 | 4 | 1 | - | - | 2 | 16 | 15 | **0** | 26 | 26 | **0** | - | - |
+| deposit / top-up / lock | - | 19 | 29 | 28 | 18 | 5 | 44 | 143 | 22 | 51 | 39 | 12 | 3 | - | - | 12 | 28 | 30 | **0** | 64 | 52 | **0** | - | - |
+| withdraw | - | 1 | 1 | 2 | 3 | 2 | 10 | 17 | 2 | 6 | 9 | **0** | **0** | - | - | 1 | 2 | **0** | **0** | 5 | 2 | **0** | - | - |
+| borrow / repay | - | 5 | 18 | 16 | 13 | 4 | 15 | 89 | 12 | 32 | 12 | 6 | 3 | - | - | 3 | 16 | 16 | **0** | 34 | 39 | **0** | - | - |
+| interest | - | 1 | 2 | 5 | 5 | **0** | **0** | 16 | 4 | 4 | **0** | **0** | **0** | - | - | 1 | 2 | 5 | **0** | 4 | 15 | **0** | - | - |
+| emission / rewards | - | 9 | 22 | 16 | 12 | 5 | 23 | 77 | 9 | 29 | 21 | 4 | 1 | - | - | 21 | 16 | 13 | **0** | 56 | 32 | **0** | - | - |
+| pure yield | - | 3 | 1 | 1 | 6 | 1 | 4 | 19 | 2 | 6 | 3 | 2 | 1 | - | - | 1 | 1 | 4 | **0** | 6 | 13 | **0** | - | - |
+| liquidation | - | 1 | 5 | 1 | 2 | **0** | 5 | 16 | 3 | 9 | 3 | 2 | **0** | - | - | **0** | 1 | **0** | **0** | 6 | 8 | **0** | - | - |
+| maintenance windows | - | 3 | 7 | 1 | 3 | **0** | 6 | 17 | **0** | 5 | 6 | **0** | **0** | - | - | 1 | 1 | 4 | **0** | 3 | 6 | **0** | - | - |
+| lock sweep / poke | - | 20 | 13 | 1 | **0** | **0** | 12 | 26 | 2 | 10 | 10 | 4 | **0** | - | - | 2 | 1 | 6 | **0** | 8 | 9 | **0** | - | - |
+| emergency / breaker | - | 5 | 8 | 29 | 1 | 5 | 42 | 37 | 6 | 99 | 20 | 3 | 1 | - | - | 2 | 31 | 10 | **0** | 48 | 15 | **0** | - | - |
+| admin / reserves | - | 6 | 12 | 29 | 7 | 4 | 19 | 70 | 9 | 42 | 17 | 3 | 2 | - | - | 11 | 31 | 17 | **0** | 75 | 28 | **0** | - | - |
+| views / solvency | - | 8 | 18 | 20 | 8 | 7 | 18 | 74 | 5 | 32 | 17 | 5 | 1 | - | - | 2 | 17 | 15 | **0** | 33 | 34 | **0** | - | - |
 
-288 cells: 60 without object, 228 measured, **44 empty**.
+288 cells: 60 without object, 228 measured, **43 empty**.
 
 ## 5. Cells ordered empty-first
 
@@ -108,12 +108,11 @@ zero is a fact about the suite and the place to look first.
 The events axis (E), empty at `cedd80d`, is now covered by `test/assurance/EventPayloads.t.sol`
 except in the maintenance-windows area.
 
-### 5.2 Area cells empty (20 cells) — the first places to look
+### 5.2 Area cells empty (19 cells) — the first places to look
 
 | cell | reading |
 |---|---|
 | G · interest, M · interest | no interest-area test asserts a refusal |
-| A · interest | no interest test iterates a registry or batch |
 | S · interest, S · liquidation, S · maintenance windows, S · lock sweep / poke | no reentrancy / hook test in these areas |
 | I · interest, I · withdraw, I · maintenance windows | no parity- or mirror-named test |
 | H · withdraw, H · interest, H · liquidation, H · maintenance windows, H · lock sweep / poke | no test text records a fix commit or pre-fix state |
@@ -124,17 +123,14 @@ except in the maintenance-windows area.
 
 ### 5.3 Thinnest non-empty cells (count 1 and 2)
 
-- **1** (32): A·withdraw, D·withdraw, V·withdraw, S·withdraw, E·withdraw, K·withdraw, W·withdraw,
-  N·withdraw, S·borrow / repay, V·interest, Y·interest, K·interest, W·interest, H·emission /
-  rewards, D·pure yield, V·pure yield, S·pure yield, H·pure yield, K·pure yield, W·pure yield,
-  A·liquidation, V·liquidation, W·liquidation, V·maintenance windows, K·maintenance windows,
-  W·maintenance windows, V·lock sweep / poke, W·lock sweep / poke, Q·emergency / breaker,
-  H·emergency / breaker, S·admin / reserves, H·views / solvency
-- **2** (20): S·deposit / top-up / lock, D·interest, C·interest, S·emission / rewards, A·pure yield,
-  E·pure yield, M·pure yield, I·pure yield, D·liquidation, Q·liquidation, I·liquidation,
-  C·maintenance windows, E·lock sweep / poke, K·lock sweep / poke, S·emergency / breaker,
-  I·emergency / breaker, K·emergency / breaker, I·admin / reserves, H·admin / reserves, K·views /
+- **1** (23): A·withdraw, D·withdraw, K·withdraw, A·interest, K·interest, H·emission / rewards,
+  D·pure yield, V·pure yield, S·pure yield, H·pure yield, K·pure yield, W·pure yield, A·liquidation,
+  V·liquidation, W·liquidation, V·maintenance windows, K·maintenance windows, W·maintenance windows,
+  V·lock sweep / poke, W·lock sweep / poke, Q·emergency / breaker, H·emergency / breaker, H·views /
   solvency
+- **2** (16): V·withdraw, S·withdraw, E·withdraw, W·withdraw, N·withdraw, D·interest, W·interest,
+  E·pure yield, I·pure yield, Q·liquidation, I·liquidation, E·lock sweep / poke, K·lock sweep /
+  poke, K·emergency / breaker, H·admin / reserves, K·views / solvency
 
 The full ordering (every count) is printed by the script.
 
