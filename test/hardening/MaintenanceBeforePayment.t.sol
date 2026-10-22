@@ -94,6 +94,26 @@ contract MaintenanceBeforePaymentTest is Base {
         staking.withdraw(1e18);
     }
 
+    /// The same exit with nothing pending: alice claims while paused (no sweep), so no settle of hers
+    /// can refuse. The refusal is the withdraw's own breach read, after the sweep's loss.
+    function test_LOSSFIRST_withdrawWithNothingPendingIsRefusedByItsOwnGate() public {
+        _untouchedBook(true);
+        vm.prank(admin);
+        staking.grantRole(keccak256("GUARDIAN_ROLE"), admin);
+        vm.prank(admin);
+        staking.pause();
+        vm.prank(alice);
+        staking.claimPureYield();
+        vm.prank(admin);
+        staking.unpause();
+        assertEq(staking.pendingPureYield(alice), 0, "setup: no pure yield pending");
+        assertEq(staking.pendingRewards(alice), 0, "setup: no emission pending");
+        assertTrue(staking.isSolvent(), "setup: the book reads solvent before the withdraw");
+        vm.prank(alice);
+        vm.expectRevert(BlazePhoenixStaking.Staking__InvariantBreached.selector);
+        staking.withdraw(1e18);
+    }
+
     /// A loan is a payment at par: the borrow reads the pot after the sweep's loss. Erin borrows
     /// (no pure yield of her own), so the refusal is the borrow's own breach read.
     function test_LOSSFIRST_borrowWhoseSweepBooksAThirdPartyLossIsRefused() public {

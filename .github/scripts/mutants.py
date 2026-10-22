@@ -474,6 +474,11 @@ dict(nome='emission settle: a pot covering the claims exactly to the dust defers
       old='            < _owed() + _sub0(_sub0(u.debt, u.staked), protocolReserve)) {',
       new='            <= _owed() + _sub0(_sub0(u.debt, u.staked), protocolReserve)) { // MUTANT',
       teste='test_EMISDEFER_potCoveringTheClaimsToTheDustPaysAtPar'),
+dict(nome='withdraw: the breach is read before the sweep books its losses',
+      f=F,
+      old='        _autoMaintain(msg.sender);   // LOSS-FIRST\n        // A full-value exit out of a pot that cannot cover every claim is first-come-first-served:\n        // the first exiter takes 100% and the shortfall lands on whoever is left. Under a hard\n        // breach the only fair exit is the pro-rata one, so the normal channel closes and the\n        // permissionless `tripBreaker` opens `emergencyWithdraw` with its haircut.\n        if (_hardBreach()) revert Staking__InvariantBreached();\n',
+      new='        // A full-value exit out of a pot that cannot cover every claim is first-come-first-served:\n        // the first exiter takes 100% and the shortfall lands on whoever is left. Under a hard\n        // breach the only fair exit is the pro-rata one, so the normal channel closes and the\n        // permissionless `tripBreaker` opens `emergencyWithdraw` with its haircut.\n        if (_hardBreach()) revert Staking__InvariantBreached(); // MUTANT\n        _autoMaintain(msg.sender);\n',
+      teste='test_LOSSFIRST_withdrawWithNothingPendingIsRefusedByItsOwnGate'),
 ]
 CONTRACTS = ("BlazePhoenixStaking",)
 

@@ -5,7 +5,7 @@ Rows are areas (groups of entry points and internal mechanisms); columns are the
 Each cell is the **number of tests** that exercise that area on that axis, measured by grep.
 
 Re-measured on `fix-staking-1022` (base `c31b6c5` plus the loss-first, reserve fresh-read, sweep
-and deferral-boundary tests of the follow-up commit): **311 tests in 42 `.t.sol` files**.
+and deferral-boundary tests of the follow-up commit, and the withdraw's own-gate test): **312 tests in 42 `.t.sol` files**.
 Regenerate with:
 
 ```bash
@@ -82,17 +82,17 @@ zero is a fact about the suite and the place to look first.
 | area | P | A | D | V | Q | S | G | T | E | Y | M | I | H | R | Z | K | W | O | X | C | N | U | L | J |
 |---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
 | deposit / top-up / lock | - | 20 | 40 | 38 | 18 | 5 | 46 | 155 | 32 | 51 | 41 | 12 | 3 | - | - | 12 | 28 | 30 | **0** | 76 | 51 | **0** | - | - |
-| withdraw | - | 1 | 2 | 3 | 3 | 2 | 11 | 18 | 3 | 6 | 10 | **0** | **0** | - | - | 1 | 2 | **0** | **0** | 6 | 2 | **0** | - | - |
+| withdraw | - | 1 | 2 | 4 | 3 | 2 | 12 | 18 | 3 | 7 | 11 | **0** | **0** | - | - | 1 | 3 | **0** | **0** | 7 | 2 | **0** | - | - |
 | borrow / repay | - | 6 | 29 | 27 | 13 | 4 | 18 | 102 | 22 | 33 | 15 | 6 | 3 | - | - | 3 | 17 | 16 | **0** | 47 | 38 | **0** | - | - |
 | interest | - | 1 | 2 | 5 | 5 | **0** | **0** | 15 | 4 | 4 | **0** | **0** | **0** | - | - | 1 | 2 | 5 | **0** | 4 | 14 | **0** | - | - |
-| emission / rewards | - | 10 | 33 | 30 | 12 | 5 | 25 | 92 | 19 | 33 | 23 | 4 | 1 | - | - | 21 | 20 | 13 | **0** | 72 | 32 | **0** | - | - |
-| pure yield | - | 3 | 2 | 2 | 6 | 1 | 5 | 20 | 3 | 6 | 4 | 2 | 1 | - | - | 1 | 1 | 4 | **0** | 7 | 12 | **0** | - | - |
+| emission / rewards | - | 10 | 33 | 31 | 12 | 5 | 26 | 92 | 19 | 34 | 24 | 4 | 1 | - | - | 21 | 21 | 13 | **0** | 73 | 32 | **0** | - | - |
+| pure yield | - | 3 | 2 | 3 | 6 | 1 | 6 | 20 | 3 | 7 | 5 | 2 | 1 | - | - | 1 | 2 | 4 | **0** | 8 | 12 | **0** | - | - |
 | liquidation | - | 1 | 6 | 3 | 2 | **0** | 5 | 17 | 4 | 10 | 3 | 2 | **0** | - | - | **0** | 2 | **0** | **0** | 8 | 8 | **0** | - | - |
 | maintenance windows | - | 3 | 7 | 1 | 3 | **0** | 6 | 18 | **0** | 5 | 6 | **0** | **0** | - | - | 1 | 1 | 4 | **0** | 4 | 6 | **0** | - | - |
 | lock sweep / poke | - | 21 | 15 | 5 | **0** | **0** | 13 | 30 | 4 | 12 | 11 | 4 | **0** | - | - | 2 | 3 | 6 | **0** | 13 | 9 | **0** | - | - |
-| emergency / breaker | - | 5 | 8 | 34 | 1 | 5 | 43 | 40 | 6 | 104 | 21 | 3 | 1 | - | - | 2 | 36 | 10 | **0** | 53 | 15 | **0** | - | - |
-| admin / reserves | - | 7 | 23 | 44 | 7 | 4 | 22 | 85 | 19 | 47 | 20 | 3 | 2 | - | - | 11 | 36 | 17 | **0** | 93 | 28 | **0** | - | - |
-| views / solvency | - | 8 | 20 | 26 | 8 | 7 | 22 | 80 | 6 | 37 | 21 | 5 | 1 | - | - | 2 | 22 | 15 | **0** | 42 | 33 | **0** | - | - |
+| emergency / breaker | - | 5 | 8 | 35 | 1 | 5 | 44 | 40 | 6 | 105 | 22 | 3 | 1 | - | - | 2 | 37 | 10 | **0** | 54 | 15 | **0** | - | - |
+| admin / reserves | - | 7 | 23 | 45 | 7 | 4 | 23 | 85 | 19 | 48 | 21 | 3 | 2 | - | - | 11 | 37 | 17 | **0** | 94 | 28 | **0** | - | - |
+| views / solvency | - | 8 | 20 | 27 | 8 | 7 | 23 | 80 | 6 | 38 | 22 | 5 | 1 | - | - | 2 | 23 | 15 | **0** | 43 | 33 | **0** | - | - |
 
 288 cells: 60 without object, 228 measured, **43 empty**.
 
