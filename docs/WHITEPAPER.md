@@ -569,7 +569,9 @@ The protocol has no price feed. There is nothing to manipulate.
 ### 7.2 No admin sweep of principal
 
 `withdrawReserve()` is bounded by `protocolReserve` and can only send to the
-**immutable** `treasury` address. The admin cannot access staked principal.
+**immutable** `treasury` address. The admin cannot access staked principal. The
+withdrawal is refused when the contract would read breached after it: once interest has
+outgrown what the borrowers' stakes hold, the reserve can be what still covers every claim.
 
 ### 7.3 Reentrancy
 
@@ -623,8 +625,11 @@ transfer into it.
 While the contract reads breached, emission is not paid at par from the short pot by the
 paths that stay open (`repay`, `liquidate`, the lock pokes): the amount a position earned is
 kept as a deferred credit, still shown by `pendingRewards`, and paid by the first settlement
-after the breach clears. A liquidation reads the breach after the loss it records, so the
-liquidation that opens a breach defers the liquidated position's emission too.
+after the breach clears. A settlement reads the breach after the position's own loss: it
+attributes the position's interest first, and counts the part of the position's debt that its
+stake and the reserve cannot cover, which a liquidation records as bad debt. So a transaction that
+opens a breach through the paid position's own loss (its interest outgrowing its stake, or its
+liquidation, direct or by a maintenance sweep) defers that position's emission too.
 
 In a **breached** emergency the contract may physically hold less than the sum of
 net equities. Paying full equity first-come-first-served would let early exiters

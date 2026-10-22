@@ -3,6 +3,7 @@ pragma solidity ^0.8.20;
 
 import {Base} from "../BlazePhoenixStaking.t.sol";
 import {BlazePhoenixStaking} from "../../src/BlazePhoenixStaking.sol";
+import {Vm} from "forge-std/Vm.sol";
 
 /// @notice EMIS-DEFER. Oracle: while the pot cannot cover every claim (`isSolvent() == false`), no
 ///         transaction pays emission at par, whichever door reaches the settlement (the owner's
@@ -142,5 +143,128 @@ contract EmissionDeferredUnderBreachTest is Base {
         vm.prank(carol);
         staking.emergencyWithdraw();
         assertEq(staking.pendingRewards(carol), 0, "the exited position keeps no emission credit");
+    }
+
+    // ── the settle reads the pot after the loss its own transaction books ──────────────────────
+    // The book: `_untouchedBook` left 50 more years (110 in all). Bob's interest has outgrown his
+    // stake, but nobody has attributed it, so the book still reads solvent. Paused, so no
+    // maintenance sweep runs: the only loss in the transaction is the one bob's own attribution
+    // books. Red at 67ba48f: the settle read the pot before that attribution and paid bob
+    // 274,188.78e18 at par; the attribution then booked 212.13e18 of bad debt and the transaction
+    // ended in a hard breach (claimRewards, repay and pokeExpiredLock alike).
+
+    function _ownShortfallBook() internal {
+        _untouchedBook();
+        vm.warp(block.timestamp + 50 * 365 days);
+        vm.roll(block.number + 30);
+        vm.prank(admin);
+        staking.grantRole(keccak256("GUARDIAN_ROLE"), keeper);
+        vm.prank(keeper);
+        staking.pause();
+        assertTrue(staking.isSolvent(), "setup: the book reads solvent before bob is attributed");
+    }
+
+    function _assertOwnShortfallDeferred(uint256 b0, uint256 pend, uint256 bad0, uint256 paid0) internal view {
+        assertGt(staking.totalBadDebt(), bad0 + DUST, "setup: bob's attribution booked a loss");
+        assertFalse(staking.isSolvent(), "setup: that loss left the pot short");
+        assertEq(token.balanceOf(bob), b0, "emission paid at par by the tx that left the pot short");
+        assertEq(staking.totalRewardsPaid(), paid0, "no emission counted as paid");
+        assertGe(staking.pendingRewards(bob), pend, "the earned emission stays credited");
+    }
+
+    function test_EMISDEFER_claimThatBooksItsOwnShortfallReadsThePotAfterIt() public {
+        _ownShortfallBook();
+        uint256 pend = staking.pendingRewards(bob);
+        assertGt(pend, DUST, "setup: bob has earned emission");
+        (uint256 b0, uint256 bad0, uint256 paid0) =
+            (token.balanceOf(bob), staking.totalBadDebt(), staking.totalRewardsPaid());
+        vm.prank(bob);
+        staking.claimRewards();
+        _assertOwnShortfallDeferred(b0, pend, bad0, paid0);
+    }
+
+    function test_EMISDEFER_repayThatBooksItsOwnShortfallReadsThePotAfterIt() public {
+        _ownShortfallBook();
+        uint256 pend = staking.pendingRewards(bob);
+        (uint256 b0, uint256 bad0, uint256 paid0) =
+            (token.balanceOf(bob), staking.totalBadDebt(), staking.totalRewardsPaid());
+        vm.prank(bob);
+        staking.repay(1e18);
+        _assertOwnShortfallDeferred(b0 - 1e18, pend, bad0, paid0);
+    }
+
+    function test_EMISDEFER_lockPokeThatBooksTheOwnersShortfallReadsThePotAfterIt() public {
+        _ownShortfallBook();
+        uint256 pend = staking.pendingRewards(bob);
+        (uint256 b0, uint256 bad0, uint256 paid0) =
+            (token.balanceOf(bob), staking.totalBadDebt(), staking.totalRewardsPaid());
+        vm.prank(keeper);
+        staking.pokeExpiredLock(bob);
+        _assertOwnShortfallDeferred(b0, pend, bad0, paid0);
+    }
+
+    /// The loss can come after the settle in the same transaction: a keeper's lock poke settles
+    /// bob, then its maintenance sweep liquidates bob. The settle counts bob's own uncovered loss.
+    /// Red at 67ba48f: bob was paid 274,188.78e18 at par and the sweep then booked 162.53e18 of
+    /// bad debt, leaving a hard breach.
+    function test_EMISDEFER_lockPokeWhoseSweepSeizesTheOwnerReadsThePotAfterIt() public {
+        _untouchedBook();
+        assertTrue(staking.isSolvent(), "setup: the book reads solvent before the poke");
+        uint256 pend = staking.pendingRewards(bob);
+        assertGt(pend, DUST, "setup: bob has earned emission");
+        (uint256 b0, uint256 bad0) = (token.balanceOf(bob), staking.totalBadDebt());
+        vm.prank(keeper);
+        staking.pokeExpiredLock(bob);
+        assertFalse(staking.isTrackedBorrower(bob), "setup: the sweep liquidated bob");
+        assertGt(staking.totalBadDebt(), bad0 + DUST, "setup: the liquidation booked a loss");
+        assertFalse(staking.isSolvent(), "setup: that loss left the pot short");
+        assertEq(token.balanceOf(bob), b0, "emission paid at par by the tx that left the pot short");
+        assertGe(staking.pendingRewards(bob), pend, "the earned emission stays credited");
+    }
+
+    /// The other side of the own-loss read: a seizure whose shortfall the reserve covers in full
+    /// books no uncovered loss, so it still pays the earned emission at par. The book has no pure
+    /// staker, so the interest of three borrowers fills the reserve for 60 years.
+    function test_EMISDEFER_liquidationWhoseLossTheReserveCoversPaysAtPar() public {
+        _fund(dave);
+        vm.prank(admin);
+        staking.fundEmission(2_000_000e18);
+        vm.prank(carol);
+        staking.deposit(1_000e18, 365);
+        vm.prank(bob);
+        staking.deposit(1_000e18, 90);
+        vm.prank(dave);
+        staking.deposit(1_000e18, 90);
+        vm.roll(block.number + 11);
+        vm.prank(carol);
+        staking.borrow(400e18);
+        vm.prank(bob);
+        staking.borrow(500e18);
+        vm.prank(dave);
+        staking.borrow(500e18);
+        vm.warp(block.timestamp + 60 * 365 days);
+        vm.roll(block.number + 30);
+
+        uint256 pend = staking.pendingRewards(bob);
+        assertGt(pend, DUST, "setup: bob has earned emission");
+        (uint256 b0, uint256 bad0) = (token.balanceOf(bob), staking.totalBadDebt());
+        vm.recordLogs();
+        vm.prank(keeper);
+        staking.liquidate(bob);
+        Vm.Log[] memory logs = vm.getRecordedLogs();
+        bytes32 sig = keccak256("Liquidated(address,address,uint256,uint256,uint256,uint256,uint256)");
+        bool seen;
+        for (uint256 i; i < logs.length; ++i) {
+            if (logs[i].topics[0] != sig) continue;
+            (uint256 seized, uint256 debt,,, uint256 uncovered) =
+                abi.decode(logs[i].data, (uint256, uint256, uint256, uint256, uint256));
+            assertLt(seized, debt, "setup: the seizure leaves a shortfall");
+            assertEq(uncovered, 0, "setup: the reserve covers all of it");
+            seen = true;
+        }
+        assertTrue(seen, "setup: bob was liquidated");
+        assertEq(staking.totalBadDebt(), bad0, "setup: no uncovered loss booked");
+        assertTrue(staking.isSolvent(), "the book reads solvent after it");
+        assertEq(token.balanceOf(bob) - b0, pend, "the earned emission is paid at par");
     }
 }

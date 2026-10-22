@@ -55,4 +55,43 @@ contract EmissionSweepKeepsTheBookSolventTest is Base {
         assertGt(token.balanceOf(treasury) - t0, 0, "the residue reached the treasury");
         assertTrue(staking.isSolvent(), "the book reads solvent after it");
     }
+
+    /// `withdrawReserve` reads the same post-state. The book: emission funded, a small pure stake,
+    /// one borrower at the maximum ratio left untouched for 40 years; a paused lock poke runs the
+    /// global accrual without attributing carol. The reserve now exceeds what keeps
+    /// `totalStaked + rewardReserve + protocolReserve` above `totalDebt`, so taking all of it
+    /// crosses the floor of `_owed()` and opens a breach on a book that read solvent.
+    /// Red at 67ba48f: withdrawReserve(max) sent 628,946.65e18 to the treasury and left a
+    /// 197,900e18 deficit.
+    function test_SWEEP_reserveThatCoversTheClaimsStaysInThePot() public {
+        vm.prank(admin);
+        staking.fundEmission(50_000_000e18);
+        vm.prank(alice);
+        staking.deposit(100e18, 90);
+        vm.prank(carol);
+        staking.deposit(1_000_000e18, 90);
+        vm.roll(block.number + 11);
+        uint256 maxC = staking.maxBorrowOf(carol);
+        vm.prank(carol);
+        staking.borrow(maxC);
+        vm.roll(block.number + 11);
+        vm.warp(block.timestamp + 40 * 365 days);
+        vm.prank(admin);
+        staking.grantRole(keccak256("GUARDIAN_ROLE"), keeper);
+        vm.prank(keeper);
+        staking.pause();
+        vm.prank(keeper);
+        staking.pokeExpiredLock(alice);
+        assertTrue(staking.isSolvent(), "setup: the book reads solvent before the withdrawal");
+        assertLt(
+            staking.totalStaked() + staking.rewardReserve(), staking.totalDebt(),
+            "setup: the reserve is what keeps the floor"
+        );
+        uint256 t0 = token.balanceOf(treasury);
+        vm.prank(admin);
+        vm.expectRevert(BlazePhoenixStaking.Staking__InvariantBreached.selector);
+        staking.withdrawReserve(type(uint256).max);
+        assertEq(token.balanceOf(treasury), t0, "the reserve left while the pot needed it");
+        assertTrue(staking.isSolvent(), "the book still reads solvent");
+    }
 }

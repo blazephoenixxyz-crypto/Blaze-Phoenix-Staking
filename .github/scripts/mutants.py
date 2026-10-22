@@ -289,8 +289,8 @@ M = [
       teste="test_E3_claimPureYieldClosesUnderBreach"),
  dict(nome="withdrawReserve: the breach gate is deleted (revenue leaves before the loss is covered)",
       f=F,
-      old="        // `absorbBadDebt` first.\n        if (_hardBreach()) revert Staking__InvariantBreached();",
-      new="        // `absorbBadDebt` first.\n        // MUTANT",
+      old="        // book already in breach, where the reserve goes to `absorbBadDebt` first.\n        if (_hardBreach()) revert Staking__InvariantBreached();",
+      new="        // book already in breach, where the reserve goes to `absorbBadDebt` first.\n        // MUTANT",
       teste="test_E3_withdrawReserveClosesUnderBreach"),
  dict(nome="constructor: a token address without code is accepted (guard deleted)",
       f=F,
@@ -320,7 +320,7 @@ M = [
  # ── EMIS-DEFER: no emission at par under a hard breach (test/hardening/EmissionDeferredUnderBreach.t.sol)
  dict(nome="emission settle: the breach deferral is deleted (emission paid at par from a short pot)",
       f=F,
-      old="        if (ML.rawBalanceOf(bzpx, address(this)) + CONSERVATION_DUST < _owed() + loss_) {\n            _rewardDeferred[user_] = due; return;\n        }\n",
+      old="        if (ML.rawBalanceOf(bzpx, address(this)) + CONSERVATION_DUST\n            < _owed() + _sub0(_sub0(u.debt, u.staked), protocolReserve)) {\n            _rewardDeferred[user_] = due; return;\n        }\n",
       new="        // MUTANT\n",
       teste="test_EMISDEFER_repayUnderBreachPaysNoEmissionAndKeepsTheCredit"),
  dict(nome="emission settle: a paid deferred credit is not cleared (paid twice)",
@@ -366,10 +366,10 @@ M = [
       new="        owed_ = _sub0(ledgerSum + _sub0(totalRewardDistributed, totalRewardsPaid), totalDebt); // MUTANT",
       teste="test_OWEDREAD_unbookedLossReadsAsABreachBoundedByTheRealDeficit"),
  # ── EMIS-DEFER at liquidation: the settle reads the pot after the loss it books (test/hardening/EmissionDeferredUnderBreach.t.sol)
- dict(nome="_executeLiquidation: the emission settle ignores the loss the liquidation books",
+ dict(nome="emission settle: the breach read ignores the position's own loss (a liquidation that books it pays at par)",
       f=F,
-      old="        _settlePendingRewards(user_, _sub0(_sub0(debt, stake), protocolReserve));",
-      new="        _settlePendingRewards(user_, 0); // MUTANT",
+      old="            < _owed() + _sub0(_sub0(u.debt, u.staked), protocolReserve)) {",
+      new="            < _owed()) { // MUTANT",
       teste="test_EMISDEFER_liquidationThatBooksTheLossReadsThePotAfterIt"),
  # ── TERM-DISTRESS: the withdraw site of _debitStaked and the shared end state (test/hardening/TerminalDistressOrdering.t.sol)
  dict(nome="withdraw: the stake debit saturates at zero instead of carrying the overdraw",
@@ -388,6 +388,22 @@ M = [
       old="        if (_hardBreach()) revert Staking__InvariantBreached();\n        emit UndistributedEmissionSwept",
       new="        // MUTANT\n        emit UndistributedEmissionSwept",
       teste="test_SWEEP_residueThatCoversTheClaimsStaysInThePot"),
+ # ── EMIS-DEFER, the class: the settle reads the pot after the loss its own tx books (test/hardening/EmissionDeferredUnderBreach.t.sol)
+ dict(nome="emission settle: the position is not attributed before the breach read",
+      f=F,
+      old="        _accrueInterestFor(user_);\n        UserInfo storage u = _users[user_];\n        uint256 due = _rewardDeferred[user_];",
+      new="        UserInfo storage u = _users[user_]; // MUTANT\n        uint256 due = _rewardDeferred[user_];",
+      teste="test_EMISDEFER_claimThatBooksItsOwnShortfallReadsThePotAfterIt"),
+ dict(nome="emission settle: the own-loss read ignores the reserve (a covered seizure is deferred)",
+      f=F,
+      old="            < _owed() + _sub0(_sub0(u.debt, u.staked), protocolReserve)) {",
+      new="            < _owed() + _sub0(u.debt, u.staked)) { // MUTANT",
+      teste="test_EMISDEFER_liquidationWhoseLossTheReserveCoversPaysAtPar"),
+ dict(nome="withdrawReserve: the breach is read before the reserve leaves",
+      f=F,
+      old="        if (amount_ == 0) revert Staking__ZeroAmount();\n        amount_ = _min(amount_, protocolReserve);\n        protocolReserve -= amount_;\n        if (!ML.rawTransfer(bzpx, treasury, amount_)) revert Staking__TransferFailed();\n        // Revenue leaves only while every claim is covered, read AFTER it leaves: once a hidden\n        // loss has pushed `totalStaked + rewardReserve` below `totalDebt`, the reserve is what\n        // keeps the pot covering every claim, and taking it opens a breach on a book that read\n        // solvent. A withdrawal never shrinks the deficit, so the same read refuses one out of a\n        // book already in breach, where the reserve goes to `absorbBadDebt` first.\n        if (_hardBreach()) revert Staking__InvariantBreached();",
+      new="        if (amount_ == 0) revert Staking__ZeroAmount();\n        if (_hardBreach()) revert Staking__InvariantBreached(); // MUTANT\n        amount_ = _min(amount_, protocolReserve);\n        protocolReserve -= amount_;\n        if (!ML.rawTransfer(bzpx, treasury, amount_)) revert Staking__TransferFailed();",
+      teste="test_SWEEP_reserveThatCoversTheClaimsStaysInThePot"),
 ]
 CONTRACTS = ("BlazePhoenixStaking",)
 
