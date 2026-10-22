@@ -93,7 +93,7 @@ The books are closed on every transaction, not at the end of the quarter.
 The whole protocol obeys a single equation at all times:
 
 ```
-balanceOf(contract) + totalBadDebt
+balanceOf(contract) + totalBadDebt + stakedOverdraw
    ==  (totalStaked − totalDebt)                       // net principal physically held
      +  rewardReserve                                  // unspent emission funding
      +  protocolReserve                                // protocol revenue

@@ -48,7 +48,7 @@ import {ReentrancyGuard}            from "@openzeppelin/contracts/utils/Reentran
 ///     ┌────────────────────────────────────────────────────────────────────────────────┐
 ///     │  THE MASTER CONSERVATION IDENTITY  (the single equation the whole book obeys)    │
 ///     │                                                                                  │
-///     │      balanceOf(this) + totalBadDebt                                               │
+///     │      balanceOf(this) + totalBadDebt + stakedOverdraw                             │
 ///     │        ==  (totalStaked − totalDebt)            // net principal physically held  │
 ///     │          +  rewardReserve                        // unspent emission funding      │
 ///     │          +  protocolReserve                      // protocol revenue              │
@@ -56,8 +56,9 @@ import {ReentrancyGuard}            from "@openzeppelin/contracts/utils/Reentran
 ///     │                                                                                  │
 ///     │  `_owed()` is the full right-hand side: every claim on the contract, so a loss   │
 ///     │  booked as `totalBadDebt` is a shortfall, not a write-off. `isSolvent()` ⇔       │
-///     │  balance + dust ≥ owed fails on recorded bad debt as on an unrecorded one, and   │
-///     │  `absorbBadDebt` recapitalises it. Every value-moving entry-point wears          │
+///     │  balance + dust ≥ owed fails on recorded bad debt; a loss not yet recorded (debt │
+///     │  past a stake before attribution books it) is read in part, as a lower bound.    │
+///     │  `absorbBadDebt` recapitalises the recorded loss. Each value-moving entry wears  │
 ///     │  `conserves`, which proves the PER-TX change of the identity is zero (within     │
 ///     │  dust). A bug that would let the ledger claim more than the contract holds       │
 ///     │  reverts the whole transaction. The protocol reserve absorbs a realised loss     │
@@ -148,7 +149,9 @@ import {ReentrancyGuard}            from "@openzeppelin/contracts/utils/Reentran
 ///       inside `totalRewardDistributed − totalRewardsPaid`, which `_owed()` counts. On interest
 ///       the reserve cut floors and the pool takes the rest; the global debit ⌊D·δ/WAD⌋ is at
 ///       least the sum of the per-position ⌊dᵢ·δ/WAD⌋, so `totalStaked` may sit a few wei under
-///       Σ staked, which is why every exit subtracts from it saturating. A transfer that fails
+///       Σ staked (and, before an eroded borrower is attributed, by more), which is why every
+///       exit debits it through `_debitStaked`: what it cannot absorb is carried in
+///       `stakedOverdraw` and settled by that attribution, never dropped. A transfer that fails
 ///       reverts the whole call; only the maintenance sweep isolates a failing position
 ///       (try/catch), so one position cannot block another's transaction.
 ///
@@ -305,6 +308,13 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
     uint256 public totalInterestAccruedGlobal;
     uint256 public totalUncollectedInterest;
     uint256 public totalBadDebt;
+    // What exits have debited from `totalStaked` beyond zero. The global debit of interest is
+    // eager and its attribution lazy, so before an eroded borrower is attributed `totalStaked`
+    // can sit below the stake the remaining positions still record; an exit then takes it to 0
+    // and the rest is carried here. The attribution that later restores the eroded borrower's
+    // uncollectible interest (`_accrueInterestFor`) settles this first and adds only the
+    // remainder back, so `totalStaked − stakedOverdraw` is the exact signed total throughout.
+    uint256 public stakedOverdraw;
     uint256 public totalLiquidations;
     uint256 public totalAutoLiquidations;   // subset of totalLiquidations carried by user txs
     uint256 public totalLockSweeps;         // expired locks normalised by the autonomous engine
@@ -349,6 +359,9 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
         uint16  lockDays;     // committed lock duration in days (0 = no active lock)
     }
     mapping(address => UserInfo) private _users;
+    /// @dev Emission earned but not paid because it settled under a hard breach (EMIS-DEFER).
+    ///      Kept outside `UserInfo` so a liquidation that deletes the position does not erase it.
+    mapping(address => uint256) private _rewardDeferred;
 
     // ── Events ────────────────────────────────────────────────────────────────────────────
     event EmissionFunded     (address indexed funder, uint256 amount);
@@ -418,7 +431,7 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
     ///      objective on-chain breach, never on healthy state.
     modifier conserves() {
         // LIQ-01: compare the DELTA of the FLOOR-FREE Master Conservation Identity
-        //   balance + totalDebt + totalBadDebt
+        //   balance + totalDebt + totalBadDebt + stakedOverdraw
         //     == totalStaked + rewardReserve + protocolReserve + pendingDistribution
         // Every term is an individual non-negative state variable summed WITHOUT any
         // max(x,0)/floor, so the identity is linear in EVERY regime. The old check
@@ -447,12 +460,12 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
     ///      relieves the stack pressure the modifier's own comment flags, since the locals now
     ///      live in the helper's frame instead of stacking on top of every guarded function's.
     function _conservationSnapshot() internal view returns (uint256 lhsBefore, uint256 rhsBefore) {
-        lhsBefore = ML.rawBalanceOf(bzpx, address(this)) + totalDebt + totalBadDebt;
+        lhsBefore = ML.rawBalanceOf(bzpx, address(this)) + totalDebt + totalBadDebt + stakedOverdraw;
         rhsBefore = totalStaked + rewardReserve + protocolReserve + _pendingDistribution();
     }
 
     function _conservationCheck(uint256 lhsBefore, uint256 rhsBefore) internal view {
-        uint256 lhs = ML.rawBalanceOf(bzpx, address(this)) + totalDebt + totalBadDebt + rhsBefore;
+        uint256 lhs = ML.rawBalanceOf(bzpx, address(this)) + totalDebt + totalBadDebt + stakedOverdraw + rhsBefore;
         uint256 rhs = lhsBefore + totalStaked + rewardReserve + protocolReserve + _pendingDistribution();
         if ((lhs > rhs ? lhs - rhs : rhs - lhs) > CONSERVATION_DUST) revert Staking__InvariantBreached();
     }
@@ -667,8 +680,11 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
         _accrueInterestFor(msg.sender);   // attribute what this position already owes before exiting
         UserInfo storage u = _users[msg.sender];
         uint256 principal = u.staked;
-        if (principal == 0) revert Staking__NoStake();
         uint256 debt   = u.debt;
+        // ERODED-EXIT. A borrower whose interest has outgrown its whole collateral reaches here with
+        // `principal == 0 && debt > 0`. It still closes: payout 0, and the `debt > principal` branch
+        // below books the debt as a loss, which is what lets `absorbBadDebt` cover it.
+        if (principal == 0 && debt == 0) revert Staking__NoStake();
         uint256 payout = _sub0(principal, debt);
 
         // Pro-rata solvency haircut (H-05 / EMG-01/02): in a BREACHED emergency the contract may
@@ -708,7 +724,7 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
             unchecked { totalBadDebt += (badDebt - covered); }
         }
 
-        totalStaked = _sub0(totalStaked, principal);
+        _debitStaked(principal);
         if (debt > 0) { totalDebt = _sub0(totalDebt, debt); _removeBorrower(msg.sender); }
 
         // Zero the per-user fields BEFORE the single writer: _applyBoost derives this position's
@@ -720,6 +736,7 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
         _applyBoost(u, 0, 0);              // single-writer cleanup — releases boosted + positive-equity share
         _removeLocker(msg.sender);         // the position is gone; leave no ghost registry entry
         delete _users[msg.sender];
+        delete _rewardDeferred[msg.sender];   // deferred emission is unpaid emission: forfeited too
 
         if (payout > 0) {
             if (!ML.rawTransfer(bzpx, msg.sender, payout)) revert Staking__TransferFailed();
@@ -916,7 +933,7 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
         // was exactly the one everybody uses. No exploit was demonstrated: this removes the CLASS,
         // not a known bug. Cost asymmetry: saturating costs one comparison; not saturating costs
         // the last user being unable to exit.
-        totalStaked = _sub0(totalStaked, amount_);
+        _debitStaked(amount_);
 
         _resync(msg.sender);
 
@@ -1107,7 +1124,7 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
         uint256 uncovered = badDebt - covered;
 
         // saturating — see the note in `withdraw` (channel asymmetry, 2026-08-19)
-        totalStaked = _sub0(totalStaked, seized);   // (seized - bonus == debt) offsets the borrow
+        _debitStaked(seized);   // (seized - bonus == debt) offsets the borrow
         totalDebt   -= debt;
         u.debt   = 0;
         u.staked = leftover;
@@ -1486,11 +1503,18 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
     // ── settle (CEI: count, write debt, then pay) ─────────────────────────────────────────
     function _settlePendingRewards(address user_) internal {
         UserInfo storage u = _users[user_];
-        if (u.trackedBoostedEffective == 0) return;
+        uint256 due = _rewardDeferred[user_];
         uint256 gross = ML.mulDiv(u.trackedBoostedEffective, accRewardPerShare, WAD);
-        if (gross <= u.rewardDebt) return;
-        uint256 due = gross - u.rewardDebt;
-        u.rewardDebt = gross;
+        if (gross > u.rewardDebt) { due += gross - u.rewardDebt; u.rewardDebt = gross; }
+        if (due == 0) return;
+        // EMIS-DEFER. Same rule as `claimRewards` and PURE-UNCOLL: no emission leaves at par while
+        // the pot cannot cover every claim. Unlike pure yield, this settle sits under doors that
+        // must stay open in a breach (`repay` de-risks a position; `liquidate` books the loss), so
+        // it defers instead of reverting: the slice moves out of the accumulator into the
+        // position's credit, which a `_resync` cannot reprice, and the first settle after the
+        // breach clears pays it. Nothing is counted as paid, so `_owed()` still carries it.
+        if (_hardBreach()) { _rewardDeferred[user_] = due; return; }
+        _rewardDeferred[user_] = 0;
         totalRewardsPaid += due;
         emit RewardClaimed(user_, due);
         if (!ML.rawTransfer(bzpx, user_, due)) revert Staking__TransferFailed();
@@ -1654,12 +1678,16 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
             // The protocol reserve absorbs the loss first, exactly as `_executeLiquidation` and
             // `emergencyWithdraw` do for the same event; only the uncovered rest is recorded as
             // bad debt (−covered on the RHS, −covered on the LHS: still conserves-neutral).
+            // An exit that already overdrew `totalStaked` took this shortfall's place: settle that
+            // first, so the restore cannot leave a stake nobody holds (see `stakedOverdraw`).
             uint256 shortfall = interest - u.staked;
             uint256 covered = shortfall > protocolReserve ? protocolReserve : shortfall;
             protocolReserve -= covered;
+            uint256 overdrawn = _min(shortfall, stakedOverdraw);
+            stakedOverdraw -= overdrawn;
             unchecked {
                 totalUncollectedInterest += shortfall;
-                totalStaked              += shortfall;
+                totalStaked              += shortfall - overdrawn;
                 totalBadDebt             += shortfall - covered;
             }
             interest = u.staked;
@@ -1707,6 +1735,15 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
     ///      subtraction Solidity would otherwise emit is dead weight on every one of them.
     function _sub0(uint256 a, uint256 b) internal pure returns (uint256) {
         unchecked { return a > b ? a - b : 0; }
+    }
+
+    /// @dev The one debit of `totalStaked` on an exit (withdraw, liquidation, emergency exit).
+    ///      Saturating, as the exits always were, but what the floor cuts off is carried in
+    ///      `stakedOverdraw` instead of dropped, so the conservation identity stays exact.
+    function _debitStaked(uint256 x) internal {
+        uint256 ts = totalStaked;
+        if (x > ts) { stakedOverdraw += x - ts; x = ts; }
+        totalStaked = ts - x;
     }
 
     /// @dev Upper clamp. The `if (x > cap) x = cap;` shape appeared inline 17 times; naming it
@@ -1788,8 +1825,12 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
     /// @dev The right-hand side of the Master Conservation Identity: everything the protocol
     ///      owes to stakers, borrowers' collateral, reserves and accrued-but-unpaid rewards.
     ///      Recorded bad debt is NOT netted out: those claims are still owed, and the identity
-    ///      makes `owed == balance + totalBadDebt`, so any uncovered loss above the dust reads
-    ///      as a breach. Netting it hid an insolvency the claimants then paid first-come-first-
+    ///      makes `owed == balance + totalBadDebt` once every loss is recorded, so a recorded
+    ///      loss above the dust reads as a breach. A loss not yet recorded (a borrower whose
+    ///      accrued debt exceeds her stake before attribution books it) is read through the
+    ///      floors below only in part: the read deficit is a lower bound of the real one, and
+    ///      `balance + totalBadDebt + unrecordedLoss >= owed` always holds. Attribution,
+    ///      liquidation or the borrower's emergency exit records it. Netting it hid an insolvency the claimants then paid first-come-first-
     ///      served: `isSolvent()` read true while the last staker could not exit.
     function _owed() internal view returns (uint256 owed_) {
         uint256 ledgerSum = totalStaked + rewardReserve + protocolReserve;
@@ -2077,14 +2118,16 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
     /// @param user_ any position
     /// @return emission in BZPX
     function pendingRewards(address user_) external view returns (uint256) {
-        return _pendingReward(_users[user_]);
+        return _pendingReward(user_);
     }
     /// @dev SINGLE SOURCE. Every view that publishes an entitlement routes through these two, so
     ///      the aggregate report and the standalone getters are structurally unable to disagree.
     ///      Both project the un-settled slice, so a quote read in a block equals what a claim in
     ///      that same block pays.
-    function _pendingReward(UserInfo storage u) internal view returns (uint256) {
-        if (u.trackedBoostedEffective == 0 || totalBoostedEffective == 0) return 0;
+    function _pendingReward(address user_) internal view returns (uint256) {
+        UserInfo storage u = _users[user_];
+        uint256 deferred = _rewardDeferred[user_];   // EMIS-DEFER credit, paid by the same settle
+        if (u.trackedBoostedEffective == 0 || totalBoostedEffective == 0) return deferred;
         uint256 acc = accRewardPerShare;
         uint256 t = block.timestamp < emissionEnd ? block.timestamp : emissionEnd;
         if (t > lastRewardTime) {
@@ -2095,7 +2138,7 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
             acc += ML.mulDiv(r, WAD, totalBoostedEffective);
         }
         uint256 g = ML.mulDiv(u.trackedBoostedEffective, acc, WAD);
-        return _sub0(g, u.rewardDebt);
+        return deferred + _sub0(g, u.rewardDebt);
     }
 
     function _pendingPure(UserInfo storage u) internal view returns (uint256) {
@@ -2157,7 +2200,7 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
         remainingCap = _sub0(MAX_STAKE_PER_WALLET, staked);
         maxDaysNow = maxLockDaysAvailable();
 
-        stakingRewards = _pendingReward(u);
+        stakingRewards = _pendingReward(user_);
         pureYield      = _pendingPure(u);
     }
     /// @notice The global book in one call.

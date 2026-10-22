@@ -86,7 +86,7 @@ any address at any time.
 The entire accounting of the protocol obeys one equation at all times:
 
 ```
-balanceOf(contract) + totalBadDebt
+balanceOf(contract) + totalBadDebt + stakedOverdraw
     =  (totalStaked − totalDebt)
      + rewardReserve
      + protocolReserve
@@ -94,6 +94,11 @@ balanceOf(contract) + totalBadDebt
 ```
 
 The right-hand side is `_owed()`. **Solvency is equivalent to `balance ≥ owed`.**
+`_owed()` reads every recorded loss in full. A loss not yet recorded (a borrower whose
+accrued debt has outgrown her stake before attribution books it) it reads only in part,
+through the floors that keep it non-negative, so the read deficit is a lower bound of the
+real one and `balance + totalBadDebt + unrecordedLoss ≥ owed` always holds. The loss is
+recorded when the position is attributed, liquidated or exits.
 The equation is the referee, and it is consulted on every move.
 
 ### 2.1 Term-by-term explanation
@@ -102,6 +107,7 @@ The equation is the referee, and it is consulted on every move.
 |---|---|
 | `balanceOf(contract)` | Physical BZPX the contract holds right now (raw `staticcall`, not a ledger variable) |
 | `totalBadDebt` | Recorded losses the protocol reserve could not cover (liquidation or exit with `stake < debt`, uncollectible interest). Still owed: while it exceeds the dust the protocol reads insolvent until `absorbBadDebt` recapitalises it |
+| `stakedOverdraw` | What exits have debited from `totalStaked` beyond zero. Interest is debited from `totalStaked` globally at once but attributed to each position lazily, so before an eroded borrower is attributed the remaining stakes can exceed `totalStaked`; the excess is carried here and settled by that attribution. Zero in every book whose borrowers are attributed |
 | `totalStaked − totalDebt` | Net principal: stakers' capital minus what has been lent out |
 | `rewardReserve` | Emission funding deposited by admin but not yet distributed |
 | `protocolReserve` | Revenue accrued from the reserve factor (3% of interest) |
@@ -115,7 +121,7 @@ wrapped in the `conserves` modifier:
 
 ```solidity
 modifier conserves() {
-    uint256 lhsBefore = ML.rawBalanceOf(bzpx, address(this)) + totalDebt + totalBadDebt;
+    uint256 lhsBefore = ML.rawBalanceOf(bzpx, address(this)) + totalDebt + totalBadDebt + stakedOverdraw;
     uint256 rhsBefore = totalStaked + rewardReserve + protocolReserve + _pendingDistribution();
     _;
     // revert Staking__InvariantBreached() unless |Δlhs − Δrhs| ≤ CONSERVATION_DUST
@@ -127,7 +133,7 @@ rearrangement** — every term moved to the side that keeps it a plain non-negat
 variable, summed without any `max(x, 0)`:
 
 ```
-balance + totalDebt + totalBadDebt
+balance + totalDebt + totalBadDebt + stakedOverdraw
     =  totalStaked + rewardReserve + protocolReserve
      + (totalRewardDistributed − totalRewardsPaid)
 ```
@@ -606,6 +612,17 @@ No admin can sweep funds. Recorded bad debt is recapitalised by anyone through
 `absorbBadDebt(amount)` (protocol reserve first, then the caller's tokens, capped at
 the loss); once the breach clears the admin may cancel the emergency.
 
+A position whose accrued debt has outgrown its stake has no net equity: its emergency exit
+pays nothing, closes the position and records the debt beyond the stake as bad debt. Every
+open position can therefore be closed by its own exit, and once every exit has run and
+`absorbBadDebt` has recapitalised the recorded loss, the contract reads solvent with no raw
+transfer into it.
+
+While the contract reads breached, emission is not paid at par from the short pot by the
+paths that stay open (`repay`, `liquidate`, the lock pokes): the amount a position earned is
+kept as a deferred credit, still shown by `pendingRewards`, and paid by the first settlement
+after the breach clears.
+
 In a **breached** emergency the contract may physically hold less than the sum of
 net equities. Paying full equity first-come-first-served would let early exiters
 drain the pot and leave late (and pure) stakers with nothing. `emergencyWithdraw`
@@ -622,8 +639,8 @@ the pot and `equity` from the claims, so `pot/claims` is unchanged for everyone 
 follows — no advantage to racing the exit queue. In solvent operation `pot ≥ claims`,
 the scale factor is ≥ 1, and every exit pays full equity exactly as before.
 
-Accrued-but-unpaid rewards are **forfeited** on an emergency exit (the hatch does no reward
-maths by design). The forfeited amount remains inside the `totalRewardDistributed −
+Accrued-but-unpaid rewards, including any emission deferred under a breach, are
+**forfeited** on an emergency exit (the hatch does no reward maths by design). The forfeited amount remains inside the `totalRewardDistributed −
 totalRewardsPaid` term of `owed()`, so post-emergency the ledger *overstates* what it owes —
 i.e. the error is in the **conservative direction**: the protocol can only look *less* solvent
 than it really is, never more. The corresponding tokens stay in the contract as unclaimable

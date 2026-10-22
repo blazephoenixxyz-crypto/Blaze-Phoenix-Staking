@@ -93,7 +93,7 @@ https://blazephoenix.xyz/provenance/provenance.json
 
 ## The one equation the whole protocol obeys
 
-    balanceOf(contract) + totalBadDebt
+    balanceOf(contract) + totalBadDebt + stakedOverdraw
       ==  (totalStaked − totalDebt)                      // net principal held
         +  rewardReserve                                 // unspent emission
         +  protocolReserve                               // protocol revenue

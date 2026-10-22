@@ -16,6 +16,7 @@ pragma solidity 0.8.28;
 
 import {Test, StdInvariant} from "forge-std/Test.sol";
 import {BlazePhoenixStaking} from "../src/BlazePhoenixStaking.sol";
+import {BlazePhoenixMathLib as ML} from "../src/BlazePhoenixMathLib.sol";
 
 contract MockERC20 {
     string public name = "BlazePhoenix"; string public symbol = "BZPX"; uint8 public decimals = 18;
@@ -412,25 +413,54 @@ contract InvariantTest is StdInvariant, Base {
         targetContract(address(handler));
     }
 
-    /// The protocol holds at least what it owes, unless a loss has been recorded. `_owed()`
-    /// counts uncovered `totalBadDebt` (a claim the pot cannot pay), so a borrower left untouched
-    /// across the handler's multi-year jumps can legitimately read insolvent; what must never
-    /// happen is a breach with no recorded loss behind it.
-    function invariant_solvent() public view {
-        if (!staking.isSolvent()) assertGt(staking.totalBadDebt(), 1e10, "INSOLVENT WITHOUT A RECORDED LOSS");
+    /// Storage slot of the private `_users` mapping (`forge inspect BlazePhoenixStaking
+    /// storageLayout`). `_unbookedLoss` checks the words it reads against `getUserInfo`, so a
+    /// layout change fails loudly here instead of reading the wrong slot.
+    uint256 internal constant USERS_SLOT = 36;
+
+    /// The loss not yet booked, over every position in the campaign (the handler's actors):
+    /// per position, its debt minus its stake once the interest already debited from the global
+    /// `totalStaked` is attributed to it, floored at 0. A loss is booked into `totalBadDebt` only
+    /// by an attribution beyond the stake, a liquidation or an under-water emergency exit; until
+    /// then it is this term.
+    function _unbookedLoss() internal view returns (uint256 loss) {
+        uint256 acc = staking.accInterestPerDebt();
+        for (uint256 i = 0; i < 4; i++) {
+            address a = handler.actors(i);
+            uint256 base = uint256(keccak256(abi.encode(a, USERS_SLOT)));
+            uint256 s = uint256(vm.load(address(staking), bytes32(base)));
+            uint256 d = uint256(vm.load(address(staking), bytes32(base + 1)));
+            (uint256 s2, uint256 d2, , , , , , , , , , , , ) = staking.getUserInfo(a);
+            assertEq(s, s2, "USERS_SLOT: staked word moved");
+            assertEq(d, d2, "USERS_SLOT: debt word moved");
+            if (d == 0) continue;
+            uint256 idx = uint256(vm.load(address(staking), bytes32(base + 5)));   // interestIndex
+            uint256 charged = ML.mulDivSafe(d, acc - idx, 1e18);
+            if (d + charged > s) loss += d + charged - s;
+        }
     }
-    /// The on-chain conservation bit (the same breach test) is set only behind a recorded loss.
+
+    /// A breach always has a loss behind it, booked or not yet booked. `_owed()` counts uncovered
+    /// `totalBadDebt`, and reads an under-water borrower that is not yet booked only through its
+    /// floors, so a breach can stand before anything is recorded; what must never happen is a
+    /// breach with no loss at all.
+    function invariant_solvent() public view {
+        if (!staking.isSolvent()) assertGt(staking.totalBadDebt() + _unbookedLoss(), 0, "INSOLVENT WITHOUT A LOSS");
+    }
+    /// The on-chain conservation bit (the same breach test) is set only behind a loss.
     function invariant_conservationBit() public view {
-        if (staking.auditInvariants() & 1 != 0) assertGt(staking.totalBadDebt(), 1e10, "CONSERVATION BIT");
+        if (staking.auditInvariants() & 1 != 0) assertGt(staking.totalBadDebt() + _unbookedLoss(), 0, "CONSERVATION BIT");
     }
     /// Boosted denominators may never exceed stake * maxBoost / base.
     function invariant_boostBounded() public view {
         assertEq(staking.auditInvariants() & (1 << 4), 0, "BOOST UNBOUNDED");
     }
-    /// Backing covers owed within the dust tolerance, except for the recorded loss: any gap
-    /// between the two must be exactly what `totalBadDebt` already declares.
+    /// Backing covers owed within the dust tolerance, except for the loss: any gap between the
+    /// two is at most the recorded `totalBadDebt` plus the loss not yet booked. The read gap is a
+    /// lower bound of the real one (the floors of `_owed()` see an unbooked loss only in part).
     function invariant_backingCoversOwed() public view {
-        assertGe(staking.backing() + staking.totalBadDebt() + 1e10, staking.owed(), "BACKING + BAD DEBT < OWED");
+        assertGe(staking.backing() + staking.totalBadDebt() + _unbookedLoss() + 1e10, staking.owed(),
+            "BACKING + LOSS < OWED");
     }
 
     // ── BP-2026-001 structural invariants ────────────────────────────────────────────────────
