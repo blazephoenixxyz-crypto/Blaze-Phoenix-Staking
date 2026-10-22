@@ -548,6 +548,7 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
         external nonReentrant onlyRole(ROLE_ADMIN) whenNotEmergency conserves
     {
         if (amount_ == 0) revert Staking__ZeroAmount();
+        _updateGlobal();   // read the book as of now: the elapsed interest slice moves the reserve and the claims
         amount_ = _min(amount_, protocolReserve);
         protocolReserve -= amount_;
         if (!ML.rawTransfer(bzpx, treasury, amount_)) revert Staking__TransferFailed();
@@ -787,6 +788,7 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
         // No new money into a pot that cannot cover its claims: it would only fund the shortfall.
         if (_hardBreach()) revert Staking__InvariantBreached();
         _updateGlobal();
+        _autoMaintain(msg.sender);   // LOSS-FIRST: every loss this tx books precedes the settles
         _settlePendingRewards(msg.sender);
         _settlePendingPureYield(msg.sender);
         _processLockExpiry(msg.sender);
@@ -836,7 +838,6 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
 
         _resync(msg.sender);
         emit Deposited(msg.sender, amount_, u.staked);
-        _autoMaintain(msg.sender);
     }
 
     /// @notice Borrow BZPX against your own stake. After this call's interest accrual, the new
@@ -849,9 +850,10 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
     {
         if (amount_ == 0) revert Staking__ZeroAmount();
 
+        _updateGlobal();
+        _autoMaintain(msg.sender);   // LOSS-FIRST
         // Lending out of a short pot pays the borrower at par and shrinks everyone else's share.
         if (_hardBreach()) revert Staking__InvariantBreached();
-        _updateGlobal();
         _settlePendingRewards(msg.sender);
         _settlePendingPureYield(msg.sender);
         _processLockExpiry(msg.sender);
@@ -875,7 +877,6 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
 
         if (!ML.rawTransfer(bzpx, msg.sender, amount_)) revert Staking__TransferFailed();
         emit Borrowed(msg.sender, amount_, u.debt, _interestRate());
-        _autoMaintain(msg.sender);
     }
 
     /// @notice Repay up to `amount_` of your debt; only the outstanding debt is pulled.
@@ -887,6 +888,7 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
         _updateGlobal();
         UserInfo storage u = _users[msg.sender];
         if (u.debt == 0) revert Staking__NoDebt();
+        _autoMaintain(msg.sender);   // LOSS-FIRST
 
         _settlePendingRewards(msg.sender);
         _settlePendingPureYield(msg.sender);
@@ -902,7 +904,6 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
 
         _resync(msg.sender);
         emit Repaid(msg.sender, toRepay, u.debt);
-        _autoMaintain(msg.sender);
     }
 
     /// @notice Withdraw unlocked stake, after settling pending emission and pure yield.
@@ -920,6 +921,7 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
         if (u.lockDays > 0 && block.timestamp < u.unlockTime)    revert Staking__StillLocked();
 
         _updateGlobal();
+        _autoMaintain(msg.sender);   // LOSS-FIRST
         // A full-value exit out of a pot that cannot cover every claim is first-come-first-served:
         // the first exiter takes 100% and the shortfall lands on whoever is left. Under a hard
         // breach the only fair exit is the pro-rata one, so the normal channel closes and the
@@ -947,7 +949,6 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
 
         if (!ML.rawTransfer(bzpx, msg.sender, amount_)) revert Staking__TransferFailed();
         emit Withdrawn(msg.sender, amount_, 0, 0, amount_);
-        _autoMaintain(msg.sender);
     }
 
     /// @notice Pay your pending emission and pure yield, charge your interest and refresh your
@@ -956,11 +957,11 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
         // Same rule as `withdraw`: no full-value payout while the pot cannot cover every claim.
         if (_hardBreach()) revert Staking__InvariantBreached();
         _updateGlobal();
+        _autoMaintain(msg.sender);   // LOSS-FIRST
         _settlePendingRewards(msg.sender);
         _settlePendingPureYield(msg.sender);
         _processLockExpiry(msg.sender);
         _resync(msg.sender);
-        _autoMaintain(msg.sender);
     }
 
     /// @notice The debt-free claim, behind the same flash-loan delay as `withdraw`: pays pending
@@ -971,10 +972,10 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
         if (block.number <= u.depositBlock + MIN_DEPOSIT_BLOCKS) revert Staking__FlashLoanProtection();
         if (_hardBreach()) revert Staking__InvariantBreached();
         _updateGlobal();
+        _autoMaintain(msg.sender);   // LOSS-FIRST
         _settlePendingRewards(msg.sender);
         _settlePendingPureYield(msg.sender);
         _resync(msg.sender);
-        _autoMaintain(msg.sender);
     }
 
     // ════════════════════════════════════════════════════════════════════════════════════
@@ -1000,6 +1001,7 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
         if (lockDays_ > maxDays) revert Staking__LockExceedsEmissionEnd();
 
         _updateGlobal();
+        _autoMaintain(msg.sender);   // LOSS-FIRST
         _settlePendingRewards(msg.sender);
         _settlePendingPureYield(msg.sender);
 
@@ -1018,7 +1020,6 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
 
         _resync(msg.sender);
         emit LockSet(msg.sender, lockDays_, u.unlockTime, boostByDays(lockDays_));
-        _autoMaintain(msg.sender);
     }
 
     /// @notice Permissionless state resynchronisation: normalise ONE position whose commitment has
@@ -1034,8 +1035,8 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
         if (u.lockDays == 0) revert Staking__NoLock();
         if (block.timestamp < u.unlockTime) revert Staking__StillLocked();
         _updateGlobal();
-        this.lockStep(user_, msg.sender);
-        _autoMaintain(msg.sender);
+        _autoMaintain(msg.sender);   // LOSS-FIRST; its lock window may already have normalised `user_`
+        if (u.lockDays != 0) this.lockStep(user_, msg.sender);
     }
 
     /// @notice Batch form of `pokeExpiredLock`. Entries that are not (or no longer) expired are
@@ -1049,20 +1050,12 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
     /// @param users_ candidate positions; entries that are not expired are skipped
     function pokeExpiredLocks(address[] calldata users_) external nonReentrant whenNotEmergency conserves {
         _updateGlobal();
-        uint256 swept;
-        for (uint256 i = 0; i < users_.length; ) {
-            UserInfo storage w = _users[users_[i]];
-            if (w.lockDays > 0 && block.timestamp >= w.unlockTime) {
-                try this.lockStep(users_[i], msg.sender) { unchecked { ++swept; } } catch {}
-            }
-            unchecked { ++i; }
-        }
-        if (swept == 0) revert Staking__NoLock();
-        // Deliberately NOT `_autoMaintain`. The caller has just normalised expired commitments
-        // explicitly and BY NAME, so re-running the rotating LOCK window on top of that is pure
+        // Deliberately NOT `_autoMaintain`. The caller normalises expired commitments explicitly
+        // and BY NAME below, so re-running the rotating LOCK window on top of that is pure
         // duplicated work — measured at 246,261 gas, 83% of this call, against 49,060 of actual
-        // work. The SOLVENCY window is kept: it is unrelated to what the caller just did, and it
-        // is the part the protocol genuinely needs every transaction to carry.
+        // work. The SOLVENCY window is kept: it is unrelated to what the caller does, and it
+        // is the part the protocol genuinely needs every transaction to carry. It runs FIRST
+        // (LOSS-FIRST, see `_autoMaintain`): the losses it books precede the settles below.
         //
         // This is not a weakening. The passive lock sweep costs O(S / budget) transactions to
         // reach a given position (see test/SweepLatency.t.sol), and the escape hatch from that
@@ -1073,6 +1066,15 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
             if (b != 0) _sweepBorrowers(msg.sender, b);
             lastMaintTime = block.timestamp;
         }
+        uint256 swept;
+        for (uint256 i = 0; i < users_.length; ) {
+            UserInfo storage w = _users[users_[i]];
+            if (w.lockDays > 0 && block.timestamp >= w.unlockTime) {
+                try this.lockStep(users_[i], msg.sender) { unchecked { ++swept; } } catch {}
+            }
+            unchecked { ++i; }
+        }
+        if (swept == 0) revert Staking__NoLock();
     }
 
     // ════════════════════════════════════════════════════════════════════════════════════
@@ -1194,6 +1196,13 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
     ///         SAFETY — disabled while paused or in emergency, so a borrower who cannot act can
     ///         NEVER be liquidated by someone else's transaction. Bounded by `_maintBudget`, so
     ///         per-tx gas is bounded regardless of how many borrowers exist.
+    ///
+    ///         LOSS-FIRST — each entry runs it right after `_updateGlobal`, BEFORE its own breach
+    ///         read and its own settles. The sweep books other positions' losses (attribution,
+    ///         seizure); run last, it booked them after the caller had been paid at par out of a
+    ///         pot that the same transaction then left short. The caller is never seized by it
+    ///         (the borrower window skips the beneficiary); the lock window may normalise the
+    ///         caller's own elapsed lock, the same state its own `_processLockExpiry` writes.
     function _autoMaintain(address beneficiary) internal {
         if (paused() || emergencyMode) return;
         uint256 bBudget = _maintBudget();

@@ -97,14 +97,17 @@ contract PureYieldNeverFromUncollectedTest is Base {
         assertLe(paid, _poolShareOfCollected() + DUST, "first mover paid pure yield from uncollected interest");
     }
 
-    /// RESIDUAL, documented and not fixed. Below the clamp the pre-discovery book still reads
-    /// solvent: the slice moved from `totalStaked` to the reserve and the pure-yield pot, so
-    /// `_owed()` is unchanged until carol is touched. A lone pure staker whose own claim is the
-    /// first transaction after a ~200-year gap is paid her share of the whole slice, including
-    /// the 830,000 BZPX carol cannot pay. Closing it needs collectibility per borrower at credit
-    /// time, which is not O(1); see the RETIFICA notes. At the clamp the pre-discovery book
-    /// already reads insolvent and the claim is closed (test above).
-    function test_PUREUNCOLL_documents_firstMoverBelowTheClampIsStillPaid() public {
+    /// Below the clamp the pre-discovery book still reads solvent: the slice moved from
+    /// `totalStaked` to the reserve and the pure-yield pot, so `_owed()` is unchanged until carol
+    /// is touched. A lone pure staker whose own claim is the first transaction after a ~200-year
+    /// gap used to be paid her share of the whole slice, including the 830,000 BZPX carol cannot
+    /// pay, because her claim's maintenance window booked carol's loss AFTER paying her. LOSS-FIRST
+    /// runs that window before the settle, so the claim reads the pot after the loss and is closed.
+    /// RESIDUAL, still documented: a loss on a borrower that this transaction's window does not
+    /// reach is read only as a lower bound (`_owed`); closing it needs collectibility per borrower
+    /// at credit time, which is not O(1); see the RETIFICA notes.
+    /// Red at c31b6c5 (the window ran last): alice was paid and the book read insolvent after.
+    function test_PUREUNCOLL_firstMoverBelowTheClampIsClosedByItsOwnSweep() public {
         vm.prank(alice);
         staking.deposit(2 * STAKE, 90);
         vm.prank(carol);
@@ -115,15 +118,9 @@ contract PureYieldNeverFromUncollectedTest is Base {
         staking.borrow(maxB);
         vm.roll(block.number + 11);
         vm.warp(block.timestamp + 200 * 365 days);
-        uint256 a0 = token.balanceOf(alice);
+        assertTrue(staking.isSolvent(), "setup: the book reads solvent before carol is touched");
         vm.prank(alice);
+        vm.expectRevert(BlazePhoenixStaking.Staking__InvariantBreached.selector);
         staking.claimPureYield();
-        uint256 paid = token.balanceOf(alice) - a0;
-        emit log_named_decimal_uint("lone first mover paid           ", paid, 18);
-        emit log_named_decimal_uint("pool share of collected interest", _poolShareOfCollected(), 18);
-        emit log_named_decimal_uint("uncollected interest            ", staking.totalUncollectedInterest(), 18);
-        assertGt(staking.totalUncollectedInterest(), 0, "setup: the claim's own sweep finds the loss");
-        assertGt(paid, _poolShareOfCollected() + DUST, "documents: paid before the loss was known");
-        assertFalse(staking.isSolvent(), "documents: and the book reads insolvent right after");
     }
 }

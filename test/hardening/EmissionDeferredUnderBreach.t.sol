@@ -267,4 +267,27 @@ contract EmissionDeferredUnderBreachTest is Base {
         assertTrue(staking.isSolvent(), "the book reads solvent after it");
         assertEq(token.balanceOf(bob) - b0, pend, "the earned emission is paid at par");
     }
+
+    /// The boundary of the deferral is the boundary of `_hardBreach()`: a pot that covers every
+    /// claim to the dust (`balance + DUST == _owed()`, no own loss) pays at par. The book is
+    /// breached, the sweep paused, and a donation tops the balance up to exactly that point.
+    function test_EMISDEFER_potCoveringTheClaimsToTheDustPaysAtPar() public {
+        _breachedBook();
+        vm.prank(admin);
+        staking.grantRole(keccak256("GUARDIAN_ROLE"), keeper);
+        vm.prank(keeper);
+        staking.pause();
+        BlazePhoenixStaking.SolvencyReport memory r = staking.solvency();
+        token.mint(address(staking), r.deficit - DUST);
+        r = staking.solvency();
+        assertEq(r.backing + DUST, r.owed, "setup: the pot covers the claims exactly to the dust");
+        uint256 pend = staking.pendingRewards(alice);
+        assertGt(pend, DUST, "setup: alice has earned emission");
+        uint256 paid0 = staking.totalRewardsPaid();
+        vm.prank(alice);
+        staking.claimRewards();
+        // `totalRewardsPaid` also counts alice's pure yield, settled after the emission.
+        assertGe(staking.totalRewardsPaid() - paid0, pend, "the earned emission is paid at par");
+        assertEq(staking.pendingRewards(alice), 0, "nothing left credited");
+    }
 }

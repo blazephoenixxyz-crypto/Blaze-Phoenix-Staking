@@ -214,7 +214,10 @@ is a temporary, admin-undoable pause.
 
 ### 3.1 The scan budget
 
-After every ordinary user transaction, the protocol runs `_autoMaintain`. The
+Every ordinary user transaction runs `_autoMaintain` first, right after the global
+accrual and before its own breach read and its own payments: every loss the sweep books
+(a borrower's interest outgrowing its stake, a seizure the reserve cannot cover) is on the
+books before anything leaves at par in the same transaction (LOSS-FIRST). The
 number of positions it will scan is determined by `_maintBudget()`:
 
 ```
@@ -572,6 +575,8 @@ The protocol has no price feed. There is nothing to manipulate.
 **immutable** `treasury` address. The admin cannot access staked principal. The
 withdrawal is refused when the contract would read breached after it: once interest has
 outgrown what the borrowers' stakes hold, the reserve can be what still covers every claim.
+The book is accrued to the current block first, so the cap and the breach read are those of
+now, not of the last transaction that touched it.
 
 ### 7.3 Reentrancy
 
@@ -629,7 +634,10 @@ after the breach clears. A settlement reads the breach after the position's own 
 attributes the position's interest first, and counts the part of the position's debt that its
 stake and the reserve cannot cover, which a liquidation records as bad debt. So a transaction that
 opens a breach through the paid position's own loss (its interest outgrowing its stake, or its
-liquidation, direct or by a maintenance sweep) defers that position's emission too.
+liquidation, direct or by a maintenance sweep) defers that position's emission too. The
+maintenance sweep runs before the caller's settlement, so a loss it books on another position
+is read the same way: the caller of the transaction that books it is paid no emission or pure
+yield at par.
 
 In a **breached** emergency the contract may physically hold less than the sum of
 net equities. Paying full equity first-come-first-served would let early exiters
