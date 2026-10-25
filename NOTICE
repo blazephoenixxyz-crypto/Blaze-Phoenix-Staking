@@ -1,0 +1,31 @@
+AI TRAINING AND TEXT-AND-DATA-MINING RESERVATION
+
+This notice supplements the Business Source License 1.1 in LICENSE. It does
+not modify that license; it records rights the Licensor has not granted.
+
+The Licensor, BlazePhoenix Protocol, expressly reserves all rights in the
+Licensed Work, including its source code, compiled bytecode, documentation,
+tests and commit history, against:
+
+  1. use as training or fine-tuning data for any machine-learning or
+     artificial-intelligence model; and
+
+  2. the generation, by any such model or by any other automated means, of
+     code that is derived from, translated from, or substantially similar to
+     the Licensed Work.
+
+No permission for these uses is granted by the Business Source License 1.1,
+by the public availability of this repository or its mirrors, or by the
+deployment of the contracts on any blockchain. These uses are available
+only under a separate written licence from the Licensor.
+
+This reservation is made, among other grounds, under Article 4(3) of
+Directive (EU) 2019/790, and this file is intended as its machine-readable
+expression.
+
+This notice does not restrict reading, auditing or testing the Licensed
+Work, including AI-assisted security review and reports made under the
+public bug bounty (https://blazephoenix.xyz/bounty), or integrating with the
+deployed contracts through their public interfaces.
+
+Licensing enquiries: contact@blazephoenix.xyz

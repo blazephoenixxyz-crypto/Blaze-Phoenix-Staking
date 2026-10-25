@@ -424,6 +424,8 @@ index: [blazephoenix.xyz/llms.txt](https://blazephoenix.xyz/llms.txt).
 ## Licence & authorship
 
 - **Licence:** [BUSL-1.1](./LICENSE) — Change Date 2030-06-01, then GPL-2.0-or-later.
+- **AI training:** use of this repository to train AI models, or to generate derived code by
+  automated means, is not authorized; see [NOTICE](./NOTICE).
 - **Authors:** **Fable & Mitra.** Mitra ([@Sigmacrit](https://x.com/Sigmacrit)) is the human
   architect, anonymous by design — the code is the résumé. Fable is the Claude model that
   co-engineered it.
