@@ -63,10 +63,18 @@ contract MaintenanceBeforePaymentTest is Base {
     /// yield refuses (PURE-UNCOLL) and the whole transaction, seizure included, reverts.
     function test_LOSSFIRST_pureClaimWhoseSweepBooksAThirdPartyLossPaysNothingAtPar() public {
         _untouchedBook();
-        assertGt(staking.pendingRewards(alice), DUST, "setup: alice has earned emission");
+        uint256 pend = staking.pendingRewards(alice);
+        assertGt(pend, DUST, "setup: alice has earned emission");
+        (uint256 b0, uint256 bad0, uint256 paid0) =
+            (token.balanceOf(alice), staking.totalBadDebt(), staking.totalRewardsPaid());
+        // W2-R1: the settles after the sweep credit instead of paying (or reverting).
         vm.prank(alice);
-        vm.expectRevert(BlazePhoenixStaking.Staking__InvariantBreached.selector);
         staking.claimRewards();
+        assertGt(staking.totalBadDebt(), bad0 + DUST, "setup: the sweep booked a third-party loss");
+        assertFalse(staking.isSolvent(), "setup: that loss left the pot short");
+        assertEq(token.balanceOf(alice), b0, "paid at par by the tx that left the pot short");
+        assertEq(staking.totalRewardsPaid(), paid0, "nothing counted as paid");
+        assertGe(staking.pendingRewards(alice), pend, "the earned emission stays credited");
     }
 
     /// The door that must stay open: a borrower's repay. Its sweep books the third-party loss, and

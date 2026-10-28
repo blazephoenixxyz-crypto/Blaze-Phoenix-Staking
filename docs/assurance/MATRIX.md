@@ -81,20 +81,20 @@ zero is a fact about the suite and the place to look first.
 
 | area | P | A | D | V | Q | S | G | T | E | Y | M | I | H | R | Z | K | W | O | X | C | N | U | L | J |
 |---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
-| deposit / top-up / lock | - | 20 | 40 | 38 | 18 | 5 | 46 | 155 | 32 | 51 | 41 | 12 | 3 | - | - | 12 | 28 | 30 | **0** | 76 | 51 | **0** | - | - |
+| deposit / top-up / lock | - | 24 | 40 | 40 | 18 | 5 | 47 | 158 | 32 | 53 | 41 | 12 | 3 | - | - | 12 | 30 | 30 | **0** | 78 | 56 | **0** | - | - |
 | withdraw | - | 1 | 2 | 4 | 3 | 2 | 12 | 18 | 3 | 7 | 11 | **0** | **0** | - | - | 1 | 3 | **0** | **0** | 7 | 2 | **0** | - | - |
-| borrow / repay | - | 6 | 29 | 27 | 13 | 4 | 18 | 102 | 22 | 33 | 15 | 6 | 3 | - | - | 3 | 17 | 16 | **0** | 47 | 38 | **0** | - | - |
-| interest | - | 1 | 2 | 5 | 5 | **0** | **0** | 15 | 4 | 4 | **0** | **0** | **0** | - | - | 1 | 2 | 5 | **0** | 4 | 14 | **0** | - | - |
-| emission / rewards | - | 10 | 33 | 31 | 12 | 5 | 26 | 92 | 19 | 34 | 24 | 4 | 1 | - | - | 21 | 21 | 13 | **0** | 73 | 32 | **0** | - | - |
-| pure yield | - | 3 | 2 | 3 | 6 | 1 | 6 | 20 | 3 | 7 | 5 | 2 | 1 | - | - | 1 | 2 | 4 | **0** | 8 | 12 | **0** | - | - |
-| liquidation | - | 1 | 6 | 3 | 2 | **0** | 5 | 17 | 4 | 10 | 3 | 2 | **0** | - | - | **0** | 2 | **0** | **0** | 8 | 8 | **0** | - | - |
+| borrow / repay | - | 6 | 29 | 29 | 13 | 4 | 22 | 110 | 22 | 38 | 15 | 6 | 3 | - | - | 3 | 18 | 16 | **0** | 48 | 39 | **0** | - | - |
+| interest | - | 1 | 2 | 6 | 5 | **0** | 2 | 19 | 4 | 8 | **0** | **0** | **0** | - | - | 1 | 2 | 5 | **0** | 4 | 14 | **0** | - | - |
+| emission / rewards | - | 13 | 33 | 33 | 12 | 5 | 27 | 96 | 19 | 36 | 23 | 4 | 1 | - | - | 21 | 23 | 13 | **0** | 75 | 37 | **0** | - | - |
+| pure yield | - | 6 | 2 | 4 | 6 | 1 | 6 | 22 | 3 | 8 | 4 | 2 | 1 | - | - | 1 | 2 | 4 | **0** | 8 | 16 | **0** | - | - |
+| liquidation | - | 1 | 6 | 3 | 2 | **0** | 6 | 19 | 4 | 10 | 3 | 2 | **0** | - | - | **0** | 2 | **0** | **0** | 8 | 8 | **0** | - | - |
 | maintenance windows | - | 3 | 7 | 1 | 3 | **0** | 6 | 18 | **0** | 5 | 6 | **0** | **0** | - | - | 1 | 1 | 4 | **0** | 4 | 6 | **0** | - | - |
-| lock sweep / poke | - | 21 | 15 | 5 | **0** | **0** | 13 | 30 | 4 | 12 | 11 | 4 | **0** | - | - | 2 | 3 | 6 | **0** | 13 | 9 | **0** | - | - |
-| emergency / breaker | - | 5 | 8 | 35 | 1 | 5 | 44 | 40 | 6 | 105 | 22 | 3 | 1 | - | - | 2 | 37 | 10 | **0** | 54 | 15 | **0** | - | - |
-| admin / reserves | - | 7 | 23 | 45 | 7 | 4 | 23 | 85 | 19 | 48 | 21 | 3 | 2 | - | - | 11 | 37 | 17 | **0** | 94 | 28 | **0** | - | - |
-| views / solvency | - | 8 | 20 | 27 | 8 | 7 | 23 | 80 | 6 | 38 | 22 | 5 | 1 | - | - | 2 | 23 | 15 | **0** | 43 | 33 | **0** | - | - |
+| lock sweep / poke | - | 25 | 15 | 5 | **0** | **0** | 13 | 31 | 4 | 12 | 11 | 4 | **0** | - | - | 2 | 3 | 6 | **0** | 13 | 12 | **0** | - | - |
+| emergency / breaker | - | 5 | 8 | 39 | 1 | 5 | 48 | 47 | 6 | 112 | 23 | 3 | 1 | - | - | 2 | 40 | 10 | **0** | 57 | 16 | **0** | - | - |
+| admin / reserves | - | 7 | 23 | 48 | 7 | 4 | 24 | 89 | 19 | 51 | 21 | 3 | 2 | - | - | 11 | 40 | 17 | **0** | 97 | 29 | **0** | - | - |
+| views / solvency | - | 8 | 20 | 27 | 8 | 7 | 24 | 82 | 6 | 38 | 22 | 5 | 1 | - | - | 2 | 23 | 15 | **0** | 43 | 34 | **0** | - | - |
 
-288 cells: 60 without object, 228 measured, **43 empty**.
+288 cells: 60 without object, 228 measured, **42 empty**.
 
 ## 5. Cells ordered empty-first
 
@@ -108,11 +108,11 @@ zero is a fact about the suite and the place to look first.
 The events axis (E), empty at `cedd80d`, is now covered by `test/assurance/EventPayloads.t.sol`
 except in the maintenance-windows area.
 
-### 5.2 Area cells empty (19 cells) — the first places to look
+### 5.2 Area cells empty (18 cells) — the first places to look
 
 | cell | reading |
 |---|---|
-| G · interest, M · interest | no interest-area test asserts a refusal |
+| M · interest | no interest-area test asserts a refusal (G · interest filled by `test/fix1027/StaleQuantityFamily.t.sol`, 3236) |
 | S · interest, S · liquidation, S · maintenance windows, S · lock sweep / poke | no reentrancy / hook test in these areas |
 | I · interest, I · withdraw, I · maintenance windows | no parity- or mirror-named test |
 | H · withdraw, H · interest, H · liquidation, H · maintenance windows, H · lock sweep / poke | no test text records a fix commit or pre-fix state |

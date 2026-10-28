@@ -107,7 +107,7 @@ contract PureYieldNeverFromUncollectedTest is Base {
     /// reach is read only as a lower bound (`_owed`); closing it needs collectibility per borrower
     /// at credit time, which is not O(1); see the RETIFICA notes.
     /// Red at c31b6c5 (the window ran last): alice was paid and the book read insolvent after.
-    function test_PUREUNCOLL_firstMoverBelowTheClampIsClosedByItsOwnSweep() public {
+    function test_PUREUNCOLL_firstMoverBelowTheClampIsCreditedByItsOwnSweep() public {
         vm.prank(alice);
         staking.deposit(2 * STAKE, 90);
         vm.prank(carol);
@@ -119,8 +119,17 @@ contract PureYieldNeverFromUncollectedTest is Base {
         vm.roll(block.number + 11);
         vm.warp(block.timestamp + 200 * 365 days);
         assertTrue(staking.isSolvent(), "setup: the book reads solvent before carol is touched");
+        (uint256 a0, uint256 c0, uint256 paid0) =
+            (token.balanceOf(alice), token.balanceOf(address(staking)), staking.totalRewardsPaid());
+        // W2-R1: the claim's own sweep books carol's loss; the pure yield is then credited to
+        // `_rewardDeferred`, not
+        // paid at par and not reverted.
         vm.prank(alice);
-        vm.expectRevert(BlazePhoenixStaking.Staking__InvariantBreached.selector);
         staking.claimPureYield();
+        assertFalse(staking.isSolvent(), "setup: the sweep booked the loss");
+        assertEq(token.balanceOf(alice), a0, "pure yield paid at par into the breach");
+        assertEq(token.balanceOf(address(staking)), c0, "the pot moved");
+        assertEq(staking.totalRewardsPaid(), paid0, "nothing counted as paid");
+        assertGt(staking.pendingRewards(alice), 0, "the pure yield stays credited");
     }
 }

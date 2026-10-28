@@ -180,6 +180,16 @@ jobs:
             echo "::error title=Producer copy guard::boostByDays defined $n times; linear line $l; quadratic line $q (expected 1/1/1) — the boost curve has a second producer."
             exit 1
           fi
+      - name: One writer — lastMaintTime (Clock writer guard)
+        # The register grades `lastMaintTime` SINGLE, and this is the guard it names: the shared
+        # clock of both maintenance windows is written only by the constructor and `_autoMaintain`,
+        # where both windows run. A third writer resets the lock window's budget (3328).
+        run: |
+          n=$(grep -cE 'lastMaintTime *= *block\.timestamp' src/BlazePhoenixStaking.sol || true)
+          if [ "$n" -ne 2 ]; then
+            echo "::error title=Clock writer guard::lastMaintTime written $n times (expected 2: constructor and _autoMaintain)."
+            exit 1
+          fi
 
   formal:
     name: formal verification (Halmos symbolic, report-only)

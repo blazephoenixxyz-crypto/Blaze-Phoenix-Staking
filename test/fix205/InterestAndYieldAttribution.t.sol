@@ -79,9 +79,17 @@ contract InterestAndYieldAttributionTest is Base {
     // by its POST-interest effective stake, E * wA_post / (wA_post + wB). The fair
     // time-weighted value lies between that bound and the pre-interest share; the test logs
     // both bounds and the claimed amount.
-    // OWNER DECISION: lazy accrual cannot know the weight path inside an un-touched window
-    // without per-position work; the sweep bounds the window in an active book.
+    // OWNER DECISION (3256-P1-C, 28/10): lazy accrual cannot know the weight path inside an
+    // un-touched window without per-position work (not O(1)); the sweep bounds the window in an
+    // active book. The cheap correction that may only LOWER the weight (scale the emission due by
+    // live/tracked weight in the settle) does not fit the runtime (10 B of EIP-170 headroom).
+    // KNOWN, bounded (not dust, see the caps): the excess over the post-interest share is capped.
     // ─────────────────────────────────────────────────────────────────────────────────────
+    // Measured 28/10 at max LTV, untouched: 153 bps (1y) and 845 bps (5y) over the post-interest
+    // share. NOT dust; the caps pin today's magnitude so any growth goes red.
+    uint256 constant EMISINT_CAP1_BPS = 160;
+    uint256 constant EMISINT_CAP5_BPS = 850;
+
     function _emisIntWindow(uint256 window)
         internal
         returns (uint256 claimed, uint256 boundPost, uint256 boundPre)
@@ -110,7 +118,7 @@ contract InterestAndYieldAttributionTest is Base {
         boundPre = e * eA0 / (eA0 + eB);
     }
 
-    function test_EMISINT_documents_borrowerEmissionShareUsesPreInterestWeight() public {
+    function test_EMISINT_borrowerEmissionExcessOverPostInterestShareIsBounded() public {
         vm.prank(admin);
         staking.fundEmission(180_000_000e18);
         vm.prank(alice);
@@ -137,11 +145,12 @@ contract InterestAndYieldAttributionTest is Base {
         emit log_named_decimal_uint("5y: bound pre-interest   ", pre5, 18);
         emit log_named_uint("5y: excess over post bound, bps", c5 > post5 ? (c5 - post5) * 10_000 / post5 : 0);
 
-        // Documented: the claim equals the PRE-interest share, above the post-interest bound.
-        assertGt(c1, post1 + DUST, "documents: 1y claim above the post-interest share");
-        assertGt(c5, post5 + DUST, "documents: 5y claim above the post-interest share");
-        assertApproxEqAbs(c1, pre1, DUST, "documents: 1y claim is the pre-interest share");
-        assertApproxEqAbs(c5, pre5, DUST, "documents: 5y claim is the pre-interest share");
+        // Magnitude bound (L02): never above the pre-interest share, and the excess over the
+        // post-interest share stays under the measured caps.
+        assertLe(c1, pre1 + DUST, "1y claim above the pre-interest share");
+        assertLe(c5, pre5 + DUST, "5y claim above the pre-interest share");
+        assertLe(c1, post1 + post1 * EMISINT_CAP1_BPS / 10_000, "1y excess over the post-interest share");
+        assertLe(c5, post5 + post5 * EMISINT_CAP5_BPS / 10_000, "5y excess over the post-interest share");
     }
 
     // ─────────────────────────────────────────────────────────────────────────────────────

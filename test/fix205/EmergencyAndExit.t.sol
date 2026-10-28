@@ -34,18 +34,17 @@ contract EmergencyAndExitTest is Base {
     }
 
     // ──────────────────────────────────────────────────────────────────────────────────────
-    // EMG-HAIRCUT. The haircut denominator eCorr = totalPositiveEquity − own tracked + own payout
-    // still carries the OTHER positions' stale-high trackedEquity (interest accrued since their
-    // last touch is not reflected). The first exiter is scaled by pot / (stale-high E) and the
-    // slack flows to whoever exits last, so the payout depends on the exit order.
+    // EMG-HAIRCUT (3236). The haircut denominator eCorr = totalPositiveEquity − own tracked + own
+    // payout carried the OTHER positions' stale-high trackedEquity (interest accrued since their
+    // last touch), so the first exiter was scaled by pot / (stale-high E) and the slack flowed to
+    // whoever exited last: the payout depended on the exit order.
     // Oracle: payout_i = eq_i · pot / Σ eq_true, with eq_true = staked − accrued interest − debt.
-    // OWNER DECISION: no exact O(1) denominator exists (the stale terms are per position, and the
-    // cheap lower bound totalStaked − totalDebt would over-drain). The current bound is one-sided
-    // in the pot's favour; this test pins the order dependence it leaves.
+    // Fix: the breached haircut runs only on a fresh book (global − attributed interest ≤ dust);
+    // otherwise it reverts Staking__StaleEquity until `syncEquity` refreshes the borrowers.
     // Single borrower, so after the trip totalStaked − totalDebt − bob.staked is alice's exact
     // true equity (global slice == her per-user interest).
     // ──────────────────────────────────────────────────────────────────────────────────────
-    function test_EMG_HAIRCUT_documents_payout_depends_on_exit_order() public {
+    function test_EMG_HAIRCUT_payout_does_not_depend_on_exit_order() public {
         _stake(alice, S);
         _stake(bob, S);
         vm.roll(block.number + 11);
@@ -58,19 +57,20 @@ contract EmergencyAndExitTest is Base {
         vm.prank(carol);
         staking.tripBreaker();
 
+        // Stale book: the haircut waits instead of scaling bob against alice's stale term.
+        vm.prank(bob);
+        vm.expectRevert(BlazePhoenixStaking.Staking__StaleEquity.selector);
+        staking.emergencyWithdraw();
+        staking.syncEquity(alice);
+
         uint256 pot = token.balanceOf(address(staking));
         uint256 eqB = S;
         uint256 eqA = staking.totalStaked() - staking.totalDebt() - eqB;   // alice's true equity
         uint256 oracleA = eqA * pot / (eqA + eqB);
         uint256 oracleB = eqB * pot / (eqA + eqB);
-        console.log("pot", pot);
-        console.log("alice stale equity", S - S / 2);
-        console.log("alice true equity ", eqA);
-        console.log("oracle alice", oracleA);
-        console.log("oracle bob  ", oracleB);
 
         uint256 snap = vm.snapshotState();
-        // Order A: bob (pure, victim) first, then alice.
+        // Order A: bob (pure) first, then alice.
         uint256 bobA = _emgExit(bob);
         uint256 aliceA = _emgExit(alice);
         vm.revertToState(snap);
@@ -78,20 +78,11 @@ contract EmergencyAndExitTest is Base {
         uint256 aliceB = _emgExit(alice);
         uint256 bobB = _emgExit(bob);
 
-        console.log("order A (bob first) bob  ", bobA);
-        console.log("order A (bob first) alice", aliceA);
-        console.log("order B (alice first) alice", aliceB);
-        console.log("order B (alice first) bob  ", bobB);
-
-        // Order B already matches the oracle (alice's own term is exact when she exits first).
+        assertApproxEqAbs(bobA, oracleB, 1e12, "order A bob vs oracle");
+        assertApproxEqAbs(aliceA, oracleA, 1e12, "order A alice vs oracle");
         assertApproxEqAbs(aliceB, oracleA, 1e12, "order B alice vs oracle");
         assertApproxEqAbs(bobB, oracleB, 1e12, "order B bob vs oracle");
-        // Documented: exiting first against alice's stale-high term pays bob less than the oracle,
-        // and the slack goes to alice, who exits last. Nothing is over-drained.
-        assertLt(bobA + 1e12, bobB, "documents: bob is paid less when he exits first");
-        assertGt(aliceA, aliceB + 1e12, "documents: the last exiter collects the slack");
-        assertLe(bobA + aliceA, pot, "the bound never over-drains the pot");
-        console.log("bob shortfall vs oracle when first, bps", (bobB - bobA) * 10_000 / bobB);
+        assertLe(bobA + aliceA, pot, "never over-drains the pot");
     }
 
     // ──────────────────────────────────────────────────────────────────────────────────────
