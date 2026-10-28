@@ -5,9 +5,10 @@ import {Base} from "../BlazePhoenixStaking.t.sol";
 
 /// @notice Attribution of emission and pure yield across interest accrual, lock expiry and
 ///         uncollectible interest. Each test states the property it checks and the oracle used.
-///         Every test here is a `documents` test: the items are left for an owner decision
-///         (see the pull request), so each pins the current behaviour, asserts its direction and
-///         logs the measured size. A fix flips the documented assertion and turns the test red.
+///         Every test here but EMIS-INT (fixed, 3256-P1-C) is a `documents` test: the items are
+///         left for an owner decision (see the pull request), so each pins the current behaviour,
+///         asserts its direction and logs the measured size. A fix flips the documented assertion
+///         and turns the test red.
 contract InterestAndYieldAttributionTest is Base {
     uint256 internal constant STAKE = 1_000_000e18;
     uint256 internal constant DUST = 1e10;
@@ -73,33 +74,37 @@ contract InterestAndYieldAttributionTest is Base {
     }
 
     // ─────────────────────────────────────────────────────────────────────────────────────
-    // EMIS-INT. In `claimRewards` the emission settle runs before `_accrueInterestFor`, so a
-    // borrower is paid for the whole un-touched window at its PRE-interest effective stake.
-    // Oracle: the borrower's emission share over the window must not exceed the share implied
-    // by its POST-interest effective stake, E * wA_post / (wA_post + wB). The fair
-    // time-weighted value lies between that bound and the pre-interest share; the test logs
-    // both bounds and the claimed amount.
-    // OWNER DECISION (3256-P1-C, 28/10): lazy accrual cannot know the weight path inside an
-    // un-touched window without per-position work (not O(1)); the sweep bounds the window in an
-    // active book. The cheap correction that may only LOWER the weight (scale the emission due by
-    // live/tracked weight in the settle) does not fit the runtime (10 B of EIP-170 headroom).
-    // KNOWN, bounded (not dust, see the caps): the excess over the post-interest share is capped.
+    // EMIS-INT (3256-P1-C). Interest is attributed lazily, so between touches a borrower's
+    // tracked emission weight is stale high by the interest charged. The settle pays the window
+    // at the LIVE weight (`_atLiveWeight`: the weight the post-interest equity commands under the
+    // tracked lock) and returns the stale-weight excess, never earned, to `rewardReserve`. The
+    // quote routes through the same helper, so `pendingRewards` is the payment.
+    // Oracle (independent of the contract's arithmetic): window emission E from `emittedAt`, net
+    // stakes from `effectiveStakeOf` before (wA_pre, wB) and after (wA_post) the claim. Equal
+    // locks, so the boost cancels. The window integrated the per-unit rate E / (wA_pre + wB), so
+    // the claim is E * wA_post / (wA_pre + wB) within dust, and the reserve gets back
+    // E * wA_pre / (wA_pre + wB) - claim. Every unit of live weight earns the same rate: the
+    // claim is the pure staker's window times wA_post / wB.
+    // Red at 8cc2b65: the settle paid the pre-interest share, 153 bps (1y) and 845 bps (5y) over
+    // the post-interest share at max LTV, untouched.
+    // Residual (logged, not asserted): a lazy window's per-unit rate is set by the stale
+    // denominator, which no O(1) settle corrects; every staker is paid at that rate, so the claim
+    // sits below the post-interest share E * wA_post / (wA_post + wB) and the difference stays in
+    // the reserve.
     // ─────────────────────────────────────────────────────────────────────────────────────
-    // Measured 28/10 at max LTV, untouched: 153 bps (1y) and 845 bps (5y) over the post-interest
-    // share. NOT dust; the caps pin today's magnitude so any growth goes red.
-    uint256 constant EMISINT_CAP1_BPS = 160;
-    uint256 constant EMISINT_CAP5_BPS = 850;
-
     function _emisIntWindow(uint256 window)
         internal
-        returns (uint256 claimed, uint256 boundPost, uint256 boundPre)
+        returns (uint256 claimed, uint256 boundPost)
     {
         // Window bounds are read from contract state, not from `block.timestamp` in this frame
         // (via-IR may re-read the timestamp after `vm.warp`).
         uint256 tStart = staking.lastRewardTime();
+        uint256 bobQ0 = staking.pendingRewards(bob);
         vm.warp(tStart + window);
         uint256 eA0 = staking.effectiveStakeOf(alice);
         uint256 eB = staking.effectiveStakeOf(bob);
+        uint256 quoted = staking.pendingRewards(alice);
+        uint256 r0 = staking.rewardReserve();
         uint256 bal0 = token.balanceOf(alice);
         vm.prank(alice);
         staking.claimRewards();
@@ -110,15 +115,28 @@ contract InterestAndYieldAttributionTest is Base {
         uint256 eA1 = staking.effectiveStakeOf(alice);
         assertEq(staking.effectiveStakeOf(bob), eB, "pure staker weight unchanged");
         assertLt(eA1, eA0, "interest was charged against the borrower's collateral");
+        uint256 atLive = e * eA1 / (eA0 + eB);
+        uint256 atTracked = e * eA0 / (eA0 + eB);
+        boundPost = e * eA1 / (eA1 + eB);
         emit log_named_decimal_uint("window emission E        ", e, 18);
         emit log_named_decimal_uint("wA pre-interest          ", eA0, 18);
         emit log_named_decimal_uint("wA post-interest         ", eA1, 18);
         emit log_named_decimal_uint("wB                       ", eB, 18);
-        boundPost = e * eA1 / (eA1 + eB);
-        boundPre = e * eA0 / (eA0 + eB);
+        emit log_named_decimal_uint("claimed(A)               ", claimed, 18);
+        emit log_named_decimal_uint("at live weight (oracle)  ", atLive, 18);
+        emit log_named_decimal_uint("at tracked weight        ", atTracked, 18);
+        emit log_named_decimal_uint("post-interest share      ", boundPost, 18);
+        assertEq(quoted, claimed, "pendingRewards quotes the payment");
+        assertApproxEqAbs(claimed, atLive, DUST, "the window is paid at the live weight");
+        // Per unit of live weight the borrower earns what the debt-free staker earns in the window.
+        assertApproxEqAbs(claimed, (staking.pendingRewards(bob) - bobQ0) * eA1 / eB, DUST,
+            "the borrower earns the pure staker's per-unit rate");
+        // The reserve funded E for the window and got the stale-weight excess back.
+        assertApproxEqAbs(staking.rewardReserve() + e, r0 + atTracked - claimed, DUST,
+            "the stale-weight excess returns to rewardReserve");
     }
 
-    function test_EMISINT_borrowerEmissionExcessOverPostInterestShareIsBounded() public {
+    function test_EMISINT_borrowerWindowIsPaid_atLiveWeight() public {
         vm.prank(admin);
         staking.fundEmission(180_000_000e18);
         vm.prank(alice);
@@ -129,30 +147,14 @@ contract InterestAndYieldAttributionTest is Base {
         uint256 maxB = staking.maxBorrowOf(alice);
         vm.prank(alice);
         staking.borrow(maxB);
+        emit log_named_decimal_uint("borrowed (near MAX_LTV)  ", maxB, 18);
 
         uint256 snap = vm.snapshotState();
-        (uint256 c1, uint256 post1, uint256 pre1) = _emisIntWindow(365 days);
+        (uint256 c1, uint256 post1) = _emisIntWindow(365 days);
         vm.revertToState(snap);
-        (uint256 c5, uint256 post5, uint256 pre5) = _emisIntWindow(5 * 365 days);
-
-        emit log_named_decimal_uint("borrowed (near MAX_LTV)  ", maxB, 18);
-        emit log_named_decimal_uint("1y: claimed(A)           ", c1, 18);
-        emit log_named_decimal_uint("1y: bound post-interest  ", post1, 18);
-        emit log_named_decimal_uint("1y: bound pre-interest   ", pre1, 18);
-        emit log_named_uint("1y: excess over post bound, bps", c1 > post1 ? (c1 - post1) * 10_000 / post1 : 0);
-        emit log_named_decimal_uint("5y: claimed(A)           ", c5, 18);
-        emit log_named_decimal_uint("5y: bound post-interest  ", post5, 18);
-        emit log_named_decimal_uint("5y: bound pre-interest   ", pre5, 18);
-        emit log_named_uint("5y: excess over post bound, bps", c5 > post5 ? (c5 - post5) * 10_000 / post5 : 0);
-
-        // Magnitude bound (L02): never above the pre-interest share, and the excess over the
-        // post-interest share stays under the measured caps.
-        assertGe(c1, post1 - DUST, "1y claim below the post-interest share");
-        assertGe(c5, post5 - DUST, "5y claim below the post-interest share");
-        assertLe(c1, pre1 + DUST, "1y claim above the pre-interest share");
-        assertLe(c5, pre5 + DUST, "5y claim above the pre-interest share");
-        assertLe(c1, post1 + post1 * EMISINT_CAP1_BPS / 10_000, "1y excess over the post-interest share");
-        assertLe(c5, post5 + post5 * EMISINT_CAP5_BPS / 10_000, "5y excess over the post-interest share");
+        (uint256 c5, uint256 post5) = _emisIntWindow(5 * 365 days);
+        emit log_named_uint("1y: claim below the post-interest share, bps", c1 < post1 ? (post1 - c1) * 10_000 / post1 : 0);
+        emit log_named_uint("5y: claim below the post-interest share, bps", c5 < post5 ? (post5 - c5) * 10_000 / post5 : 0);
     }
 
     // ─────────────────────────────────────────────────────────────────────────────────────

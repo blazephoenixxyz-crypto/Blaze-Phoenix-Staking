@@ -369,8 +369,9 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
     ///      `totalStaked` but not yet from any position, i.e. exactly what leaves
     ///      `totalPositiveEquity` stale-high. The breached haircut reads it (3236).
     uint256 private _interestAttributed;
-    /// @dev `totalRewardDistributed` when the emergency began; both of its writers are frozen
-    ///      for the emergency, so `cancelEmergency` requires it unchanged (3326 meta-guard).
+    /// @dev `totalRewardDistributed` when the emergency began; its writers (`_updateGlobal`,
+    ///      `_updateInterestIndex`, the P1-C return in `_settlePendingRewards`) are frozen for the
+    ///      emergency, so `cancelEmergency` requires it unchanged (3326 meta-guard).
     uint256 private _distributedAtTrip;
 
     // ── Events ────────────────────────────────────────────────────────────────────────────
@@ -425,6 +426,7 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
     error Staking__NoBreach();
     error Staking__EmissionNotEnded();
     error Staking__StaleEquity();
+    error Staking__PaidIntoBreach();
 
     // ── Guards ────────────────────────────────────────────────────────────────────────────
     /// @dev PER-TRANSACTION value conservation (not absolute). Snapshots both sides of the
@@ -662,7 +664,7 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
         // lastRewardTime. If the emergency passed with no exit or fundEmission, both still sit
         // at the trip, and without this slide the first post-resume settle would pay the halt.
         _updateGlobal();
-        // Meta-guard (3326): both writers of totalRewardDistributed are frozen in an emergency.
+        // Meta-guard (3326): every writer of totalRewardDistributed is frozen in an emergency.
         if (totalRewardDistributed != _distributedAtTrip) revert Staking__InvariantBreached();
         emergencyMode = false; emergencyTrippedAt = 0;
         emit EmergencyCancelled(msg.sender, block.timestamp);
@@ -1134,7 +1136,7 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
         uint256 bonus = _executeLiquidation(user_, msg.sender);
         if (bonus > 0) {
             // A self-liquidation returns bonus == 0: `_executeLiquidation` keeps it in the reserve.
-            if (!ML.rawTransfer(bzpx, msg.sender, bonus)) revert Staking__TransferFailed();
+            _payAtPar(msg.sender, bonus);
         }
     }
 
@@ -1337,7 +1339,7 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
         _accrueInterestFor(who);
         if (_isLiquidatable(_users[who])) {
             uint256 bonus = _executeLiquidation(who, beneficiary);   // swap-pop removes `who` into idx
-            if (bonus > 0) { if (!ML.rawTransfer(bzpx, beneficiary, bonus)) revert Staking__TransferFailed(); }
+            if (bonus > 0) _payAtPar(beneficiary, bonus);
             emit MaintenanceSwept(beneficiary, who, bonus);
             unchecked { ++totalAutoLiquidations; }
             // cursor intentionally NOT advanced: the swapped-in borrower now occupies idx
@@ -1567,7 +1569,15 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
         UserInfo storage u = _users[user_];
         uint256 due = _rewardDeferred[user_];
         uint256 gross = ML.mulDiv(u.trackedBoostedEffective, accRewardPerShare, WAD);
-        if (gross > u.rewardDebt) { due += gross - u.rewardDebt; u.rewardDebt = gross; }
+        if (gross > u.rewardDebt) {
+            // P1-C: the window is paid at the live weight; the stale-weight excess was never earned,
+            // so it leaves the distributed side and returns to the reserve (conservation unchanged).
+            uint256 earned = gross - u.rewardDebt;
+            uint256 paid   = _atLiveWeight(u, u.staked, earned);
+            rewardReserve          += earned - paid;
+            totalRewardDistributed -= earned - paid;
+            due += paid; u.rewardDebt = gross;
+        }
         if (due == 0) return;
         // EMIS-DEFER. Same rule as `claimRewards` and PURE-UNCOLL: no emission leaves at par while
         // the pot cannot cover every claim. Unlike pure yield, this settle sits under doors that
@@ -1586,7 +1596,21 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
         _rewardDeferred[user_] = 0;
         totalRewardsPaid += due;
         emit RewardClaimed(user_, due);
-        if (!ML.rawTransfer(bzpx, user_, due)) revert Staking__TransferFailed();
+        _payAtPar(user_, due);
+    }
+
+    /// @dev P1-C. What a settle PAYS of an accrued emission window: the window at the weight the
+    ///      position's live equity commands under its tracked lock, not the weight of its last
+    ///      resync. Interest is attributed lazily, so between touches the tracked weight is stale
+    ///      high by the interest charged; the share of the window it implies was never earned.
+    ///      live <= tracked by derivation: between resyncs only interest moves `staked` (down);
+    ///      `debt` and `lockDays` move only in a transaction that settles first and resyncs after,
+    ///      so `boostByDays(u.lockDays)` is the boost the tracked weight was built with. Lock expiry
+    ///      is not applied (that window is LOCK-STALE's question). `s` is the post-interest stake:
+    ///      attributed in the settle, projected in the view, so the quote is the payment.
+    function _atLiveWeight(UserInfo storage u, uint256 s, uint256 earned) internal view returns (uint256) {
+        return ML.mulDiv(earned, ML.mulDiv(_sub0(s, u.debt), boostByDays(u.lockDays), BOOST_BASE),
+                         u.trackedBoostedEffective);
     }
 
     function _settlePendingPureYield(address user_) internal {
@@ -1606,7 +1630,7 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
         if (_hardBreach()) { _rewardDeferred[user_] += due; return; }
         totalRewardsPaid += due;
         emit PureYieldClaimed(user_, due);
-        if (!ML.rawTransfer(bzpx, user_, due)) revert Staking__TransferFailed();
+        _payAtPar(user_, due);
     }
 
     // ── interest ──────────────────────────────────────────────────────────────────────────
@@ -1874,20 +1898,12 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
     }
 
     // ── interest curve ──────────────────────────────────────────────────────────────────
-    function _interestRate() internal view returns (uint256 rateBps) {
-        uint256 util;
-        if (totalStaked == 0) {
-            // Debt with zero backing is MAXIMALLY utilised, not idle: report the
-            // ceiling rate, never the floor. Accrual is unaffected — the slice in
-            // _updateInterestIndex clamps to totalStaked (== 0) regardless of rate.
-            if (totalDebt == 0) return RATE_R0;
-            util = WAD;
-        } else {
-            util = ML.mulDiv(totalDebt, WAD, totalStaked);
-            util = _min(util, WAD);   // reconcile with simulateRate(): both cap at WAD
-        }
-        if (util <= RATE_UK) rateBps = RATE_R0 + ML.mulDiv(util, RATE_S1, WAD);
-        else                 rateBps = RATE_RK + ML.mulDiv(util - RATE_UK, RATE_S2, WAD);
+    function _interestRate() internal view returns (uint256) {
+        // One curve for the book and for `simulateRate`, read at `_utilization()`. Debt with zero
+        // backing is MAXIMALLY utilised, not idle: `_utilization` reports it unbounded and the curve
+        // caps it at WAD, the ceiling rate, never the floor (an empty book reads 0, the floor).
+        // Accrual is unaffected — the slice in _updateInterestIndex clamps to totalStaked (== 0).
+        return simulateRate(_utilization());
     }
 
     // ════════════════════════════════════════════════════════════════════════════════════
@@ -1915,6 +1931,18 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
     ///      the conserves identity so the check stays floor-free and linear in every regime.
     function _pendingDistribution() internal view returns (uint256) {
         return _sub0(totalRewardDistributed, totalRewardsPaid);
+    }
+
+    /// @dev Every payment at par leaves through here: the reward and pure settles and the keeper
+    ///      bonus. Paying X at par moves the balance and `_owed()` by the same X, so a book that is
+    ///      not in a hard breach before the transfer is not in one after it: the check fires only
+    ///      if the transfer took more than X (a skimming token, a reentrant drain) or a pre-check
+    ///      upstream was lost. `conserves` reads the first as an identity delta but not a par
+    ///      payment into a standing breach, hence the distinct error (meta-guard of EMIS-DEFER,
+    ///      W2-R1 and R1-02).
+    function _payAtPar(address to, uint256 amount) internal {
+        if (!ML.rawTransfer(bzpx, to, amount)) revert Staking__TransferFailed();
+        if (_hardBreach()) revert Staking__PaidIntoBreach();
     }
 
     /// @dev hard, one-sided: contract must hold at least what it owes (minus dust).
@@ -2210,7 +2238,8 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
             acc += ML.mulDiv(r, WAD, totalBoostedEffective);
         }
         uint256 g = ML.mulDiv(u.trackedBoostedEffective, acc, WAD);
-        return deferred + _sub0(g, u.rewardDebt);
+        (uint256 s, ) = _projected(u);   // the stake the settle attributes before it pays (P1-C)
+        return deferred + _atLiveWeight(u, s, _sub0(g, u.rewardDebt));
     }
 
     function _pendingPure(UserInfo storage u) internal view returns (uint256) {
@@ -2311,7 +2340,7 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
     /// @notice The rate curve at any utilisation, for front ends and tests.
     /// @param  utilizationWad_ utilisation in WAD; values above 1e18 are capped
     /// @return rateBps         annual rate in bps
-    function simulateRate(uint256 utilizationWad_) external pure returns (uint256 rateBps) {
+    function simulateRate(uint256 utilizationWad_) public pure returns (uint256 rateBps) {
         utilizationWad_ = _min(utilizationWad_, WAD);
         if (utilizationWad_ <= RATE_UK) rateBps = RATE_R0 + ML.mulDiv(utilizationWad_, RATE_S1, WAD);
         else                            rateBps = RATE_RK + ML.mulDiv(utilizationWad_ - RATE_UK, RATE_S2, WAD);

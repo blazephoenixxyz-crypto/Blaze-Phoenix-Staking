@@ -11,7 +11,8 @@ interface IEquitySync {
 /// @notice Wave 3, family 1: a stale quantity in a denominator or a weight (3236 + 3324/3349/
 ///         3248-R1-03, 3326, 3328, 3256-W2-R1, 3248-R1-02). A weight or denominator may fix a
 ///         payment only when it is derivable at that moment; when it is not, the book freezes or
-///         credits instead of paying at par. Every test here was red on eb9b9cd.
+///         credits instead of paying at par. Every test here was red on eb9b9cd; the PAYATPAR
+///         tests (the shared meta-guard `_payAtPar`) were red on 8cc2b65.
 contract StaleQuantityFamilyTest is Base {
     uint256 constant S = 10_000_000e18;
     uint256 constant WAD = 1e18;
@@ -334,5 +335,112 @@ contract StaleQuantityFamilyTest is Base {
         vm.prank(bob);
         vm.expectRevert(BREACHED);
         staking.claimRewards();
+    }
+
+    // ── _payAtPar (PaidIntoBreach): the breach read after every payment at par ─────────────
+    // A par payment moves the balance and `_owed()` by the same amount, so here only a transfer
+    // that takes more than it pays can fire the check: the suite's token is etched with a skim
+    // on transfers to one address (layout kept, so every balance carries over). Without the
+    // meta-guard `conserves` still reverts, with InvariantBreached, so the selector tells the
+    // two apart; in the sweep the step is rolled back and skipped instead.
+    bytes4 constant PAID_INTO_BREACH = bytes4(keccak256("Staking__PaidIntoBreach()"));
+    uint256 constant SKIM = 1e18;   // > CONSERVATION_DUST
+
+    function _skimTransfersTo(address to) internal {
+        vm.etch(address(token), address(new SkimToken()).code);
+        SkimToken(address(token)).setSkim(to, SKIM);
+    }
+
+    function test_PAYATPAR_reward_settle_into_a_skim_reverts_PaidIntoBreach() public {
+        vm.prank(admin);
+        staking.fundEmission(180_000_000e18);
+        _stake(alice, S, 90);
+        vm.warp(block.timestamp + 30 days);
+        assertGt(staking.pendingRewards(alice), 0, "nothing to pay");
+        _skimTransfersTo(alice);
+        vm.prank(alice);
+        vm.expectRevert(PAID_INTO_BREACH);
+        staking.claimRewards();
+    }
+
+    function test_PAYATPAR_pure_settle_into_a_skim_reverts_PaidIntoBreach() public {
+        // No emission funded: the pure yield is the only payment at par in this claim.
+        _stake(alice, S, 90);
+        _stake(bob, S, 90);
+        vm.roll(block.number + 11);
+        uint256 b = staking.maxBorrowOf(bob);
+        vm.prank(bob);
+        staking.borrow(b);
+        vm.warp(block.timestamp + 30 days);
+        assertGt(staking.pendingPureYield(alice), 0, "nothing to pay");
+        _skimTransfersTo(alice);
+        vm.prank(alice);
+        vm.expectRevert(PAID_INTO_BREACH);
+        staking.claimPureYield();
+    }
+
+    /// @dev alice: liquidatable with surplus, so a keeper bonus is due; the book is solvent.
+    function _liquidatableBook() internal {
+        _stake(alice, S, 90);
+        _stake(bob, S, 90);
+        vm.roll(block.number + 11);
+        uint256 a = staking.maxBorrowOf(alice);
+        vm.prank(alice);
+        staking.borrow(a);
+        uint256 t = block.timestamp;
+        for (uint256 i; i < 80 && staking.daysToLiquidation(alice) != 0; ++i) {
+            t += 365 days;
+            vm.warp(t);
+        }
+        assertEq(staking.daysToLiquidation(alice), 0, "alice never became liquidatable");
+        assertTrue(staking.isSolvent(), "the book must be solvent");
+    }
+
+    function test_PAYATPAR_keeper_bonus_into_a_skim_reverts_PaidIntoBreach() public {
+        _liquidatableBook();
+        _skimTransfersTo(keeper);
+        vm.prank(keeper);
+        vm.expectRevert(PAID_INTO_BREACH);
+        staking.liquidate(alice);
+    }
+
+    function test_PAYATPAR_sweep_bonus_into_a_skim_is_skipped() public {
+        _liquidatableBook();
+        uint256 snap = vm.snapshotState();
+        // Control: the keeper's own claim (nothing to pay) carries the sweep, which liquidates alice.
+        vm.prank(keeper);
+        staking.claimRewards();
+        assertEq(staking.totalDebt(), 0, "control: the sweep did not reach alice");
+        vm.revertToState(snap);
+        _skimTransfersTo(keeper);
+        vm.prank(keeper);
+        staking.claimRewards();
+        assertGt(staking.totalDebt(), 0, "a bonus paid into the skim was kept");
+        assertTrue(staking.isSolvent(), "the skipped step left the book short");
+    }
+}
+
+/// @dev MockERC20's storage layout plus a skim: a transfer to `skimTo` takes `skim` more from the
+///      sender than it delivers (burnt). Etched over the suite's token by the _payAtPar tests.
+contract SkimToken {
+    string public name; string public symbol; uint8 public decimals;
+    uint256 public totalSupply;
+    mapping(address => uint256) public balanceOf;
+    mapping(address => mapping(address => uint256)) public allowance;
+    uint256 public skim;
+    address public skimTo;
+
+    function setSkim(address to, uint256 x) external { skimTo = to; skim = x; }
+    function approve(address s, uint256 a) external returns (bool) { allowance[msg.sender][s] = a; return true; }
+    function transfer(address to, uint256 a) external returns (bool) {
+        uint256 take = to == skimTo ? a + skim : a;
+        require(balanceOf[msg.sender] >= take, "bal");
+        balanceOf[msg.sender] -= take; balanceOf[to] += a; totalSupply -= take - a; return true;
+    }
+    function transferFrom(address f, address to, uint256 a) external returns (bool) {
+        require(balanceOf[f] >= a, "bal");
+        uint256 al = allowance[f][msg.sender];
+        if (al != type(uint256).max) { require(al >= a, "allow"); allowance[f][msg.sender] = al - a; }
+        balanceOf[f] -= a; balanceOf[to] += a; return true;
     }
 }

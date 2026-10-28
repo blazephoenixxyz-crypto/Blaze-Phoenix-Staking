@@ -13,9 +13,39 @@ import {Vm} from "forge-std/Vm.sol";
 ///         The book: emission funded, one pure staker, two borrowers left untouched for decades;
 ///         the liquidation of one books an uncovered loss, so the contract reads a hard breach.
 ///         Red at cc614f9: repay and pokeExpiredLock paid the whole pending emission at par.
+///         P1-C (3256): a settle pays the window at the live weight, and a position whose debt has
+///         outgrown its attributed stake weighs nothing, so its untouched window pays 0 and returns
+///         to rewardReserve. What the own-loss cases watch is therefore a CREDIT the position
+///         already carries, deferred while it was healthy (`_creditWhileHealthy`); the red amounts
+///         quoted below were that stale-weight window.
 contract EmissionDeferredUnderBreachTest is Base {
     uint256 internal constant DUST = 1e10;
     address internal dave = address(0xD4);
+    address internal constant SINK = address(0x5114C);
+
+    /// Thirty days in, bob and dave (healthy) settle under a hard breach and carry the window as a
+    /// credit. The pot is drained below its claims for the two settles (an external loss reads the
+    /// same to `_hardBreach()`), each repays 1e18, and the pot is restored. Paused: no sweep runs.
+    function _creditWhileHealthy(uint256 t0) internal {
+        vm.warp(t0 + 30 days);
+        vm.prank(admin);
+        staking.grantRole(keccak256("GUARDIAN_ROLE"), keeper);
+        vm.prank(keeper);
+        staking.pause();
+        uint256 pot = token.balanceOf(address(staking));
+        vm.prank(address(staking));
+        token.transfer(SINK, pot);
+        vm.prank(bob);
+        staking.repay(1e18);
+        vm.prank(dave);
+        staking.repay(1e18);
+        vm.prank(SINK);
+        token.transfer(address(staking), pot);
+        vm.prank(admin);
+        staking.unpause();
+        assertGt(staking.pendingRewards(bob), DUST, "setup: bob carries a credit");
+        assertGt(staking.pendingRewards(dave), DUST, "setup: dave carries a credit");
+    }
 
     function _breachedBook() internal {
         _untouchedBook();
@@ -44,7 +74,9 @@ contract EmissionDeferredUnderBreachTest is Base {
         staking.borrow(500e18);
         vm.prank(dave);
         staking.borrow(500e18);
-        vm.warp(block.timestamp + 100 days + 60 * 365 days);
+        uint256 t0 = block.timestamp;
+        _creditWhileHealthy(t0);
+        vm.warp(t0 + 100 days + 60 * 365 days);
         vm.roll(block.number + 30);
     }
 
@@ -186,6 +218,7 @@ contract EmissionDeferredUnderBreachTest is Base {
     function test_EMISDEFER_repayThatBooksItsOwnShortfallReadsThePotAfterIt() public {
         _ownShortfallBook();
         uint256 pend = staking.pendingRewards(bob);
+        assertGt(pend, DUST, "setup: bob has earned emission");
         (uint256 b0, uint256 bad0, uint256 paid0) =
             (token.balanceOf(bob), staking.totalBadDebt(), staking.totalRewardsPaid());
         vm.prank(bob);
@@ -196,6 +229,7 @@ contract EmissionDeferredUnderBreachTest is Base {
     function test_EMISDEFER_lockPokeThatBooksTheOwnersShortfallReadsThePotAfterIt() public {
         _ownShortfallBook();
         uint256 pend = staking.pendingRewards(bob);
+        assertGt(pend, DUST, "setup: bob has earned emission");
         (uint256 b0, uint256 bad0, uint256 paid0) =
             (token.balanceOf(bob), staking.totalBadDebt(), staking.totalRewardsPaid());
         vm.prank(keeper);
@@ -242,7 +276,9 @@ contract EmissionDeferredUnderBreachTest is Base {
         staking.borrow(500e18);
         vm.prank(dave);
         staking.borrow(500e18);
-        vm.warp(block.timestamp + 60 * 365 days);
+        uint256 t0 = block.timestamp;
+        _creditWhileHealthy(t0);
+        vm.warp(t0 + 60 * 365 days);
         vm.roll(block.number + 30);
 
         uint256 pend = staking.pendingRewards(bob);
