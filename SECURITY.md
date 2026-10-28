@@ -28,6 +28,9 @@ In scope: the contracts in this repository (`BlazePhoenixStaking`,
 itself, RPC providers, and front-ends — but a vulnerability in how *this
 contract* consumes them is in scope.
 
+Behaviour that is by design, accepted limits and further out-of-scope classes are
+listed in [`docs/KNOWN_ISSUES.md`](./docs/KNOWN_ISSUES.md).
+
 ## Our security model, and where reports land hardest
 
 The protocol enforces a single **Master Conservation Identity** on every

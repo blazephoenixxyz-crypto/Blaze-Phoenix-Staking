@@ -393,6 +393,7 @@ The design rules drawn from the time axis are in
 | [docs/INVARIANTS_AND_TIME.md](./docs/INVARIANTS_AND_TIME.md) | Engineering report on the time axis: why a balanced ledger is not enough, and the design rules that follow |
 | [docs/VERSION_HISTORY.md](./docs/VERSION_HISTORY.md) | Version-by-version change map, including what each release deliberately did **not** move |
 | [SECURITY.md](./SECURITY.md) | Disclosure policy, scope, and where reports land hardest |
+| [docs/KNOWN_ISSUES.md](./docs/KNOWN_ISSUES.md) | Known issues, out-of-scope classes and behaviour that is by design |
 | [llms.txt](./llms.txt) | Machine-readable summary for AI agents and crawlers |
 | [CITATION.cff](./CITATION.cff) | Citation metadata |
 
