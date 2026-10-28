@@ -147,6 +147,8 @@ contract InterestAndYieldAttributionTest is Base {
 
         // Magnitude bound (L02): never above the pre-interest share, and the excess over the
         // post-interest share stays under the measured caps.
+        assertGe(c1, post1 - DUST, "1y claim below the post-interest share");
+        assertGe(c5, post5 - DUST, "5y claim below the post-interest share");
         assertLe(c1, pre1 + DUST, "1y claim above the pre-interest share");
         assertLe(c5, pre5 + DUST, "5y claim above the pre-interest share");
         assertLe(c1, post1 + post1 * EMISINT_CAP1_BPS / 10_000, "1y excess over the post-interest share");

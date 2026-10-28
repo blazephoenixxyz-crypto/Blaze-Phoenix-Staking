@@ -133,6 +133,35 @@ contract StaleQuantityFamilyTest is Base {
         assertApproxEqAbs(_emgExit(bob), eqB * pot / sum, 1e11, "bob after the sync");
     }
 
+    /// @dev The guard's threshold is the dust, not a looser bound: ONE small borrower left unsynced
+    ///      (U between 1e11 and 1e13 wei) already makes the haircut wait.
+    function test_P1_EMG_haircut_threshold_is_the_dust() public {
+        _stake(alice, S, 90);
+        _stake(bob, S, 90);
+        _stake(carol, 10e18, 90);
+        vm.roll(block.number + 11);
+        vm.prank(carol);
+        staking.borrow(1e18);
+        vm.warp(block.timestamp + 1 hours);
+        _steal(token.balanceOf(address(staking)) / 2);
+        vm.prank(keeper);
+        staking.tripBreaker();
+        uint256 u = uint256(vm.load(address(staking), bytes32(uint256(18))))
+            - uint256(vm.load(address(staking), bytes32(ATTRIBUTED_SLOT)));
+        assertGt(u, 1e11, "setup: U above 1e11");
+        assertLt(u, 1e13, "setup: U below 1e13");
+
+        vm.prank(bob);
+        vm.expectRevert(STALE);
+        staking.emergencyWithdraw();
+
+        IEquitySync(address(staking)).syncEquity(carol);
+        uint256 pot = token.balanceOf(address(staking));
+        uint256 sum = _trueEq(alice) + _trueEq(bob) + _trueEq(carol);
+        uint256 eqB = _trueEq(bob);
+        assertApproxEqAbs(_emgExit(bob), eqB * pot / sum, 1e11, "bob after the sync");
+    }
+
     function test_P1_EMG_solvent_exit_needs_no_sync() public {
         _staleBook(365 days, 100, 60);
         _guardian();
