@@ -9,12 +9,13 @@ machine-readable project context is in [`llms.txt`](llms.txt). When they disagre
 The BlazePhoenix staking engine: single-asset staking and lending in Solidity 0.8.28. The
 collateral, the borrowed asset and the reward token are the same token (BZPX), so no price oracle
 exists, and solvency is checked on every value-moving transaction. `src/` holds the contract and its
-math library; `test/` holds the suites.
+math library; `test/` holds the suites. The contract is not deployed yet: never write an address
+for it, and do not describe it as live.
 
 ## Commands
 
 ```bash
-npm install
+npm ci
 node compile.js        # compile check (viaIR + optimizer)
 ```
 

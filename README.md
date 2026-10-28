@@ -47,7 +47,7 @@ flowchart LR
 
 ## BlazePhoenix in one sentence
 
-BlazePhoenix is the fully on-chain DEX aggregator — the route is computed inside the transaction that executes it — paired with an oracle-free staking engine that proves its own solvency on every transaction. It runs on Base, Ethereum, Optimism, Arbitrum and Robinhood Chain.
+BlazePhoenix is the fully on-chain DEX aggregator — the route is computed inside the transaction that executes it — paired with an oracle-free staking engine that proves its own solvency on every transaction. V2, the generation now in development, targets Base, Optimism, Arbitrum, Robinhood Chain and further L2s and is not planned for Ethereum L1. The V1 generation deployed today runs on Base, Ethereum, Optimism, Arbitrum and Robinhood Chain.
 
 **Swap** in the [app](https://blazephoenix.xyz/?tab=swap) · **integrate** with the [SDK](https://github.com/blazephoenixxyz-crypto/SDK) (`npm i @blazephoenix/sdk`) · **connect an agent** to the [MCP server](https://github.com/blazephoenixxyz-crypto/blazephoenix-mcp) (`https://blazephoenix.xyz/mcp`, no key)
 
@@ -72,19 +72,18 @@ Each item links to the place where it can be checked. The full list is at [https
 
 ## Status
 
-**Pre-launch engineering preview.** The contract is deployed and its solvency
-is publicly readable live (`isSolvent()`, and the site's
-[/solvency](https://blazephoenix.xyz/solvency) page), but the BZPX token has
-**no provisioned liquidity and no TGE yet** — on-chain volume ≈ 0 is the
-expected state of this stage, not a signal about the code. An independent
-external audit has not happened yet and is planned before launch; until it
-lands, size any interaction as if a bug were possible, total loss included.
+**Pre-launch engineering preview.** The staking contract is not deployed yet: its address
+is published at launch, and from then on its solvency is publicly readable (`isSolvent()`, and
+the site's [/solvency](https://blazephoenix.xyz/solvency) page). The BZPX token has
+**no provisioned liquidity and no TGE yet**. This repository is the current source
+(`VERSION = "4.0.0"`); the design is described in the Technical Whitepaper v2.3, section 25
+(equations E27-E42, invariants INV-23 to INV-31), and where the two differ the source wins. An
+independent external audit has not happened yet and is planned before launch.
 
 What already runs on every push: the Foundry suite (build, tests, EIP-170 size
 gate) plus a **real-EVM Node harness of 9 suites**. The shared 40M BZPX bounty
 has triaged **21 external reports — every confirmed finding fixed with
-regression tests, zero Critical**; three HIGHs against this contract were
-closed red-first in public. Details: [`SECURITY.md`](./SECURITY.md).
+regression tests, zero Critical**. Details: [`SECURITY.md`](./SECURITY.md).
 
 ## 1. The Master Conservation Identity (the "supreme" equation)
 
@@ -164,9 +163,7 @@ ends by calling `_autoMaintain`, which drives **two** rotating windows:
 boost weight.
 
 **Window 2 — the locker registry (yield fairness).** `_borrowers` is, by construction, blind to a
-**pure staker** (`debt == 0`) — so before v3.1 an idle staker whose lock had expired kept its
-historical multiplier in the global denominators indefinitely (BP-2026-001, reported by
-NetGakarot). `_lockers` tracks every position holding a live commitment, and this window normalises
+**pure staker** (`debt == 0`), so a second registry is needed. `_lockers` tracks every position holding a live commitment, and this window normalises
 any that has elapsed: rewards settled at the weight they were actually earned at, *then* the boost
 released and the entry de-registered. No keeper, no user action, no off-chain indexer.
 
@@ -209,10 +206,11 @@ keepers alone.
 There is no liquid staking — **every deposit is a locked commitment** measured in days:
 
 - `deposit(uint256 amount, uint256 lockDays)` — `lockDays` is **min 90, max 2555 (7 years)**.
-- A **decreasing countdown** caps every lock at the days remaining until the 7-year emission end
-  (`maxLockDaysAvailable()`), so **no lock can ever outlast emission**. Early on you can lock up to
-  the full 7 years; with, say, 2 years left, the max is ~730 days; in the final 90 days new
-  deposits/locks are unavailable (the 90-day floor would cross the end).
+- A **decreasing countdown** caps every lock at the days remaining until the emission programme
+  closes (`maxLockDaysAvailable()`, 16 years after the emission start), so **no lock can ever
+  outlast emission**. For most of the programme the cap is the full 7 years; with, say, 2 years
+  left, the max is ~730 days; in the final 90 days new deposits/locks are unavailable (the
+  90-day floor would cross the end).
 - **Top-ups can only extend, never shorten.** If the chosen duration would land *before* your
   current unlock, the longer existing lock is kept and the new funds inherit it. To push your
   unlock later, pass a longer `lockDays`.
@@ -234,15 +232,17 @@ with `lockInfoOf(user)` (its `unlockTime` gives the time left), `maxLockDaysAvai
 
 ---
 
-## 4. Other v2 security properties (retained)
+## 4. Other security properties
 
 - **Single-writer boost accounting** (`_applyBoost`): the *only* writer of the boosted-total
   denominators. Plain checked subtraction means any desync reverts instead of corrupting state.
   Even the emergency hatch funnels through it — no ghost shares.
 - **Zero backdoor:** no admin sweep of principal; reserve withdrawals go *only* to an **immutable
   treasury**, with no caller-chosen destination.
-- **Pull-only emergency:** `emergencyWithdraw()` returns your net equity (`staked − debt`) with the
-  simplest possible logic and is *not* conservation-guarded, so it works even in a breached state.
+- **Pull-only emergency:** `emergencyWithdraw()` returns your net equity (`staked − debt`) and
+  closes the position; unpaid emission and pure yield are forfeited, and in a breached emergency the
+  payout is scaled pro rata to what the contract holds. It is *not* conservation-guarded, so it
+  works even in a breached state.
 - **CEI settlement:** reward/yield debt is written **before** the token transfer.
 - **Deterministic emission:** empty-pool intervals advance the clock (emission stays in reserve),
   so a latecomer can never capture an accumulated backlog.
@@ -268,13 +268,14 @@ any fork against a different asset.
 | Total emission | 180,000,000 BZPX — biennial halving, `90M >> p` per 2-year period (see below) |
 | Max stake / wallet | 30,000,000 BZPX |
 | Max LTV (on effective stake) | 50% |
+| Max protocol utilisation (`totalDebt / totalStaked`, checked at borrow) | 75% |
 | Liquidation threshold | 95% |
 | Liquidation bonus | 5% (paid to the gas-payer) |
 | Withdrawal | requires lock expired **and** debt fully repaid (no exit penalty) |
 | Reserve factor | 3% |
 | Lock duration | **min 90 days, max 2555 days (7 years)**, capped by a decreasing countdown to the emission close |
 | Lock boost | `boost(d) = 10000 + 750·(d/365) + 250·(d/365)²` bps → 90d ≈ 1.02×, 1y = 1.10×, 5y = 2.00×, 7y = 2.75× |
-| Interest curve | kinked at 80% utilisation (1%→5% base, steep above) |
+| Interest curve | kinked at 80% utilisation: 1% a year at zero utilisation rising to 5% at 80%, then steeply above (`_interestRate`) |
 
 ---
 
@@ -326,7 +327,7 @@ over the one-year one halves peak sell pressure while doubling the incentive hor
 ## Build & verify
 
 ```bash
-npm install                # solc 0.8.28 + @openzeppelin/contracts
+npm ci                     # solc 0.8.28 + @openzeppelin/contracts, versions pinned by package-lock.json
 node compile.js            # standalone compile check (viaIR + optimizer)
 # or, with Foundry:
 forge build                # uses foundry.toml (via_ir = true)
@@ -357,45 +358,31 @@ test/selfaudit.mjs   regression against our own remediations — each fix treate
 test/reporting.mjs   reporting-surface and deployment-environment suite — every
                   published figure rebuilt from primitive state, quote-vs-settlement
                   equality, audit-mask sensitivity, funding gap, long chain silence
-test/BlazePhoenixStaking.t.sol   Foundry unit + fuzz + invariant suite
+test/*.t.sol      Foundry suites: unit, fuzz, invariant, boundary, metamorphic and size gate
+                  (test/formal holds the Halmos specification, test/assurance the assurance tests)
 ```
 
-## 🏆 Security Hall of Fame
+## Security Hall of Fame
 
-Every finding below was disclosed responsibly, reproduced on our side, and triaged against the
-protocol's invariant suite. Severity is ours, assigned after reproduction and reachability testing.
+Findings are disclosed responsibly, reproduced on our side and triaged against the protocol's
+invariant suite. Technical detail stays in the verified source and our private records, never on
+a credits page. Thank you to the researchers who read the source and told us privately:
 
-| ID | Finding | Severity | Status | Reporter |
-|---|---|---|---|---|
-| BP-2026-001 | Expired lock boost persists for idle pure stakers — yield misallocation | **High** | Fixed in v3.1.0 | **[NetGakarot](https://github.com/NetGakarot)** ("Gakarot") |
-| BP-2026-002 | JIT stakers capture previously accrued borrower interest | **Medium** | Fixed | **[NetGakarot](https://github.com/NetGakarot)** ("Gakarot") |
-| BP-2026-003 | Stale committed lock duration in `deposit()` grants an unearned multiplier | **High** | Fixed | **[amitbhakar](https://github.com/amitbhakar)** |
-| BP-2026-004 | `emergencyWithdraw()` does not record bad debt on an under-water exit | **Medium** | Fixed | **[amitbhakar](https://github.com/amitbhakar)** |
-| BP-2026-005 | Borrower interest priced at a rate the caller sets in the same transaction | **High** | Fixed | **[AmanDara1](https://github.com/AmanDara1)** |
-| BP-2026-006 | Emission accrued while the pool is empty is never redistributed | **Medium** | Fixed | **[AmanDara1](https://github.com/AmanDara1)** |
-| BP-2026-007 | A dust position alone in the pool absorbs the whole emission schedule | **Medium** | Fixed | internal |
-| BP-2026-008 | Self-beneficiary exclusion in `_sweepExpiredLocks` lets an expired boost persist | **Low–Medium** | Fixed | **[NetGakarot](https://github.com/NetGakarot)** ("Gakarot") |
+| ID | Severity | Status | Reporter |
+|---|---|---|---|
+| BP-2026-001 | High | Fixed | **[NetGakarot](https://github.com/NetGakarot)** ("Gakarot") |
+| BP-2026-002 | Medium | Fixed | **[NetGakarot](https://github.com/NetGakarot)** ("Gakarot") |
+| BP-2026-003 | High | Fixed | **[amitbhakar](https://github.com/amitbhakar)** |
+| BP-2026-004 | Medium | Fixed | **[amitbhakar](https://github.com/amitbhakar)** |
+| BP-2026-005 | High | Fixed | **[AmanDara1](https://github.com/AmanDara1)** |
+| BP-2026-006 | Medium | Fixed | **[AmanDara1](https://github.com/AmanDara1)** |
+| BP-2026-007 | Medium | Fixed | internal |
+| BP-2026-008 | Low-Medium | Fixed | **[NetGakarot](https://github.com/NetGakarot)** ("Gakarot") |
 
-All nine are now closed. The last one, BP-2026-002, needed borrower interest to be distributed
-continuously rather than in lumps at realisation — the same treatment emission already had — so
-that a share of a distribution can only ever reach participants who were present while it accrued.
+Please email **contact@blazephoenix.xyz** with your GitHub handle to be credited under the
+[bounty programme](./SECURITY.md).
 
-**A note on what all six have in common.** Every one of them lives on the time axis. When this
-protocol was built around a Master Conservation Identity, the working assumption was explicit:
-conservation invariants pin down *how much* value exists, but they say nothing about *when* it was
-earned or *who was present while it accrued*. A ledger can balance to the wei on every single block
-and still hand the wrong person the money. That is exactly the seam these researchers worked, and
-every finding here redistributes value between participants without ever breaking the books — which
-is precisely why the conservation guard never fired.
-
-To each of the researchers above: **thank you.** This is genuinely good work, clearly written and
-reproducible, and the protocol is materially better for it. Please email
-**contact@blazephoenix.xyz** with your GitHub handle so we can add you to the list for the upcoming
-bug bounty programme.
-
-Full write-up of the v3.1 remediation in
-[docs/VERSION_HISTORY.md](./docs/VERSION_HISTORY.md#v31--bp-2026-001-stale-boost-persistence-in-pure-stakers).
-What the findings had in common, and the design rules drawn from them, in
+The design rules drawn from the time axis are in
 [docs/INVARIANTS_AND_TIME.md](./docs/INVARIANTS_AND_TIME.md).
 
 ## Documentation
@@ -403,7 +390,7 @@ What the findings had in common, and the design rules drawn from them, in
 | Document | What it is |
 |---|---|
 | [docs/WHITEPAPER.md](./docs/WHITEPAPER.md) | The full design: accounting model, interest curve, liquidation, emission |
-| [docs/INVARIANTS_AND_TIME.md](./docs/INVARIANTS_AND_TIME.md) | Engineering report — why six of seven disclosed defects left the books perfectly balanced, and the rules that fall out of that |
+| [docs/INVARIANTS_AND_TIME.md](./docs/INVARIANTS_AND_TIME.md) | Engineering report on the time axis: why a balanced ledger is not enough, and the design rules that follow |
 | [docs/VERSION_HISTORY.md](./docs/VERSION_HISTORY.md) | Version-by-version change map, including what each release deliberately did **not** move |
 | [SECURITY.md](./SECURITY.md) | Disclosure policy, scope, and where reports land hardest |
 | [llms.txt](./llms.txt) | Machine-readable summary for AI agents and crawlers |
@@ -414,7 +401,7 @@ What the findings had in common, and the design rules drawn from them, in
 Machine-readable surfaces: [`llms.txt`](./llms.txt) (status, the conservation
 identity, FAQ with quotable answers) · [facts.json](https://blazephoenix.xyz/facts.json) ·
 [live solvency](https://blazephoenix.xyz/solvency) ·
-[MCP server](https://blazephoenix.xyz/mcp) (`get_quote`, `check_solvency`) ·
+[MCP server](https://blazephoenix.xyz/mcp) (`prepare_quote`, `decode_quote` remote; `get_quote`, `check_solvency` local; solvency reads the chain once the staking contract is published) ·
 [agents.json](https://blazephoenix.xyz/.well-known/agents.json) ·
 [daily history dataset](https://blazephoenix.xyz/datasets/history.ndjson) ·
 [provenance (OpenTimestamps)](https://blazephoenix.xyz/provenance/provenance.json) ·
@@ -424,6 +411,8 @@ index: [blazephoenix.xyz/llms.txt](https://blazephoenix.xyz/llms.txt).
 ## Licence & authorship
 
 - **Licence:** [BUSL-1.1](./LICENSE) — Change Date 2030-06-01, then GPL-2.0-or-later.
+- **Documentation:** all rights reserved, except the Technical Whitepaper text deposited on Zenodo
+  (DOI [10.5281/zenodo.23084091](https://doi.org/10.5281/zenodo.23084091)), which is CC BY 4.0; see [NOTICE](./NOTICE).
 - **AI training:** use of this repository to train AI models, or to generate derived code by
   automated means, is not authorized; see [NOTICE](./NOTICE).
 - **Authors:** **Fable & Mitra.** Mitra ([@Sigmacrit](https://x.com/Sigmacrit)) is the human
