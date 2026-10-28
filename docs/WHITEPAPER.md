@@ -2,6 +2,11 @@
 
 **Version 3.2.0 · August 2026**
 
+> **Scope of this document.** This is the design write-up of the 3.2 line. The current source
+> is `VERSION = "4.0.0"`, and where this text and the source differ the source wins; the V4 design
+> is also described in the Technical Whitepaper v2.3, section 25 (equations E27-E42, invariants
+> INV-23 to INV-31). The staking contract is not deployed yet, and no address is published.
+
 > **Security credit — BP-2026-001.** §3.3 and §4.2.1 exist because of a finding disclosed on
 > 28 July 2026 by **[NetGakarot](https://github.com/NetGakarot)** ("Gakarot"): the maintenance
 > sweep iterated the borrower registry only, and a pure staker (`debt == 0`) is never in it, so an
@@ -25,7 +30,7 @@ index-coupled interest clamp (§5.3), and the pro-rata emergency haircut (§7.6)
 
 ## Abstract
 
-BlazePhoenix is a single-asset staking and lending protocol built on Ethereum.
+BlazePhoenix is a single-asset staking and lending protocol for the EVM.
 It introduces three properties that, to the authors' knowledge, have not previously
 been combined in a deployed protocol:
 
