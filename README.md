@@ -18,8 +18,8 @@ mitigated risks here — they are **absent surfaces**.
 
 Three properties the protocol is designed around:
 
-1. **Provable solvency.** Anyone can verify on-chain, for free, that the contract holds at least
-   everything it owes. No indexer, no trust, no off-chain watcher.
+1. **Verifiable solvency.** Anyone can check on-chain, for free, whether the contract holds at
+   least everything it owes. No indexer, no trust, no off-chain watcher.
 2. **100% autonomous maintenance.** The book cleans itself from ordinary user traffic — no keeper
    bot, no admin button, gas bounded unconditionally.
 3. **Deterministic emission.** 180,000,000 BZPX on a biennial-halving curve evaluated in closed
@@ -32,7 +32,7 @@ flowchart LR
     A --> M["autonomous sweep<br/>borrowers · lockers"]
     M --> C{{"Δbalance == Δowed ?"}}
     C -->|yes| OK([commit])
-    C -->|no| RV([revert — insolvency unreachable])
+    C -->|no| RV([revert — the leak never commits])
 
     style G fill:#EBD7C9,stroke:#C2521B,color:#141821
     style C fill:#EBD7C9,stroke:#C2521B,color:#141821
@@ -89,7 +89,7 @@ regression tests, zero Critical**. Details: [`SECURITY.md`](./SECURITY.md).
 
 The books are closed on every transaction, not at the end of the quarter.
 
-The whole protocol obeys a single equation at all times:
+The whole protocol is held to a single identity, checked on every value-moving transaction:
 
 ```
 balanceOf(contract) + totalBadDebt + stakedOverdraw
@@ -99,7 +99,8 @@ balanceOf(contract) + totalBadDebt + stakedOverdraw
      +  (totalRewardDistributed − totalRewardsPaid)    // accrued rewards not yet paid
 ```
 
-The right-hand side is computed by `_owed()`. **Solvency ⇔ `balance ≥ owed`.**
+The right-hand side is computed by `_owed()`. **Solvency ⇔ `balance ≥ owed`**, read with the same
+`1e10` wei allowance (`isSolvent`).
 
 Recorded bad debt is counted in `owed`, never netted out: a loss the protocol reserve could not
 cover is still a claim the contract cannot pay. While any of it is uncovered the protocol reads
@@ -114,14 +115,15 @@ This identity is enforced in two complementary ways:
   modifier. It snapshots the real balance and `_owed()` before the body, and afterwards requires
   that the *change* in the real balance equals the *change* in what the protocol owes (within a
   `1e10` wei dust tolerance for rounding). Any transaction that would leak value — i.e. let the
-  ledger claim more than the contract holds — **reverts atomically**. An insolvent state is
-  *unreachable*, not merely observable. Crucially this checks the *delta*, so historical dust
-  drift can never DoS a legitimate user.
+  ledger claim more than the contract holds — **reverts atomically**. No transaction can create
+  a shortfall the ledger does not record; a recorded loss reads as a breach until it is covered
+  (`docs/KNOWN_ISSUES.md`). Crucially this checks the *delta*, so historical dust drift can
+  never DoS a legitimate user.
 
 - **Intrinsic, not keeper-driven.** Conservation is enforced *by the protocol's own
   transactions* — the `conserves` guard above. It does **not** rely on any external watcher to
-  notice a breach and react; a breach is *unreachable* through normal flow, not something a keeper
-  must race to catch.
+  notice a leak and react; a leaking transaction reverts in the block it runs, so there is
+  nothing for a keeper to race to catch.
 - **Permissionless breaker — but only on proven insolvency.** `tripBreaker()` lets **anyone** halt
   the protocol, but *only* when the chain itself proves insolvency: it requires `_hardBreach()`
   (`balance + dust < owed`), an objective, un-spoofable on-chain condition. Nobody can lower the
@@ -164,8 +166,8 @@ boost weight.
 
 **Window 2 — the locker registry (yield fairness).** `_borrowers` is, by construction, blind to a
 **pure staker** (`debt == 0`), so a second registry is needed. `_lockers` tracks every position holding a live commitment, and this window normalises
-any that has elapsed: rewards settled at the weight they were actually earned at, *then* the boost
-released and the entry de-registered. No keeper, no user action, no off-chain indexer.
+any that has elapsed: rewards settled at the boost up to `unlockTime` and at 1.00× after it, *then*
+the boost released and the entry de-registered. No keeper, no user action, no off-chain indexer.
 
 Both windows **self-size** with backlog pressure via `_windowBudget()` — a *pure function of
 on-chain state*, no admin input:
@@ -212,14 +214,19 @@ There is no liquid staking — **every deposit is a locked commitment** measured
   left, the max is ~730 days; in the final 90 days new deposits/locks are unavailable (the
   90-day floor would cross the end).
 - **Top-ups can only extend, never shorten.** If the chosen duration would land *before* your
-  current unlock, the longer existing lock is kept and the new funds inherit it. To push your
-  unlock later, pass a longer `lockDays`.
+  current unlock, the longer existing lock is kept and the new funds inherit it; the whole
+  position is then priced at the days that remain (a seven-year lock topped up with 555 days
+  left earns the 555-day multiplier from then on). To push your unlock later, pass a longer
+  `lockDays`.
 - Boost is **continuous** in the committed duration: `boost(d) = 10000 + 750·(d/365) + 250·(d/365)²`
   bps (90d ≈ 1.02×, 1y = 1.10×, 7y = 2.75×).
 - **Boost is strictly the price of illiquidity, and it expires on time.** The instant
-  `block.timestamp >= unlockTime` the capital is withdrawable again, so the multiplier drops to
-  1.00× — evaluated against the *clock*, not against stored state, so no code path can re-price a
-  lapsed commitment at its historical multiplier even before the position has been swept.
+  `block.timestamp >= unlockTime` the capital is withdrawable again, so the multiplier it is paid
+  drops to 1.00× — every settle splits its window at `unlockTime` on the *clock*, not on stored
+  state, and pays the part after it at 1.00×, even before the position has been swept (its weight
+  leaves the reward denominators when it is swept, poked or touched). The split follows the
+  emission curve, so a window whose flow did not follow it, such as one spanning an emergency
+  halt, is split approximately (`docs/KNOWN_ISSUES.md`).
   `lockInfoOf().boostBps` and `getUserInfo().boostBps` therefore report what you are **paid** at;
   `lockDays` / `unlockTime` report the commitment on record. Re-lock to earn the premium again.
 - **Withdrawal requires the lock to have expired *and* the position to be DEBT-FREE.** A borrower

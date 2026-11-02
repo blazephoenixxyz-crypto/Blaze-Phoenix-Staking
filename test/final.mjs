@@ -462,11 +462,13 @@ async function selfMaintenance() {
     if (!r.ok) break;
     chain.mine(1); pokes++;
   }
+  // The carrier's own state is read BEFORE any third-party transaction: another holder's sweep
+  // would normalise it and hide a carrier that survived its own traffic.
+  const stillTracked = await staking.call('isTrackedLocker', [alice.hex]);
+  const stillStale = await staking.call('hasStaleBoost', [alice.hex]);
   // The loop above stops with one locker left by construction; let ordinary traffic finish the
   // registry so the denominator assertion is about the mechanism, not about where the loop ended.
   for (let k = 0; k < 8; k++) { chain.mine(2); await staking.send(users[3], 'claimRewards', []); }
-  const stillTracked = await staking.call('isTrackedLocker', [alice.hex]);
-  const stillStale = await staking.call('hasStaleBoost', [alice.hex]);
   const p = await probe(w);
   console.log(`     after ${pokes} self-driven maintenance transactions: tracked=${stillTracked} stale=${stillStale}`);
   console.log(`     tracked-vs-derived weight gap: ${fmt(p.staleBE)} (effective) / ${fmt(p.staleBP)} (pure)`);

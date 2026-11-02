@@ -5,21 +5,25 @@ import {Base} from "../BlazePhoenixStaking.t.sol";
 
 /// @notice Attribution of emission and pure yield across interest accrual, lock expiry and
 ///         uncollectible interest. Each test states the property it checks and the oracle used.
-///         Every test here but EMIS-INT (fixed, 3256-P1-C) is a `documents` test: the items are
-///         left for an owner decision (see the pull request), so each pins the current behaviour,
-///         asserts its direction and logs the measured size. A fix flips the documented assertion
-///         and turns the test red.
+///         Every test here but EMIS-INT (fixed, 3256-P1-C) and LOCK-STALE (fixed, see
+///         test/fix1102/LockExpiryStaleWeight.t.sol) is a `documents` test: the items are left for
+///         an owner decision (see the pull request), so each pins the current behaviour, asserts
+///         its direction and logs the measured size. A fix flips the documented assertion and
+///         turns the test red.
 contract InterestAndYieldAttributionTest is Base {
     uint256 internal constant STAKE = 1_000_000e18;
     uint256 internal constant DUST = 1e10;
 
     // ─────────────────────────────────────────────────────────────────────────────────────
-    // LOCK-STALE (documents). `_settlePendingRewards` pays with `trackedBoostedEffective`,
-    // which only drops when the position is resynced (own action, poke, or sweep). An expired
-    // lock that nobody touches keeps earning at its historical multiplier.
+    // LOCK-STALE. `trackedBoostedEffective` only drops when the position is resynced (own
+    // action, poke, or sweep), but the settle pays a lapsed lock its boost only up to
+    // `unlockTime` and 1.00x after it (`_postUnlockAtBase`); the excess returns to the reserve.
     // Oracle: scenario X (no touch until the final claim) vs scenario Y (the lock is poked at
-    // the exact unlock instant). Same final claim instant in both. X - Y > 0 and grows with
-    // the length of the un-touched tail.
+    // the exact unlock instant). Same final claim instant in both. An untouched expired lock
+    // collects no more than one touched at its unlock: X <= Y + dust, for any tail. Y - X is
+    // logged: in X the lapsed weight stays in the denominator until the claim, so the window's
+    // per-unit rate is lower and the difference stays in the reserve.
+    // Red at 82febb5: X - Y was 850,158.03 BZPX (1y tail) and 1,700,316.05 BZPX (3y tail).
     // ─────────────────────────────────────────────────────────────────────────────────────
     function _lockStaleScenario(uint256 tail, bool pokeAtExpiry)
         internal
@@ -40,7 +44,7 @@ contract InterestAndYieldAttributionTest is Base {
         tailEmission = staking.emittedAt(endT) - staking.emittedAt(aliceUnlock);
     }
 
-    function test_LOCKSTALE_documents_expiredLockOverEarnsUntilTouched() public {
+    function test_LOCKSTALE_anUntouchedExpiredLockEarnsNoMoreThanOneTouchedAtUnlock() public {
         vm.prank(admin);
         staking.fundEmission(180_000_000e18);
         vm.prank(alice);
@@ -57,20 +61,17 @@ contract InterestAndYieldAttributionTest is Base {
         vm.revertToState(snap);
         (uint256 y2,) = _lockStaleScenario(3 * 365 days, true);
 
-        assertGt(x1, y1, "un-touched expired lock should over-earn (1y tail)");
-        assertGt(x2, y2, "un-touched expired lock should over-earn (3y tail)");
-        uint256 d1 = x1 - y1;
-        uint256 d2 = x2 - y2;
-        assertGt(d2, d1, "over-earning grows with the un-touched tail");
+        emit log_named_decimal_uint("tail 1y: X (no touch)        ", x1, 18);
+        emit log_named_decimal_uint("tail 1y: Y (poked)           ", y1, 18);
+        emit log_named_decimal_uint("tail 1y: X over Y            ", x1 > y1 ? x1 - y1 : 0, 18);
+        emit log_named_decimal_uint("tail 1y: Y over X (residue)  ", y1 > x1 ? y1 - x1 : 0, 18);
+        emit log_named_decimal_uint("tail 1y: tail emission       ", e1, 18);
+        emit log_named_decimal_uint("tail 3y: X over Y            ", x2 > y2 ? x2 - y2 : 0, 18);
+        emit log_named_decimal_uint("tail 3y: Y over X (residue)  ", y2 > x2 ? y2 - x2 : 0, 18);
+        emit log_named_decimal_uint("tail 3y: tail emission       ", e2, 18);
 
-        emit log_named_decimal_uint("tail 1y: X (no touch)   ", x1, 18);
-        emit log_named_decimal_uint("tail 1y: Y (poked)      ", y1, 18);
-        emit log_named_decimal_uint("tail 1y: delta tokens   ", d1, 18);
-        emit log_named_decimal_uint("tail 1y: tail emission  ", e1, 18);
-        emit log_named_uint("tail 1y: delta bps of tail emission", d1 * 10_000 / e1);
-        emit log_named_decimal_uint("tail 3y: delta tokens   ", d2, 18);
-        emit log_named_decimal_uint("tail 3y: tail emission  ", e2, 18);
-        emit log_named_uint("tail 3y: delta bps of tail emission", d2 * 10_000 / e2);
+        assertLe(x1, y1 + DUST, "untouched expired lock paid its lapsed boost past unlock (1y tail)");
+        assertLe(x2, y2 + DUST, "untouched expired lock paid its lapsed boost past unlock (3y tail)");
     }
 
     // ─────────────────────────────────────────────────────────────────────────────────────

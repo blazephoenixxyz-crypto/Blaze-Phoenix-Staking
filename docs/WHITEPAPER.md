@@ -35,17 +35,18 @@ It introduces three properties that, to the authors' knowledge, have not previou
 been combined in a deployed protocol:
 
 1. **Per-transaction conservation enforcement** — every value-moving entry-point
-   carries a mathematical proof that the protocol's real token balance changed by
-   exactly the same amount as what the ledger says it owes, making an insolvent
-   state *unreachable through normal flow*, not merely *observable after the fact*.
+   checks that the protocol's real token balance changed by the same amount as what
+   the ledger says it owes, to within a 1e10-wei rounding allowance, so no transaction
+   can move value the ledger does not record, rather than leaving a gap to be
+   *observed after the fact*.
 
 2. **Fully autonomous maintenance** — liquidations, interest accrual, lock expiry,
    and boost-weight synchronisation are driven entirely by ordinary user
    transactions, with a scan budget that self-sizes from a pure function of
    on-chain state. There is no keeper requirement and no governance parameter.
 
-3. **Oracle-free, provably solvent lending** — because collateral, borrowed asset,
-   and reward token are all the same (BZPX), there is no price oracle anywhere.
+3. **Oracle-free lending with a public solvency read** — because collateral, borrowed
+   asset, and reward token are all the same (BZPX), there is no price oracle anywhere.
    Solvency is a public, on-chain, trust-free read.
 
 ---
@@ -88,7 +89,9 @@ any address at any time.
 
 ## 2. The Master Conservation Identity
 
-The entire accounting of the protocol obeys one equation at all times:
+The entire accounting of the protocol is held to one identity, checked as a per-transaction
+delta by `conserves` (§2.2) to within `CONSERVATION_DUST` (1e10 wei); a direct transfer to the
+contract only adds to the left side:
 
 ```
 balanceOf(contract) + totalBadDebt + stakedOverdraw
@@ -98,13 +101,15 @@ balanceOf(contract) + totalBadDebt + stakedOverdraw
      + (totalRewardDistributed − totalRewardsPaid)
 ```
 
-The right-hand side is `_owed()`. **Solvency is equivalent to `balance ≥ owed`.**
+The right-hand side is `_owed()`. **Solvency is `balance ≥ owed`**, read with the same
+1e10-wei allowance (`isSolvent`).
 `_owed()` reads every recorded loss in full. A loss not yet recorded (a borrower whose
 accrued debt has outgrown her stake before attribution books it) it reads only in part,
 through the floors that keep it non-negative, so the read deficit is a lower bound of the
 real one and `balance + totalBadDebt + unrecordedLoss ≥ owed` always holds. The loss is
 recorded when the position is attributed, liquidated or exits.
-The equation is the referee, and it is consulted on every move.
+The equation is the referee, and every value-moving transaction it guards consults it (§2.2;
+`emergencyWithdraw` and `syncEquity` sit outside the guard so they stay callable in a breach).
 
 ### 2.1 Term-by-term explanation
 
@@ -256,7 +261,10 @@ For each position in the window:
    - The seizure surplus (above the debt) is transferred to the user whose
      transaction carried the gas (the `beneficiary`). Liveness incentive is built in.
 3. **If not liquidatable** — settle pending emission rewards and pure yield, expire
-   stale locks, and resync the boost weight. The global denominators never drift.
+   stale locks, and resync the boost weight. A scanned position leaves the sweep at its live
+   weight. One the window has not reached keeps the weight of its last resync until it is
+   reached or touched; its own settle pays the live weight either way, and the difference
+   stays in the reserve (`docs/KNOWN_ISSUES.md`).
 
 ### 3.3 The second window: expired locks on debt-free positions
 
@@ -265,9 +273,11 @@ class whose lock expiry nothing else would ever normalise. A second registry, `_
 every position holding a live commitment and receives its own rotating, gas-bounded window in the
 same sweep. Any entry whose commitment has elapsed is normalised on the spot:
 
-1. **Settle first** — emission rewards and pure yield are paid at the weight they were actually
-   earned at. Everything accrued while the commitment was live was genuinely earned at the boosted
-   weight; only the *future* is re-priced. The correction never confiscates.
+1. **Settle first** — the window is paid at the boosted weight up to `unlockTime` and at 1.00×
+   after it (`_postUnlockAtBase`); the part the lapsed boost did not earn returns to
+   `rewardReserve` (emission) or `protocolReserve` (pure yield). The split reads the emission
+   curve, so it is exact where the window's flow followed it; otherwise it stays between the
+   1.00× share and the lapsed share (§4.2.1).
 2. **Release** — `_processLockExpiry` clears the lock, `_resync` recomputes the weight at 1.00×
    through the single writer, and the entry is de-registered.
 
@@ -362,17 +372,25 @@ function _effectiveLockDays(UserInfo storage u) internal view returns (uint256) 
 }
 ```
 
-Every boost in the protocol is derived through this function, so no code path — present or future —
-can re-price a lapsed commitment at its historical multiplier. The public views agree: 
+Every weight the protocol writes is derived through this function, and every settle pays the part
+of a window after `unlockTime` at 1.00× (`_postUnlockAtBase`), so a lapsed commitment is not paid
+its historical multiplier for the time after it lapsed. The public views agree:
 `lockInfoOf().boostBps` and `getUserInfo().boostBps` report what a position is **paid** at and read
 `10000` the moment a lock lapses, while `lockDays` / `unlockTime` continue to report the commitment
 on record.
 
-Real-time derivation and the §3.3 sweep are **jointly** necessary. Derivation alone only re-prices a
-position somebody already touched — which an idle staker never is. The sweep alone would leave the
-stale multiplier re-derivable in the window between expiry and normalisation. Together they make
-stored state and tracked weight structurally unable to diverge, since `_resync` — the sole path by
-which any boost weight is ever written — now processes expiry itself.
+The settle split, the §3.3 sweep and the permissionless pokes each do a different part. The split
+prices the lapsed position's own payout at 1.00× from `unlockTime`, whenever it is touched. It
+reads the emission curve (time, for pure yield), so where the flow inside a window did not follow
+the curve (an emergency halt, a reserve that ran dry, a book that moved, a position that is a
+large part of its own denominator) the split is approximate: never above the lapsed share, never
+below the 1.00× share, and the rest stays in the reserve. The sweep,
+the pokes and the position's own transaction remove its lapsed weight from the reward
+denominators; `_resync`, the sole path by which any boost weight is ever written, processes expiry
+itself. Between the unlock and that normalisation, positions whose lock is still running share each
+window with the lapsed weight and are paid slightly less; the difference stays in the reserve.
+Removing the weight at the exact instant needs per-day expiry buckets, which do not fit the
+EIP-170 size limit (`docs/KNOWN_ISSUES.md`).
 
 ### 4.3 Withdrawal requires full repayment
 
@@ -433,17 +451,21 @@ a property of the aggregate, not a per-account penalty.
 
 If interest erosion ever drives `totalStaked` to zero with debt still outstanding, the naive
 utilisation reading (`debt/staked`) is undefined, and an earlier revision reported that
-terminal state as floor rate, 0% utilisation, and no invariant violation. The views
-(`utilizationRate`, `getGlobalStats`, `auditInvariants`, and the rate function itself) now
-clamp utilisation to 100% (`WAD`) and report maximum distress as maximum distress, matching
-the public `simulateRate`. No UI reading the published surface can understate the real rate.
+terminal state as floor rate, 0% utilisation, and no invariant violation. The views now
+report maximum distress as maximum distress: `utilizationRate` and `getGlobalStats` read
+utilisation as `type(uint256).max`, the rate is `simulateRate` of that same reading (which caps
+its input at 100%, `WAD`), so it reads the ceiling of the curve, and `auditInvariants` raises
+its aggregate-distress bit. No UI reading the published surface can understate the real rate
+(`test/fix1102/TerminalDepletionDoors.t.sol`).
 
 ### 5.3 Interest accrual
 
 Interest reduces the borrower's `staked` balance (not a separate debt counter).
 Accrual is driven by a global per-debt index, `accInterestPerDebt`: each elapsed
-window is stamped with the rate that actually prevailed across it (the index is
-advanced **before** any write that could move the rate), the whole book's slice is
+window is stamped with the rate its starting state reads (the index is advanced
+**before** any write that could move the rate, so no transaction re-prices a window
+already elapsed; a book that transacts often picks up the rise of utilisation sooner,
+see `docs/KNOWN_ISSUES.md`), the whole book's slice is
 debited from `totalStaked` in the same step, and each position is later charged its
 share of the index growth it lived through:
 
@@ -665,7 +687,9 @@ Accrued-but-unpaid rewards, including any emission deferred under a breach, are
 totalRewardsPaid` term of `owed()`, so post-emergency the ledger *overstates* what it owes —
 i.e. the error is in the **conservative direction**: the protocol can only look *less* solvent
 than it really is, never more. The corresponding tokens stay in the contract as unclaimable
-surplus backing.
+surplus backing: no function pays them out (`sweepUndistributedEmission` reaches only
+`rewardReserve`), and in a breached emergency they stay in the `pot` the haircut divides
+(`test/fix1102/EmergencyForfeitStaysOwed.t.sol`).
 
 `cancelEmergency()` requires ADMIN role and that `_hardBreach()` is currently
 false. This prevents cancelling while the breach still exists.
@@ -684,8 +708,9 @@ The protocol assumes BZPX is a **standard, well-behaved ERC-20**:
 - **No reentrancy beyond what `nonReentrant` covers.** Transfer hooks are tolerated (every public
   entry-point is `nonReentrant`), but a token actively designed to corrupt accounting is out of scope.
 
-Because BZPX is the protocol's own token, these properties hold by construction. They are listed
-here as explicit deploy invariants for any fork or re-deployment against a different asset.
+BZPX itself is outside the scope of this repository (`docs/KNOWN_ISSUES.md`), so these properties
+are listed as explicit deploy invariants, for BZPX and for any fork or re-deployment against a
+different asset.
 
 ---
 

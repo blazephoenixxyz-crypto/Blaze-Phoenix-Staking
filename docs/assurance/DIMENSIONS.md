@@ -84,7 +84,7 @@ Every row is tagged `[conferido]`: the expression was read at that line.
 | 284 | UserInfo.debt | wei |
 | 285 | UserInfo.rewardDebt | wei |
 | 286 | UserInfo.pureYieldDebt | wei |
-| 287 | UserInfo.lastAccrueTime | s |
+| 287 | UserInfo.checkpointTime (`lastAccrueTime` at `cedd80d`) | s |
 | 288 | UserInfo.interestIndex | WAD/debt |
 | 289-290 | UserInfo.trackedBoostedEffective, trackedBoostedPure | W |
 | 291 | UserInfo.trackedEquity | wei |
@@ -171,10 +171,11 @@ Every row is tagged `[conferido]`: the expression was read at that line.
 | 73 | 1873 | `mulDiv(_dampPure(base, tbp), 10_000 − RESERVE_FACTOR_BPS, 10_000)` | `bps/yr · bps / bps` → bps/yr; the damper is linear, so damping the rate equals damping the flow (row 46) | consistent [conferido] |
 | 74 | 1893, 1912 | `mulDiv(tracked, acc, WAD)` in the quotes | `W · (WAD/W) / WAD` → wei | consistent [conferido] |
 | 75 | 1259-1260 | excess weight `tracked − computed` | W | consistent [conferido] |
+| 76 | `_postUnlockAtBase` (after `cedd80d`) | `mulDiv(amount, w·(xu − x0) + base·(x1 − xu), tracked·(x1 − x0))` | `wei · (W·x) / (W·x)` → wei, for either clock `x`: `wei` on the emission curve (`_emittedAt`), `s` for pure yield; numerator and denominator carry the same `x`, so the split is a pure fraction of `amount` | consistent [conferido] |
 
 ## Result
 
-75 expression rows, 0 dimensional inconsistencies. The per-share accumulators divide `wei` by a
+76 expression rows, 0 dimensional inconsistencies. The per-share accumulators divide `wei` by a
 boosted weight `W` (rows 29, 45) and multiply back by the same `W` class at settlement (row 34), so
 the boost scale cancels; the interest index is a WAD-scaled pure number per unit of debt (rows 36,
 39, 41, 47) and every consumer multiplies it by a debt in `wei` and divides by WAD (rows 37, 48).

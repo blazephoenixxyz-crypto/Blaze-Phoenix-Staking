@@ -175,7 +175,9 @@ contract PureYieldDustDenominatorTest is Test {
     /// PURE-03 — the emergency interest freeze (EMG-01/02) was applied only to the execution
     /// channel. `_updateInterestIndex` returns without charging while `emergencyMode`, but the
     /// view kept projecting the slice. Quoting interest that will never be paid is the same
-    /// defect, from the other side.
+    /// defect, from the other side. Mallory's 90-day lock has lapsed, so her quote also splits the
+    /// window at `unlockTime`: the split reads where the flow stopped, the trip (`_flowEnd`), not
+    /// the wall clock, and freezes with the index.
     function test_QuoteFreezesWithExecutionDuringEmergency() public {
         _residualPureBook();
 

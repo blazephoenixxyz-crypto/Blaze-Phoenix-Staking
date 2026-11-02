@@ -35,6 +35,15 @@ Seven defects were found in this protocol. Every single one of them left the boo
 | Empty-window emission stranded | when it was earned | No |
 | A dust position alone absorbing the schedule | who earns | No |
 
+The first row is closed for the position's own payout: every settle pays the part of a window
+after `unlockTime` at 1.00x (`_postUnlockAtBase`). Its weight leaves the reward denominators when
+the position is touched (its own transaction, the sweep every transaction carries, or a
+permissionless poke); until then, positions whose lock is still running are paid slightly less.
+The split reads the emission curve, so where the flow inside a window did not follow it (an
+emergency halt, a reserve that ran dry, a book that moved) the position's own payout is
+approximate too, between its 1.00x share and its lapsed share. Both residues are accepted limits,
+measured in `docs/KNOWN_ISSUES.md`.
+
 Six out of seven were **pure redistribution**. Value moved between participants and the totals
 never changed. The protocol's `conserves` guard checks that the change in the real balance equals
 the change in what the ledger claims to owe — and a redistribution is delta-neutral on both sides.
@@ -73,6 +82,13 @@ that is *not* constant gives a distinct defect family:
 | `W(t₁)` | Just-in-time capture | Membership of a distribution they were absent for |
 | `w_i` from a stale scalar | Unearned multiplier | A weight describing a commitment that no longer exists |
 
+This implementation samples the rate and the weights at the **left** endpoint instead — the state
+the window starts with, which no transaction can change after the fact — and splits a window at
+`unlockTime` for the position whose lock lapsed inside it. What remains is the error of a
+rectangle when a factor drifts inside a window that no transaction touched (the interest rate as
+the stake falls, a borrower's weight as its interest grows, a lapsed weight in `W`). It moves
+value between participants by bounded amounts and is measured in `docs/KNOWN_ISSUES.md`.
+
 A second family has nothing to do with integration and everything to do with bookkeeping:
 
 > **A state advance whose dual is never written.**
@@ -93,8 +109,12 @@ sound good.
 The rate is a function of two ledger totals. Any transaction that moves either of them must settle
 the elapsed period *first*, or the period gets re-priced at a rate that never prevailed across it.
 This one rule closes every retroactive re-pricing vector at once, including the ones nobody
-reported: we confirmed that borrow-, repay- and withdraw-driven manipulation all charge identically
-to the wei once it is in place.
+reported: once it is in place, which transaction drives the update no longer changes the charge
+(`test/final.mjs`, MR-DRIVER, drives the same backlog through a deposit, a claim and a borrow and
+requires the three charges to agree within 0.1%). R1 does not integrate the curve inside a window:
+each window is charged at the rate its start reads, so a book that transacts often picks up the
+rise of utilisation sooner and is charged slightly more than an idle one (9.9M BZPX borrowed
+against 21M staked, one year: 333,730.36 against 331,650.00 BZPX; `docs/KNOWN_ISSUES.md`).
 
 **R2 — Distribution and collection must move in the same step.**
 If value is credited to recipients before it is taken from payers, the ledger claims more than the
@@ -102,24 +122,35 @@ contract holds. If it is taken before being credited, the reverse. They must be 
 movement, or the conservation identity has to be weakened to accommodate the gap — and a weakened
 identity is exactly the blind spot that hides the next bug.
 
-**R3 — Price by what remains, never by a historical scalar.**
-If a multiplier is the price of a commitment, it must be a function of the commitment that is
-*still outstanding*. A stored number that once described the position will eventually describe
-something else. The test is a pure equivalence: two positions identical in principal, debt and
-unlock time must receive an identical multiplier. Nothing about how they arrived there may matter.
+**R3 — Price the commitment that was made, and only while it binds.**
+A multiplier is the price of a commitment, so it must describe the commitment the capital it pays
+actually carries. A lock is paid at the term it committed to for that whole term: a seven-year
+lock with 555 days left is still paid at seven years, because its capital has been illiquid the
+whole time, while a fresh 555-day lock is paid at 555 days. Two positions with the same principal,
+debt and unlock time can therefore carry different multipliers. What may never happen is capital
+priced at a commitment it did not make: principal added under a longer existing lock re-keys the
+whole position to the days that remain, and from `unlockTime` the position is paid 1.00x
+(`_postUnlockAtBase`). A multiplier that decays with the remaining term is a different
+(veCRV-style) design. Pinned by `test/fix1102/CommitmentPricing.t.sol` and
+`test/fix1102/LockExpiryStaleWeight.t.sol`.
 
 **R4 — Every clock advance needs a dual write.**
 Advancing time is a state change. If the accumulator declines to distribute for that period —
 which can be entirely correct — then the value must land *somewhere* nameable and reachable.
 "Nowhere" is not an accounting outcome, and it corrupts the totals for the rest of the system's
-life.
+life. One accepted exception remains: what an emergency exit forfeits stays counted as distributed
+and unpaid, with no position left to claim it. It errs toward overstating what is owed, never
+understating it, and moving it to a reserve does not fit the EIP-170 size limit
+(`docs/KNOWN_ISSUES.md`, `test/fix1102/EmergencyForfeitStaysOwed.t.sol`).
 
 **R5 — One implementation per published quantity.**
 Any figure computed in two places will diverge. Not may — will. In this project the pure-yield
 projection existed in an aggregate view and a standalone getter; fixing one left the other behind,
 and the divergence was found only because a test rebuilt the number independently. Collapsing the
 duplicates also *reduced* the deployed bytecode, taking the contract from 243 bytes under the
-EIP-170 limit to 617. **Deduplication is a security measure, not a tidiness measure.**
+EIP-170 limit to 617. **Deduplication is a security measure, not a tidiness measure.** Where a
+view and an action must still compute the same figure in two places, `SHARED_QUANTITIES.md` names
+the pair and the test that pins them together.
 
 **R6 — Never express a guard as a cliff.**
 A predicate over a continuous quantity — *below this line, nothing; above it, everything* — hands
@@ -226,8 +257,9 @@ That is a structurally harder safety problem than an ephemeral system, for three
 3. **The exploit window is unbounded.** A defect present at deployment is still exploitable years
    later, and the longer it goes unnoticed the more value has flowed through it.
 
-The design instinct behind this protocol — seal conservation first, with an on-chain identity that
-makes an insolvent state unreachable rather than merely observable — was the right first move, and
+The design instinct behind this protocol — seal conservation first, with an on-chain identity
+checked on every value-moving transaction, so that no transaction can move value the ledger does
+not record — was the right first move, and
 the awareness that time would be the harder axis was correct. What the findings show is that
 recognising the risk is not the same as covering it. **The mass was sealed. The time was not.**
 

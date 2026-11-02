@@ -11,6 +11,10 @@ rules, scope and awards are in [`SECURITY.md`](../SECURITY.md) and at
 - **Recorded bad debt reads as insolvency until it is recapitalised.** A loss the protocol reserve
   cannot cover is booked in `totalBadDebt` and stays counted in what the contract owes, so
   `isSolvent()` returns false and the full-value channels close until `absorbBadDebt` covers it.
+  The reserve is consumed before a loss is booked; what reaches it afterwards (an interest slice,
+  the pure yield a lapsed boost did not earn, settled by the lock sweep that runs after the
+  borrower sweep) is not netted against the booked loss on its own. `absorbBadDebt` applies the
+  reserve first, and anyone may call it with `amount_ = 0` to do only that.
   Emission deferred under a breach stays owed to its position and is paid by that position's first
   settlement after the breach clears. Documented in `README.md` (section 1),
   `docs/WHITEPAPER.md` (section 2.1) and `src/BlazePhoenixStaking.sol` (contract header and the
@@ -18,8 +22,14 @@ rules, scope and awards are in [`SECURITY.md`](../SECURITY.md) and at
 - **An emergency exit forfeits unpaid rewards.** `emergencyWithdraw` returns net equity, closes the
   position and forfeits unpaid emission and pure yield. Using it is the holder's choice: an
   emergency starts only from an on-chain breach or a guardian decision, and the admin can cancel it
-  once no breach remains, after which a holder who did not exit claims as usual. Documented in `README.md`
-  (sections 1 and 4) and `src/BlazePhoenixStaking.sol` (NatSpec of `emergencyWithdraw`).
+  once no breach remains, after which a holder who did not exit claims as usual. The forfeited
+  amount stays in the contract, counted in `totalRewardDistributed - totalRewardsPaid` (a term of
+  `owed()`) with no position left to claim it: `sweepUndistributedEmission` reaches only
+  `rewardReserve`, and no function pays it out. In a breached emergency it stays in the balance
+  the haircut divides among the exits. The exit moves `backing()` and `owed()` by the same amount,
+  so the identity holds and `owed()` reads high by the forfeits, never low. Documented in `README.md`
+  (sections 1 and 4), `src/BlazePhoenixStaking.sol` (NatSpec of `emergencyWithdraw`) and
+  `test/fix1102/EmergencyForfeitStaysOwed.t.sol`.
 - **Batch lock pokes take a list of any length.** `pokeExpiredLocks` takes a list that the caller
   supplies and pays for, so the protocol sets no cap on its length; the block gas limit bounds it,
   and an oversized batch reverts only the caller's own transaction. Entries that are not expired
@@ -36,6 +46,14 @@ rules, scope and awards are in [`SECURITY.md`](../SECURITY.md) and at
   project interest accrued since the position was last touched; `maxBorrowOf` is the projected
   limit that `borrow` accepts. Documented in `src/BlazePhoenixStaking.sol` (NatSpec of
   `effectiveStakeOf` and `maxBorrowOf`).
+- **Interest is priced at the rate its window starts with.** The interest index accrues in O(1):
+  the window since the last update of the book is charged at the rate its starting utilisation
+  reads, with no integral of the curve across the window. A book that transacts often follows the
+  rate its falling stake raises; an idle one keeps its starting rate until the next transaction.
+  A busy book is therefore charged slightly more, never more than the whole period at the final
+  rate. Measured with 9.9M BZPX borrowed against 21M staked, over one year: 331,650.00 BZPX of
+  interest with no transaction in between, 333,730.36 BZPX with one a day. Documented in
+  `docs/INVARIANTS_AND_TIME.md` (R1) and `test/fix1102/InterestStaleWeight.t.sol`.
 
 ## Accepted and documented limits
 
@@ -47,6 +65,41 @@ rules, scope and awards are in [`SECURITY.md`](../SECURITY.md) and at
   conservation guard. Reports that rely on a token breaking these assumptions are outside the
   design. Documented in `README.md` (Token assumption) and `docs/INVARIANTS_AND_TIME.md`
   (Asset boundary).
+- **A lapsed lock keeps its boosted weight in the reward denominators until it is touched.** From
+  `unlockTime` the position's own payout follows 1.00x: every settle splits its window at the
+  unlock, on the emission curve for emission and on time for pure yield, pays the part after it at
+  1.00x (`_postUnlockAtBase`), and returns the part its lapsed boost did not earn to the reserve
+  that funded it (`rewardReserve` for emission, `protocolReserve` for pure yield). Its weight
+  leaves the global denominators when the position is touched: by its own transaction, by the
+  lock sweep that every transaction carries, or by the permissionless `pokeExpiredLock` and
+  `pokeExpiredLocks`. Until then, positions whose lock is still running share each window with
+  that weight and are paid slightly less; the difference stays in the reserve and is not paid to
+  the lapsed position. Measured with ten lapsing positions beside a seven-year staker: 317.78 BZPX
+  less for the staker with one transaction a day (every lapsed weight normalised within
+  43,200 s), 43,120.45 BZPX with no traffic at all.
+  The split reads the curve, not the accumulator, so it is exact only where the flow inside the
+  window followed the curve over an unchanged book. A book that shrank inside the window, a
+  reserve that ran dry, an emergency halt (nothing flowed while the curve moved on) or a position
+  that is a large part of its own denominator (normalising it would have shrunk the denominator
+  too) moves the split. The payout stays between the 1.00x share and the lapsed share it replaces,
+  and what is not paid stays in the reserve. Measured: a single 730-day position left untouched to
+  the end of the programme collects 161,437,500 of the 179,296,875 BZPX emitted, and the other
+  17,859,375 stay in `rewardReserve`; a 90-day lock that lapses inside a 30-day halt collects
+  9,828,023.82 BZPX instead of 9,863,013.70. Normalised at `unlockTime`, the same positions collect
+  everything. Removing the weight at the exact instant needs per-day expiry buckets, which do not
+  fit the EIP-170 size limit. Documented in `src/BlazePhoenixStaking.sol` (`_postUnlockAtBase`,
+  `_flowEnd`, `_resync`), `docs/INVARIANTS_AND_TIME.md` (section 2 and R3),
+  `test/fix1102/LockExpiryStaleWeight.t.sol`, `test/assurance/DeliveryIndex.t.sol` and
+  `test/fix1027/StaleQuantityFamily.t.sol`.
+- **A borrower's weight follows its interest when it is touched.** Interest lowers a borrower's
+  net stake continuously, while its tracked weight keeps the equity of its last resync until a
+  transaction reaches it: its own, or the borrower sweep that every transaction carries. Its own
+  settle pays the live weight and returns the stale excess to `rewardReserve`; until the resync,
+  debt-free positions share each window with the stale weight and are paid slightly less.
+  Measured over one year with an idle 20M position at 9.9M of debt beside a 1M debt-free position:
+  the debt-free position collects 4,054,054.05 BZPX of emission when nothing else transacts and
+  4,115,954.85 BZPX when it claims daily. Documented in `src/BlazePhoenixStaking.sol`
+  (`_autoMaintain`, `_atLiveWeight`) and `test/fix1102/InterestStaleWeight.t.sol`.
 
 ## Out of scope
 

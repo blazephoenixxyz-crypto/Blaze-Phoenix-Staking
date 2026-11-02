@@ -351,7 +351,7 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
         uint256 debt;
         uint256 rewardDebt;
         uint256 pureYieldDebt;
-        uint256 lastAccrueTime;
+        uint256 checkpointTime;     // when `_checkpoint` last rebased the reward debts: where the next settle's window starts
         uint256 interestIndex;      // checkpoint into accInterestPerDebt
         uint256 trackedBoostedEffective;
         uint256 trackedBoostedPure;
@@ -370,8 +370,9 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
     ///      `totalPositiveEquity` stale-high. The breached haircut reads it (3236).
     uint256 private _interestAttributed;
     /// @dev `totalRewardDistributed` when the emergency began; its writers (`_updateGlobal`,
-    ///      `_updateInterestIndex`, the P1-C return in `_settlePendingRewards`) are frozen for the
-    ///      emergency, so `cancelEmergency` requires it unchanged (3326 meta-guard).
+    ///      `_updateInterestIndex`, the P1-C and LOCK-STALE returns in `_settlePendingRewards` and
+    ///      `_settlePendingPureYield`) are frozen for the emergency, so `cancelEmergency` requires
+    ///      it unchanged (3326 meta-guard).
     uint256 private _distributedAtTrip;
 
     // ── Events ────────────────────────────────────────────────────────────────────────────
@@ -437,7 +438,9 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
     ///      books are a few wei off — this removes the DoS-by-invariant risk. Only a transaction
     ///      that itself leaks value (a real bug/theft) fails. This guard — running on every
     ///      value-moving tx — IS the conservation mechanism; it is intrinsic and needs no keeper
-    ///      to trigger it, so the book can never reach an unconservative state through normal flow.
+    ///      to trigger it, so every transaction it guards moves the two sides of the identity
+    ///      together, to within dust (`emergencyWithdraw` and `syncEquity` sit outside it, so they
+    ///      stay callable in a breach).
     ///      Absolute solvency is additionally exposed read-only via `isSolvent()` / `solvency()` /
     ///      `auditInvariants()`, and if a genuine shortfall ever does exist (e.g. a token-level
     ///      failure outside this contract) `tripBreaker()` lets anyone halt — but ONLY under that
@@ -705,8 +708,9 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
 
     /// @notice During emergency, pull your OWN net equity (staked - debt). Debt is netted
     ///         against principal (collateral == borrowed asset). Interest is charged up to the
-    ///         trip and frozen since; unpaid emission and pure yield are forfeited. In a breached
-    ///         emergency the payout is scaled pro rata (below). Closes the position entirely.
+    ///         trip and frozen since; unpaid emission and pure yield are forfeited and stay
+    ///         counted in `owed()` with no position to claim them (docs/KNOWN_ISSUES.md). In a
+    ///         breached emergency the payout is scaled pro rata (below). Closes the position entirely.
     ///         Funnels through _applyBoost, so exiting cannot leave a stale boosted "ghost"
     ///         share behind. NOT conservation-guarded, so it remains callable even while the
     ///         contract is in a breached state.
@@ -812,17 +816,14 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
         external nonReentrant whenNotPaused whenNotEmergency conserves
     {
         if (amount_ == 0) revert Staking__ZeroAmount();
-        if (lockDays_ < MIN_LOCK_DAYS) revert Staking__LockTooShort();
-        if (lockDays_ > MAX_LOCK_DAYS) revert Staking__LockTooLong();
-        if (block.timestamp >= emissionEnd) revert Staking__EmissionEnded();
+        _checkLockBounds(lockDays_);
 
         UserInfo storage u = _users[msg.sender];
         if (u.staked + amount_ > MAX_STAKE_PER_WALLET) revert Staking__CapExceeded();
 
-        // Decreasing countdown: a lock may never extend past the emission close.
-        uint256 maxDays = (emissionEnd - block.timestamp) / 1 days;
-        maxDays = _min(maxDays, MAX_LOCK_DAYS);
-        if (lockDays_ > maxDays) revert Staking__LockExceedsEmissionEnd();
+        // Decreasing countdown: a lock may never extend past the emission close (the getter's own
+        // body, so the published maximum is the enforced one).
+        if (lockDays_ > maxLockDaysAvailable()) revert Staking__LockExceedsEmissionEnd();
 
         // No new money into a pot that cannot cover its claims: it would only fund the shortfall.
         if (_hardBreach()) revert Staking__InvariantBreached();
@@ -909,7 +910,6 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
         bool wasZeroDebt = (u.debt == 0);
         u.debt          += amount_;
         totalDebt       += amount_;
-        u.lastAccrueTime = block.timestamp;
         if (wasZeroDebt) _addBorrower(msg.sender);
 
         _resync(msg.sender);
@@ -1020,24 +1020,27 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
     // ════════════════════════════════════════════════════════════════════════════════════
     //  LOCK
     // ════════════════════════════════════════════════════════════════════════════════════
+    /// @dev The static bounds `deposit` and `lock` share, in the order both always checked them.
+    function _checkLockBounds(uint256 lockDays_) internal view {
+        if (lockDays_ < MIN_LOCK_DAYS) revert Staking__LockTooShort();
+        if (lockDays_ > MAX_LOCK_DAYS) revert Staking__LockTooLong();
+        if (block.timestamp >= emissionEnd) revert Staking__EmissionEnded();
+    }
+
     /// @notice Commit your stake for `lockDays_` days (min MIN_LOCK_DAYS, max MAX_LOCK_DAYS) to
     ///         earn a boost. A decreasing countdown caps the duration at the time remaining until
     ///         the emission close, so no lock can ever outlast emission. Commitments can only
     ///         be EXTENDED (the new unlock must be later than the current one), never shortened.
     /// @param lockDays_ new lock duration from now, MIN_LOCK_DAYS..maxLockDaysAvailable()
     function lock(uint256 lockDays_) external nonReentrant whenNotPaused whenNotEmergency conserves {
-        if (lockDays_ < MIN_LOCK_DAYS) revert Staking__LockTooShort();
-        if (lockDays_ > MAX_LOCK_DAYS) revert Staking__LockTooLong();
-        if (block.timestamp >= emissionEnd) revert Staking__EmissionEnded();
+        _checkLockBounds(lockDays_);
 
         UserInfo storage u = _users[msg.sender];
         if (u.staked == 0) revert Staking__NoStake();
         if (block.number <= u.depositBlock + MIN_DEPOSIT_BLOCKS) revert Staking__FlashLoanProtection();
 
         // Decreasing countdown: the lock may never extend past the emission close.
-        uint256 maxDays = (emissionEnd - block.timestamp) / 1 days;
-        maxDays = _min(maxDays, MAX_LOCK_DAYS);
-        if (lockDays_ > maxDays) revert Staking__LockExceedsEmissionEnd();
+        if (lockDays_ > maxLockDaysAvailable()) revert Staking__LockExceedsEmissionEnd();
 
         _updateGlobal();
         _autoMaintain(msg.sender);   // LOSS-FIRST
@@ -1230,8 +1233,9 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
     /// @notice The autonomous engine. Carried by EVERY ordinary user transaction. Walks a
     ///         rotating window of borrowers from a persistent cursor: liquidates any underwater
     ///         position (surplus -> the gas-payer) and keeps every other scanned position's
-    ///         interest, lock-expiry and boost weight fresh, so the global reward denominators
-    ///         never drift away from reality.
+    ///         interest, lock-expiry and boost weight fresh. A position the window has not reached
+    ///         still weighs what its last resync recorded until it is reached, touched or poked
+    ///         (docs/KNOWN_ISSUES.md); its own settle pays the live weight either way.
     ///
     ///         SAFETY — disabled while paused or in emergency, so a borrower who cannot act can
     ///         NEVER be liquidated by someone else's transaction. Bounded by `_maintBudget`, so
@@ -1370,8 +1374,9 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
         if (u.lockDays == 0)                revert Staking__NoLock();
         if (block.timestamp < u.unlockTime) revert Staking__StillLocked();
 
-        // Settle FIRST: everything earned up to this instant was genuinely earned at the boosted
-        // weight, and is paid at that weight. Only the FUTURE is re-priced.
+        // Settle FIRST, at the weight each part of the window was earned at: the boost up to
+        // `unlockTime`, 1.00x after it (`_postUnlockAtBase`, the excess back to the reserves).
+        // Then the weight itself is re-priced for the future.
         _settlePendingRewards(who);
         _settlePendingPureYield(who);
 
@@ -1486,7 +1491,7 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
                 buf[n] = who;
                 unchecked { ++n; }
                 // `_computeBoost` already prices the expired commitment at 1.00x, so the gap to the
-                // still-tracked weight IS the excess this position is over-earning on.
+                // still-tracked weight IS the excess still sitting in the global denominators.
                 (uint256 be, uint256 bp) = _computeBoost(u);
                 if (u.trackedBoostedEffective > be) excessBoostedEffective += u.trackedBoostedEffective - be;
                 if (u.trackedBoostedPure      > bp) excessBoostedPure      += u.trackedBoostedPure      - bp;
@@ -1514,14 +1519,22 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
         // monotone non-decreasing, so this can never underflow, and every property the linear
         // schedule had (deterministic, pure function of time, skipped windows stay in reserve)
         // carries over unchanged — only the curve's shape moved from flat to biennial halving.
-        uint256 reward  = _emittedAt(t) - _emittedAt(lastRewardTime);
-        if (tbe < MIN_EMISSION_WEIGHT) reward = ML.mulDiv(reward, tbe, MIN_EMISSION_WEIGHT);
-        reward = _min(reward, rewardReserve);
+        uint256 reward  = _windowReward(t, tbe);
         if (reward == 0) { lastRewardTime = block.timestamp; return; }
         accRewardPerShare      += ML.mulDiv(reward, WAD, tbe);
         rewardReserve          -= reward;
         totalRewardDistributed += reward;
         lastRewardTime          = block.timestamp;
+    }
+
+    /// @dev SINGLE SOURCE for the emission the window since `lastRewardTime` releases at weight
+    ///      `tbe`: the closed-form delta, damped below MIN_EMISSION_WEIGHT, capped by the reserve.
+    ///      Execution (`_updateGlobal`) and the quote (`_pendingReward`) both read it, so the quote
+    ///      is the payment.
+    function _windowReward(uint256 t, uint256 tbe) internal view returns (uint256 reward) {
+        reward = _emittedAt(t) - _emittedAt(lastRewardTime);
+        if (tbe < MIN_EMISSION_WEIGHT) reward = ML.mulDiv(reward, tbe, MIN_EMISSION_WEIGHT);
+        reward = _min(reward, rewardReserve);
     }
 
     /// @dev Cumulative scheduled emission at time `x` — the biennial-halving closed form
@@ -1605,12 +1618,51 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
     ///      high by the interest charged; the share of the window it implies was never earned.
     ///      live <= tracked by derivation: between resyncs only interest moves `staked` (down);
     ///      `debt` and `lockDays` move only in a transaction that settles first and resyncs after,
-    ///      so `boostByDays(u.lockDays)` is the boost the tracked weight was built with. Lock expiry
-    ///      is not applied (that window is LOCK-STALE's question). `s` is the post-interest stake:
+    ///      so `boostByDays(u.lockDays)` is the boost the tracked weight was built with. A lock that
+    ///      lapsed inside the window is paid at that boost only up to `unlockTime` and at 1.00x
+    ///      after it (`_postUnlockAtBase`, LOCK-STALE). `s` is the post-interest stake:
     ///      attributed in the settle, projected in the view, so the quote is the payment.
     function _atLiveWeight(UserInfo storage u, uint256 s, uint256 earned) internal view returns (uint256) {
-        return ML.mulDiv(earned, ML.mulDiv(_sub0(s, u.debt), boostByDays(u.lockDays), BOOST_BASE),
-                         u.trackedBoostedEffective);
+        uint256 eq = _sub0(s, u.debt);
+        return _postUnlockAtBase(earned, ML.mulDiv(eq, boostByDays(u.lockDays), BOOST_BASE), eq,
+            u.trackedBoostedEffective,
+            _emittedAt(u.checkpointTime), _emittedAt(u.unlockTime), _emittedAt(_flowEnd()));
+    }
+
+    /// @dev LOCK-STALE. A tracked weight built on a lock that has since lapsed earned its boost
+    ///      only up to `unlockTime`; from there on the position was liquid, so it earned at 1.00x.
+    ///      Pays `amount` (accrued at weight `tracked`) at weight `w` up to the unlock and at the
+    ///      1.00x weight `base` after it: amount * (w (xu - x0) + base (x1 - xu)) / (tracked
+    ///      (x1 - x0)), one rounding, in the paid amount. `x` is a clock monotone in time on which
+    ///      the window's flow is linear when the denominator does not move: the closed-form curve
+    ///      `_emittedAt` for emission, time for pure yield (interest has no closed form). `x0`
+    ///      reads it at the last checkpoint, `xu` at the unlock, `x1` where the flow stops
+    ///      (`_flowEnd`). A lock still running at the checkpoint (it would have been cleared there
+    ///      otherwise) gives x0 <= xu; the clamp makes the helper total: no unlock inside the
+    ///      window (xu >= x1, an empty window included) pays `w`, and a position without a lock
+    ///      has w == base. w <= tracked, so nothing is paid above `amount`. The split assumes the
+    ///      flow followed the clock inside the window; the settle is O(1) and stores no history,
+    ///      so a denominator that moved, a reserve that ran dry or an emergency gap inside the
+    ///      window is the residue (KNOWN_ISSUES.md).
+    function _postUnlockAtBase(uint256 amount, uint256 w, uint256 base, uint256 tracked,
+                               uint256 x0, uint256 xu, uint256 x1) internal pure returns (uint256) {
+        if (xu < x0) xu = x0;
+        if (xu >= x1) return ML.mulDiv(amount, w, tracked);
+        return ML.mulDiv(amount, w * (xu - x0) + base * (x1 - xu), tracked * (x1 - x0));
+    }
+
+    /// @dev Where both reward flows stop: now, or the trip while an emergency freezes them, so a
+    ///      quote read in the halt splits the window the accumulators actually integrated.
+    function _flowEnd() internal view returns (uint256) {
+        return emergencyMode ? emergencyTrippedAt : block.timestamp;
+    }
+
+    /// @dev LOCK-STALE, pure channel. A pure position is debt-free, so its stake has not moved
+    ///      since the resync that built `trackedBoostedPure`: that stake is its 1.00x weight.
+    ///      Caller guarantees trackedBoostedPure > 0.
+    function _pureAtLiveWeight(UserInfo storage u, uint256 due) internal view returns (uint256) {
+        uint256 bp = u.trackedBoostedPure;
+        return _postUnlockAtBase(due, bp, u.staked, bp, u.checkpointTime, u.unlockTime, _flowEnd());
     }
 
     function _settlePendingPureYield(address user_) internal {
@@ -1627,6 +1679,13 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
         // the breach clears pays it, so the doors that resync a lock stay open in a breach.
         uint256 due = gross - u.pureYieldDebt;
         u.pureYieldDebt = gross;
+        // LOCK-STALE: the part of the window after `unlockTime` is paid at 1.00x. The excess was
+        // never earned, so it leaves the distributed side for `protocolReserve`, where every
+        // undistributed slice of the flow lands (conservation unchanged).
+        uint256 paid = _pureAtLiveWeight(u, due);
+        protocolReserve        += due - paid;
+        totalRewardDistributed -= due - paid;
+        due = paid;
         if (_hardBreach()) { _rewardDeferred[user_] += due; return; }
         totalRewardsPaid += due;
         emit PureYieldClaimed(user_, due);
@@ -1675,29 +1734,21 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
         accInterestPerDebt += delta;
         totalStaked -= slice;
 
-        uint256 reserveCut = ML.mulDiv(slice, RESERVE_FACTOR_BPS, 10_000);
-        uint256 toPool     = slice - reserveCut;
-        protocolReserve   += reserveCut;
-        if (toPool > 0) {
-            uint256 tbp = totalBoostedPure;
-            if (tbp > 0) {
-                // The same damper the emission channel applies in `_updateGlobal`, for the same
-                // reason and with the same constant: a residual denominator must not let a dust
-                // position capture the whole flow. Without it a single 1-token pure position took
-                // ~97% of the protocol's interest (test/fix205/PureYieldDustDenominator.t.sol).
-                // The undistributed remainder is not lost: `slice` already left `totalStaked`, so
-                // it lands in `protocolReserve` exactly as it would with no pure position at all,
-                // and reserveCut + share + (toPool − share) == slice keeps the identity exact.
-                uint256 share = _dampPure(toPool, tbp);
-                if (share > 0) {
-                    accPureYieldPerShare   += ML.mulDiv(share, WAD, tbp);
-                    totalRewardDistributed += share;
-                }
-                protocolReserve += toPool - share;
-            } else {
-                protocolReserve += toPool;
-            }
+        // The pure stakers' share: the slice net of the reserve cut, under the same damper the
+        // emission channel applies in `_updateGlobal`, for the same reason and with the same
+        // constant: a residual denominator must not let a dust position capture the whole flow.
+        // Without it a single 1-token pure position took ~97% of the protocol's interest
+        // (test/fix205/PureYieldDustDenominator.t.sol). With no pure position the damper reads 0.
+        // The rest is not lost: `slice` already left `totalStaked`, so the reserve cut and the
+        // undistributed remainder land in `protocolReserve`, exactly as all of it would with no
+        // pure position at all, and share + (slice − share) == slice keeps the identity exact.
+        uint256 tbp   = totalBoostedPure;
+        uint256 share = _poolShare(slice, tbp);
+        if (share > 0) {
+            accPureYieldPerShare   += ML.mulDiv(share, WAD, tbp);
+            totalRewardDistributed += share;
         }
+        protocolReserve += slice - share;
         unchecked { totalInterestAccruedGlobal += slice; }
     }
 
@@ -1736,6 +1787,13 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
         }
     }
 
+    /// @dev SINGLE SOURCE for the part of an interest slice the pure stakers receive: the slice net
+    ///      of the reserve cut, damped (`_dampPure`; 0 when tbp == 0). Execution and the
+    ///      `_pendingPure` quote both read it, so they cannot round differently.
+    function _poolShare(uint256 slice, uint256 tbp) internal pure returns (uint256) {
+        return _dampPure(slice - ML.mulDiv(slice, RESERVE_FACTOR_BPS, 10_000), tbp);
+    }
+
     /// @dev Pure-yield damper shared by execution and every quote: below MIN_EMISSION_WEIGHT the
     ///      distributable amount scales by tbp / MIN_EMISSION_WEIGHT, exactly as emission does.
     function _dampPure(uint256 amount, uint256 tbp) internal pure returns (uint256) {
@@ -1747,9 +1805,8 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
         UserInfo storage u = _users[user_];
         // A debt-free position simply re-checkpoints: it must never inherit index growth that
         // accumulated while it owed nothing.
-        if (u.debt == 0) { u.lastAccrueTime = block.timestamp; u.interestIndex = accInterestPerDebt; return; }
+        if (u.debt == 0) { u.interestIndex = accInterestPerDebt; return; }
         uint256 idxDelta = accInterestPerDebt - u.interestIndex;
-        u.lastAccrueTime = block.timestamp;
         u.interestIndex  = accInterestPerDebt;
         if (idxDelta == 0) return;
 
@@ -1803,11 +1860,13 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
     ///      commitment is 0 days (1.00x) — whatever `lockDays` still holds in storage and whether
     ///      or not anybody has gotten around to normalising the position yet. Every weight the
     ///      protocol WRITES is derived through here, so a resync can never re-price an expired
-    ///      lock at its historical multiplier. Note the bound: reward settlement pays with the
-    ///      TRACKED weight (`trackedBoostedEffective`), which only moves on a resync (the
+    ///      lock at its historical multiplier. Note the bound: the TRACKED weight
+    ///      (`trackedBoostedEffective`, `trackedBoostedPure`) only moves on a resync (the
     ///      position's own action, `pokeExpiredLock`, or the lock sweep). Between `unlockTime`
-    ///      and that resync the position keeps earning at its last tracked multiplier; the
-    ///      permissionless poke and the sweep exist to bound that window, not to remove it.
+    ///      and that resync the settle pays the position's post-unlock window at 1.00x
+    ///      (`_postUnlockAtBase`), but its stale weight still sits in the global denominators and
+    ///      dilutes everybody else's rate; the excess it implies returns to the reserves, not to
+    ///      them. The permissionless poke and the sweep exist to bound that window.
     function _effectiveLockDays(UserInfo storage u) internal view returns (uint256) {
         if (u.lockDays == 0) return 0;
         return block.timestamp >= u.unlockTime ? 0 : uint256(u.lockDays);
@@ -1867,15 +1926,18 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
     }
 
     function _checkpoint(UserInfo storage u) internal {
-        u.rewardDebt    = ML.mulDiv(u.trackedBoostedEffective, accRewardPerShare,   WAD);
-        u.pureYieldDebt = ML.mulDiv(u.trackedBoostedPure,      accPureYieldPerShare, WAD);
+        u.rewardDebt     = ML.mulDiv(u.trackedBoostedEffective, accRewardPerShare,   WAD);
+        u.pureYieldDebt  = ML.mulDiv(u.trackedBoostedPure,      accPureYieldPerShare, WAD);
+        u.checkpointTime = block.timestamp;
     }
 
     /// @dev Normalise an expired lock in storage, recompute boost from current state, apply via the
-    ///      single writer, re-checkpoint. Folding `_processLockExpiry` in here is what makes stored
-    ///      state and tracked weight structurally UNABLE to diverge: every write of a boost weight
-    ///      in this contract goes through `_resync`, so a position can never end a transaction
-    ///      carrying a weight derived from a commitment that has already elapsed.
+    ///      single writer, re-checkpoint. Folding `_processLockExpiry` in here is what keeps stored
+    ///      state and tracked weight together: every write of a boost weight in this contract goes
+    ///      through `_resync`, so a position this transaction touches never leaves it carrying a
+    ///      weight derived from a commitment that has already elapsed. A position no transaction
+    ///      touches keeps its weight until the sweep, a poke or its own transaction reaches it, and
+    ///      its settle pays the part of a window after `unlockTime` at 1.00x (`_postUnlockAtBase`).
     ///
     ///      CALLER CONTRACT: `_settlePendingRewards` / `_settlePendingPureYield` MUST have run for
     ///      `user_` first — `_checkpoint` rebases the reward debts onto the new weight, so anything
@@ -2182,7 +2244,8 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
         return boostByDays(_effectiveLockDays(_users[user_]));
     }
     /// @notice TRUE when a position still carries boost weight from a commitment that has already
-    ///         elapsed — i.e. it is waiting for the sweep (or a poke) and is over-earning until then.
+    ///         elapsed — i.e. it is waiting for the sweep (or a poke). Its own settle pays the window
+    ///         after the unlock at 1.00x; its weight still dilutes the other stakers until then.
     /// @param user_ any position
     /// @return true while expired weight is still tracked
     function hasStaleBoost(address user_) external view returns (bool) {
@@ -2232,10 +2295,7 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
         uint256 t = block.timestamp < emissionEnd ? block.timestamp : emissionEnd;
         if (t > lastRewardTime && !emergencyMode) {
             // Same closed-form delta `_updateGlobal` will integrate — quote == execution.
-            uint256 r = _emittedAt(t) - _emittedAt(lastRewardTime);
-            if (totalBoostedEffective < MIN_EMISSION_WEIGHT) r = ML.mulDiv(r, totalBoostedEffective, MIN_EMISSION_WEIGHT);
-            r = _min(r, rewardReserve);
-            acc += ML.mulDiv(r, WAD, totalBoostedEffective);
+            acc += ML.mulDiv(_windowReward(t, totalBoostedEffective), WAD, totalBoostedEffective);
         }
         uint256 g = ML.mulDiv(u.trackedBoostedEffective, acc, WAD);
         (uint256 s, ) = _projected(u);   // the stake the settle attributes before it pays (P1-C)
@@ -2252,13 +2312,12 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
             // The execution's own slice, clamp re-derivation included: a bare min(slice,
             // totalStaked) skipped the floored re-derivation and over-quoted in terminal distress.
             (, uint256 slice) = _interestSlice(totalDebt, elapsed);
-            uint256 toPool = slice - ML.mulDiv(slice, RESERVE_FACTOR_BPS, 10_000);
-            // Same damper as execution, so the quote stays equal to what a claim pays.
-            toPool = _dampPure(toPool, totalBoostedPure);
+            // Same share and damper as execution, so the quote stays equal to what a claim pays.
+            uint256 toPool = _poolShare(slice, totalBoostedPure);
             if (toPool > 0) acc += ML.mulDiv(toPool, WAD, totalBoostedPure);
         }
         uint256 gross = ML.mulDiv(u.trackedBoostedPure, acc, WAD);
-        return _sub0(gross, u.pureYieldDebt);
+        return _pureAtLiveWeight(u, _sub0(gross, u.pureYieldDebt));   // the settle's own split
     }
 
     /// @notice Pure yield a claim in this block would pay `user_`.

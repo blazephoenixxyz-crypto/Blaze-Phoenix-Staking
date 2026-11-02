@@ -268,6 +268,12 @@ contract DimensionsExtendedTest is Base {
         staking.fundEmission(180_000_000e18);
 
         vm.prank(alice); staking.deposit(1_000e18, 90); // sole staker -> owns the whole denominator
+        // Her commitment is normalised when it lapses, as any transaction's lock window does; left
+        // in place, the split at unlockTime would keep the boost part of a lone lock's post-unlock
+        // emission in the reserve (test/assurance/DeliveryIndex.t.sol pins that case), and this
+        // test measures the curve's clamp, not that.
+        vm.warp(block.timestamp + 90 days);
+        vm.prank(keeper); staking.pokeExpiredLock(alice);
 
         uint256 end = staking.emissionEnd();
         uint256 start = staking.emissionStart();
