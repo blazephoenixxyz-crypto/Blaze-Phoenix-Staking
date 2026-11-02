@@ -375,16 +375,7 @@ Findings are disclosed responsibly, reproduced on our side and triaged against t
 invariant suite. Technical detail stays in the verified source and our private records, never on
 a credits page. Thank you to the researchers who read the source and told us privately:
 
-| ID | Severity | Status | Reporter |
-|---|---|---|---|
-| BP-2026-001 | High | Fixed | **[NetGakarot](https://github.com/NetGakarot)** ("Gakarot") |
-| BP-2026-002 | Medium | Fixed | **[NetGakarot](https://github.com/NetGakarot)** ("Gakarot") |
-| BP-2026-003 | High | Fixed | **[amitbhakar](https://github.com/amitbhakar)** |
-| BP-2026-004 | Medium | Fixed | **[amitbhakar](https://github.com/amitbhakar)** |
-| BP-2026-005 | High | Fixed | **[AmanDara1](https://github.com/AmanDara1)** |
-| BP-2026-006 | Medium | Fixed | **[AmanDara1](https://github.com/AmanDara1)** |
-| BP-2026-007 | Medium | Fixed | internal |
-| BP-2026-008 | Low-Medium | Fixed | **[NetGakarot](https://github.com/NetGakarot)** ("Gakarot") |
+Ezeek33 · Mohaseen · BabaYagaLeet · Karan Rathod · duxun · [NetGakarot](https://github.com/NetGakarot) · [amitbhakar](https://github.com/amitbhakar) · llen · [AmanDara1](https://github.com/AmanDara1) · [Binod Bk](https://github.com/Binodbk) · momonom207 · Tarun Pardeshi · [eveeyrp](https://x.com/eveeyRP) · [siam siddik](https://github.com/siamdiddik) · Fauzi Susanto · Ibnu76 · Makino Ken · [destinyae](https://x.com/0xDestinyae) · Anonymous · Mohd Huzaifa · superagent · sus1lo · Amir · Charan · acit aja · Ashish · Josh W · M2000 Slash · 0xkonde · Cico Agung · [Fersdoven Josua](https://github.com/saptoji) · [sbekk](https://x.com/boyygantemk) · rety6363 · Marcin Sikora · Akira Nakao · Borutobro · Tuan Berdasi · [OxHulk](https://x.com/OxHulk) · oncodewa · Jo arsy · Mansor · Yudha Eka Saputra · Raditya · [BK001](https://github.com/CHARIRAbdelhamid) · Brian Wahyu · budi · ALZEA · [Pavan Baile](https://www.linkedin.com/in/pavan-baile-0bb596244) · Widya Kuya · Ricki Ariadi · biasaajash · Bandreg · polabears · Danu Fandiyana (anmxx) · PapaCZ · WANZ · TOT · fortworun · KHIKHI · Garin · Luis_MZ · Agis Apriansyah · Joko
 
 Please email **contact@blazephoenix.xyz** with your GitHub handle to be credited under the
 [bounty programme](./SECURITY.md).
