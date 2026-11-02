@@ -26,12 +26,27 @@ contract OwedCountsBadDebtTest is Base {
         vm.prank(carol);
         staking.borrow(maxB);
         vm.roll(block.number + 11);
+        _normaliseAtUnlock();
         vm.warp(block.timestamp + 1000 * 365 days);
         vm.prank(keeper);
         staking.claimRewards();   // the borrower window of `_autoMaintain` reaches carol
         bad = staking.totalBadDebt();
         assertGt(bad, DUST, "setup: an uncovered loss must be booked");
         assertEq(staking.protocolReserve(), 0, "setup: the reserve was consumed first");
+    }
+
+    /// @dev The 90-day commitments are normalised when they lapse, as any transaction's lock window
+    ///      does. Left in place for the 1000 years, the lock window of the same neutral touch would
+    ///      return the pure yield their lapsed boost did not earn to `protocolReserve` AFTER the
+    ///      borrower window booked the loss (the borrower window runs first), and this book
+    ///      measures the loss, not the lock.
+    function _normaliseAtUnlock() internal {
+        vm.warp(block.timestamp + 90 days);
+        vm.roll(block.number + 11);
+        address[] memory l = new address[](3);
+        l[0] = alice; l[1] = bob; l[2] = carol;
+        vm.prank(keeper);
+        staking.pokeExpiredLocks(l);
     }
 
     function _absorb(uint256 amount) internal returns (bool ok) {

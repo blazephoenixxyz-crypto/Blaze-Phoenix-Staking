@@ -207,26 +207,63 @@ contract StaleQuantityFamilyTest is Base {
     }
 
     // ── 3326: emission freezes for the emergency, like interest ─────────────────────────
-    function test_3326_emission_is_frozen_for_the_emergency() public {
+    /// @dev Alice alone, `lockDays_` committed; halted at day 80, cancelled at day 110. Returns
+    ///      the quote at the trip, after checking that it does not grow while the halt lasts.
+    function _haltFromDay80ToDay110(uint256 lockDays_) internal returns (uint256 p0, uint256 t0) {
         vm.prank(admin);
         staking.fundEmission(100_000_000e18);
-        _stake(alice, S, 90);
-        uint256 t = block.timestamp + 80 days;
+        t0 = vm.getBlockTimestamp();   // via-ir may re-read `block.timestamp` after the warps
+        _stake(alice, S, lockDays_);
+        uint256 t = t0 + 80 days;
         vm.warp(t);
         _guardian();
         vm.prank(keeper);
         staking.declareEmergency();
-        uint256 p0 = staking.pendingRewards(alice);
+        p0 = staking.pendingRewards(alice);
         assertGt(p0, 0, "something earned before the halt");
-        t += 30 days;   // the lock expires inside the emergency
+        t += 30 days;
         vm.warp(t);
         assertEq(staking.pendingRewards(alice), p0, "the quote grows during the emergency");
         vm.prank(admin);
         staking.cancelEmergency();
-        uint256 b0 = token.balanceOf(alice);
-        vm.prank(alice);
+    }
+
+    function _claim(address u) internal returns (uint256 paid) {
+        uint256 b0 = token.balanceOf(u);
+        vm.prank(u);
         staking.claimRewards();
-        assertEq(token.balanceOf(alice) - b0, p0, "the emergency window was paid");
+        paid = token.balanceOf(u) - b0;
+    }
+
+    /// The commitment outlives the halt: after the cancel the claim pays exactly the quote at the trip.
+    function test_3326_emission_is_frozen_for_the_emergency() public {
+        (uint256 p0,) = _haltFromDay80ToDay110(365);
+        assertEq(_claim(alice), p0, "the emergency window was paid");
+    }
+
+    /// LOCK-STALE across a halt. The 90-day commitment lapses inside the halt and nobody touches
+    /// it. While the halt lasts the quote stays at the trip (both flows stop there, `_flowEnd`).
+    /// After the cancel the split at unlockTime reads the emission curve, which cannot see the
+    /// halt: the window counts from the deposit to the cancel, so the 20 halted days after
+    /// unlockTime are priced at 1.00x of the 1.0199x weight although nothing was emitted in them.
+    /// The claim pays exactly that split, never more than the quote at the trip, and what it does
+    /// not pay stays in the reserve (KNOWN_ISSUES.md, LOCK-STALE residue).
+    function test_3326_documents_aLockThatLapsedInsideTheHaltIsSplitAcrossIt() public {
+        (uint256 p0, uint256 t0) = _haltFromDay80ToDay110(90);
+        uint256 w  = S * staking.boostByDays(90) / 10_000;
+        uint256 e0 = staking.emittedAt(t0);
+        uint256 eu = staking.emittedAt(t0 + 90 days);
+        uint256 e1 = staking.emittedAt(t0 + 110 days);   // the cancel and the claim
+        uint256 split = p0 * (w * (eu - e0) + S * (e1 - eu)) / (w * (e1 - e0));
+        uint256 r0 = staking.rewardReserve();
+        uint256 q = staking.pendingRewards(alice);
+        uint256 paid = _claim(alice);
+        emit log_named_decimal_uint("quote at the trip  ", p0, 18);
+        emit log_named_decimal_uint("paid after the halt", paid, 18);
+        assertEq(paid, q, "the claim pays the quote");
+        assertEq(paid, split, "boost up to unlockTime, base after it, on the emission curve");
+        assertLt(paid, p0, "the halted days after unlockTime are priced at base");
+        assertEq(staking.rewardReserve() - r0, p0 - paid, "what is not paid stays in the reserve");
     }
 
     function test_3326_META_cancel_refuses_emission_moved_in_the_emergency() public {

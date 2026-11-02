@@ -173,7 +173,10 @@ contract MetamorphicRelationsTest is Base {
 
     /// MR-D1. With A a whole number of tokens, A * boost / 10000 is an integer, so bob's tracked
     /// weight is exactly twice alice's. gross = floor(w * acc / WAD) and the reward debt are each
-    /// floors, so 2 * floor(z) and floor(2z) differ by 0 or 1 in each: |pending_b - 2 pending_a| <= 2.
+    /// floors, so 2 * floor(z) and floor(2z) differ by 0 or 1 in each: bob earns twice alice within
+    /// 1 wei. A lock that lapsed inside the window is then paid floor(earned * N / D) once
+    /// (`_postUnlockAtBase`), with bob's N and D exactly twice alice's and N <= D, which adds at
+    /// most 1 more: |pending_b - 2 pending_a| <= 2.
     function testFuzz_TwiceTheStakeEarnsTwiceTheReward(uint256 tokens, uint256 lockDays, uint256 dt) public {
         tokens   = bound(tokens, 1_000, 15_000_000);
         lockDays = bound(lockDays, 90, MAXD);

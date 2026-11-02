@@ -63,6 +63,16 @@ contract ReserveFirstLossTest is Base {
         vm.roll(block.number + 11);
         _borrowMax(carol);
         vm.roll(block.number + 11);
+        // The 90-day commitments are normalised when they lapse, as any transaction's lock window
+        // does. Left in place for the 1000 years, the lock window of the touch below would return
+        // the pure yield their lapsed boost did not earn to the reserve AFTER the borrower window
+        // booked the loss (the borrower window runs first); `absorbBadDebt` would apply it.
+        vm.warp(block.timestamp + 90 days);
+        vm.roll(block.number + 11);
+        address[] memory l = new address[](3);
+        l[0] = alice; l[1] = bob; l[2] = carol;
+        vm.prank(keeper);
+        staking.pokeExpiredLocks(l);
 
         vm.warp(block.timestamp + 1000 * 365 days);
         vm.prank(keeper);

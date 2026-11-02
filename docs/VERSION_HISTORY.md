@@ -19,6 +19,24 @@ from v1 re-added.
 
 ---
 
+## Lapsed locks earn 1.00x from `unlockTime` (November 2026)
+
+No ABI change. A lock that lapsed between two touches used to be paid its boost for the whole
+window up to its next settle. Every settle and every quote now split an accrued window at
+`unlockTime`: the part before it at the boost, the part after it at 1.00x (`_postUnlockAtBase`),
+read on the emission curve for emission and on time for pure yield. What the lapsed boost did not
+earn returns to `rewardReserve` (emission) or `protocolReserve` (pure yield) and leaves
+`totalRewardDistributed`, so the identity is unchanged. Inside an emergency the split reads the
+trip time, where both flows stopped (`_flowEnd`), so a quote read during the halt stays at its
+value at the trip. `UserInfo.lastAccrueTime` is renamed `checkpointTime` (written only by
+`_checkpoint`): it marks where the next settle's window starts. Three internal helpers now hold
+bodies that were written twice: `_windowReward` (the emission of a window, with the
+minimum-weight damper and the reserve clamp; `_updateGlobal` and the quote), `_poolShare` (the
+pure share of an interest slice; the index update and the quote) and `_checkLockBounds` (the
+static bounds of `deposit` and `lock`). Runtime: 24,545 bytes, 31 under the EIP-170 limit
+(24,507 before). The split is exact where the flow inside the window followed its clock;
+`docs/KNOWN_ISSUES.md` states and measures where it is not.
+
 ## v4 pre-deployment surface trim (October 2026)
 
 v4 is not deployed yet, so its ABI can still shrink without breaking a caller. Seven views that
