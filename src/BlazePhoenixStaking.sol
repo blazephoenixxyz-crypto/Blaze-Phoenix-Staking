@@ -1077,6 +1077,7 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
         if (u.lockDays == 0) revert Staking__NoLock();
         if (block.timestamp < u.unlockTime) revert Staking__StillLocked();
         _updateGlobal();
+        _attributeFirst(user_);      // LOSS-FIRST: its own loss precedes what the sweep pays
         _autoMaintain(msg.sender);   // LOSS-FIRST; its lock window may already have normalised `user_`
         if (u.lockDays != 0) this.lockStep(user_, msg.sender);
     }
@@ -1092,6 +1093,8 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
     /// @param users_ candidate positions; entries that are not expired are skipped
     function pokeExpiredLocks(address[] calldata users_) external nonReentrant whenNotEmergency conserves {
         _updateGlobal();
+        // LOSS-FIRST: every named position's own loss is booked before the batch pays any of them.
+        for (uint256 i = 0; i < users_.length; ) { _attributeFirst(users_[i]); unchecked { ++i; } }
         // Deliberately NOT `_autoMaintain`. The caller normalises expired commitments explicitly
         // and BY NAME below, so re-running the rotating LOCK window on top of that is pure
         // duplicated work — measured at 246,261 gas, 83% of this call, against 49,060 of actual
@@ -1247,14 +1250,25 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
     ///         pot that the same transaction then left short. The caller is never seized by it
     ///         (the borrower window skips the beneficiary); the lock window may normalise the
     ///         caller's own elapsed lock, the same state its own `_processLockExpiry` writes.
+    ///         Inside the sweep the same order holds: the caller's own interest is attributed
+    ///         first, the borrower window credits what it settles, and the lock window acts only
+    ///         where its settle books no loss. The keeper bonus is the residue (KNOWN_ISSUES.md).
     function _autoMaintain(address beneficiary) internal {
         if (paused() || emergencyMode) return;
         uint256 bBudget = _maintBudget();
         uint256 lBudget = _lockBudget();
         if (bBudget == 0 && lBudget == 0) return;
+        _attributeFirst(beneficiary);
         _sweepBorrowers(beneficiary, bBudget);
         _sweepExpiredLocks(beneficiary, lBudget);
         lastMaintTime = block.timestamp;
+    }
+
+    /// @dev LOSS-FIRST for a position the transaction names (its caller, a poked position): its
+    ///      own uncollectible interest is booked before the sweep or the batch pays anyone at par.
+    ///      A debt-free position books none and is not touched.
+    function _attributeFirst(address who) internal {
+        if (_users[who].debt != 0) _accrueInterestFor(who);
     }
 
     /// @dev Window 1 — solvency. Rotating scan of the borrower registry: liquidate anything
@@ -1295,8 +1309,8 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
     ///          occupies the slot) and the array is strictly shorter;
     ///        • a stale entry (lock already cleared elsewhere) is pruned the same way — the
     ///          registry is self-healing and can never accumulate dead weight;
-    ///        • a still-locked entry, the beneficiary, or a position the token refuses to pay is
-    ///          simply rotated past.
+    ///        • a still-locked entry, a lapsed borrower not yet attributed in this transaction, or
+    ///          a position the token refuses to pay is simply rotated past.
     ///      TERMINATION. Every iteration either advances the cursor (consuming probe budget) or
     ///      shortens the array (consuming action budget), so the loop runs at most
     ///      `probes + MAINT_MAX_LOCK_ACTIONS` times — no branch can spin.
@@ -1317,7 +1331,10 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
             // your own elapsed commitment pays nothing — it only releases weight you are no longer
             // entitled to — so excluding the beneficiary here would let a position survive its own
             // maintenance traffic indefinitely and keep drawing an oversized share.
-            } else if (block.timestamp >= w.unlockTime) {
+            // LOSS-FIRST: it acts only where its settle books no loss, a debt-free position or one
+            // attributed in this transaction; another lapsed borrower is rotated past, and window
+            // 1's poke or its own transaction normalises it.
+            } else if (block.timestamp >= w.unlockTime && (w.debt == 0 || w.interestIndex == accInterestPerDebt)) {
                 try this.lockStep(who, beneficiary) {                // removes `who`; cursor holds
                     unchecked { ++acted; }
                 } catch {
@@ -1349,7 +1366,8 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
             // cursor intentionally NOT advanced: the swapped-in borrower now occupies idx
         } else {
             // Full poke — identical to `who` touching their own position, so their reward
-            // weight (tracked boost) never goes stale relative to their accrued stake.
+            // weight (tracked boost) never goes stale relative to their accrued stake. Its
+            // settle credits instead of paying (LOSS-FIRST, `_settlePendingRewards`).
             _settlePendingRewards(who);
             _settlePendingPureYield(who);
             _resync(who);
@@ -1608,7 +1626,10 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
         // stake and the reserve cannot cover, which its liquidation books as bad debt (in this
         // transaction, from `_executeLiquidation` or a maintenance sweep, or in a later one). A
         // loss raises `_owed()` by its uncovered part and leaves the balance where it is.
-        if (ML.rawBalanceOf(bzpx, address(this)) + CONSERVATION_DUST
+        // LOSS-FIRST inside the borrower window (`maintStep`): a later step of the same window can
+        // still book a loss this read cannot see, so every position the window settles is
+        // credited, never paid; its next own settle pays it.
+        if (msg.sig == this.maintStep.selector || ML.rawBalanceOf(bzpx, address(this)) + CONSERVATION_DUST
             < _owed() + _sub0(_sub0(u.debt, u.staked), protocolReserve)) {
             _rewardDeferred[user_] = due; return;
         }

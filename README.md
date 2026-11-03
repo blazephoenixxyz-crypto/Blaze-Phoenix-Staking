@@ -166,8 +166,10 @@ boost weight.
 
 **Window 2 — the locker registry (yield fairness).** `_borrowers` is, by construction, blind to a
 **pure staker** (`debt == 0`), so a second registry is needed. `_lockers` tracks every position holding a live commitment, and this window normalises
-any that has elapsed: rewards settled at the boost up to `unlockTime` and at 1.00× after it, *then*
-the boost released and the entry de-registered. No keeper, no user action, no off-chain indexer.
+any that has elapsed (a borrower once the transaction has booked its interest; window 1 or its own
+transaction normalises the others): rewards settled at the boost up to `unlockTime` and at 1.00×
+after it, *then* the boost released and the entry de-registered. No keeper, no user action, no
+off-chain indexer.
 
 Both windows **self-size** with backlog pressure via `_windowBudget()` — a *pure function of
 on-chain state*, no admin input:

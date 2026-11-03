@@ -227,7 +227,11 @@ is a temporary, admin-undoable pause.
 Every ordinary user transaction runs `_autoMaintain` first, right after the global
 accrual and before its own breach read and its own payments: every loss the sweep books
 (a borrower's interest outgrowing its stake, a seizure the reserve cannot cover) is on the
-books before anything leaves at par in the same transaction (LOSS-FIRST). The
+books before anything leaves at par in the same transaction (LOSS-FIRST). The order holds
+inside the sweep as well: the caller's own interest is attributed before the sweep starts, the
+borrower window credits what it settles instead of paying it (§3.2), and the lock window acts
+only where its settle books no loss (§3.3). The one payment at par inside the borrower window is
+the keeper bonus of a seizure (`docs/KNOWN_ISSUES.md`). The
 number of positions it will scan is determined by `_maintBudget()`:
 
 ```
@@ -266,6 +270,10 @@ For each position in the window:
    reached or touched; its own settle pays the live weight either way, and the difference
    stays in the reserve (`docs/KNOWN_ISSUES.md`).
 
+Every settle in this window, the seized position's included, credits the position instead of
+paying it: a later step of the same window can still book a loss, so what it settles stays owed
+to the position (`pendingRewards` quotes it) and its next settlement outside this window pays it.
+
 ### 3.3 The second window: expired locks on debt-free positions
 
 The borrower registry is, by construction, blind to a **pure staker** (`debt == 0`) — precisely the
@@ -290,6 +298,12 @@ Worst case per transaction is `MAINT_MAX_SCAN + MAINT_MAX_LOCK_ACTIONS` iteratio
 
 `expiredLockScan(offset, limit)` measures the outstanding backlog on-chain with no indexer;
 `pokeExpiredLock(user)` and `pokeExpiredLocks(users)` let anyone clear it at their own gas cost.
+
+The window acts only where its settle books no loss (LOSS-FIRST, §3.1): on a debt-free position,
+or on a borrower whose interest the transaction has already attributed (the caller's own, and a
+poked position's, are attributed before the sweep). It rotates past any other lapsed borrower,
+which the borrower window, its own transaction or a poke normalises. `pokeExpiredLock` and
+`pokeExpiredLocks` attribute the positions they name before they pay any of them.
 
 Unlike the borrower window, this window **does not skip the transaction's own beneficiary**,
 and the asymmetry is deliberate (BP-2026-008). The borrower sweep excludes the beneficiary

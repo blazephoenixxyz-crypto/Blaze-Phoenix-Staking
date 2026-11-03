@@ -19,6 +19,23 @@ from v1 re-added.
 
 ---
 
+## Losses before payments inside the sweep (November 2026)
+
+No ABI change. LOSS-FIRST put every loss the maintenance sweep books ahead of the caller's own
+payments, but not ahead of the sweep's own. The borrower window paid each position it settled as
+it went, so a position settled early in the window was paid out of a pot that a later step of the
+same window left short; the lock window, which runs after it, could pay one position and then
+attribute a lapsed borrower's loss; and the caller's own interest was attributed only after the
+sweep had paid. Now the caller's interest, and that of the positions `pokeExpiredLock` and
+`pokeExpiredLocks` name, is attributed before anything is paid; the borrower window credits what
+it settles (`_rewardDeferred`, paid by the position's next settlement outside the window); and the
+lock window acts on a lapsed borrower only once its interest is attributed. The keeper bonus of a
+seizure is still paid inside the window (`docs/KNOWN_ISSUES.md`). Pinned by
+`test/hardening/MaintenanceBeforePayment.t.sol` (seventeen tests, red at `35dc558`; two replay one
+transaction in every order of the borrower registry and of the batch, and each user is paid the
+same in all of them) and `test/fix1102/SelfCarrierNormalisation.t.sol`, with thirteen mutants.
+Runtime: 24,489 bytes, 87 under the EIP-170 limit (24,299 before).
+
 ## One reading per question (November 2026)
 
 No ABI change, no behaviour change. Three readings that each view wrote for itself are now one
