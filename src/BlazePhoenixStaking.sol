@@ -1456,11 +1456,19 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
     function getLockers(uint256 offset, uint256 limit)
         external view returns (address[] memory out, uint256 total)
     {
-        total = _lockers.length;
-        if (offset >= total || limit == 0) return (new address[](0), total);
-        uint256 end = offset + _min(limit, total - offset);   // no overflow for limit = max
+        uint256 end;
+        (end, total) = _lockerPage(offset, limit);
         out = new address[](end - offset);
         for (uint256 i = offset; i < end; ) { out[i - offset] = _lockers[i]; unchecked { ++i; } }
+    }
+
+    /// @dev The one page of the locker registry, walked by both readers (`getLockers` above,
+    ///      `expiredLockScan` below): entries [offset, end) and the registry size, read from the
+    ///      registry itself. A page that starts at or past the end, or has `limit` 0, is empty
+    ///      (end == offset); no overflow for limit = max.
+    function _lockerPage(uint256 offset, uint256 limit) internal view returns (uint256 end, uint256 total) {
+        total = _lockers.length;
+        end = offset < total ? offset + _min(limit, total - offset) : offset;
     }
 
     /// @notice Bounded scan of the locker registry for commitments that have elapsed but have not
@@ -1478,16 +1486,14 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
         external view
         returns (address[] memory users, uint256 excessBoostedEffective, uint256 excessBoostedPure, uint256 total)
     {
-        total = _lockers.length;
-        if (offset >= total || limit == 0) return (new address[](0), 0, 0, total);
-        uint256 end = offset + _min(limit, total - offset);   // no overflow for limit = max
-
+        uint256 end;
+        (end, total) = _lockerPage(offset, limit);
         address[] memory buf = new address[](end - offset);
         uint256 n;
         for (uint256 i = offset; i < end; ) {
             address who = _lockers[i];
             UserInfo storage u = _users[who];
-            if (u.lockDays > 0 && block.timestamp >= u.unlockTime) {
+            if (_lockElapsed(u)) {
                 buf[n] = who;
                 unchecked { ++n; }
                 // `_computeBoost` already prices the expired commitment at 1.00x, so the gap to the
@@ -2030,7 +2036,9 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
     ///         > 1e18 == over-collateralised (surplus), < 1e18 == under-collateralised.
     ///         Returns type(uint256).max when nothing is owed (trivially solvent).
     /// @return backing × 1e18 / owed, floored
-    function collateralRatio() external view returns (uint256) {
+    /// @dev The one producer of the ratio, read from the two sources itself: `solvency()` reports
+    ///      this reading, not a copy of it (pinned by MorphismParity.t.sol).
+    function collateralRatio() public view returns (uint256) {
         uint256 o = _owed();
         if (o == 0) return type(uint256).max;
         return ML.mulDiv(ML.rawBalanceOf(bzpx, address(this)), WAD, o);
@@ -2064,7 +2072,7 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
         r.surplus             = _sub0(bal, o);
         r.deficit             = _sub0(o, bal);
         r.solvent             = bal + CONSERVATION_DUST >= o;
-        r.collateralRatioWad  = o == 0 ? type(uint256).max : ML.mulDiv(bal, WAD, o);
+        r.collateralRatioWad  = collateralRatio();
         r.totalStaked         = totalStaked;
         r.totalDebt           = totalDebt;
         r.rewardReserve       = rewardReserve;
@@ -2216,6 +2224,13 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
     function remainingStakeCapacity(address user_) external view returns (uint256) {
         return _sub0(MAX_STAKE_PER_WALLET, _users[user_].staked);
     }
+    /// @dev The views' one reading of an elapsed commitment still on record (`lockInfoOf`,
+    ///      `hasStaleBoost`, `expiredLockScan`). `_processLockExpiry` keeps its own trigger: a
+    ///      view reads the class, the processor acts on it, and the two are pinned equal by a
+    ///      test (MorphismParity.t.sol), not fused.
+    function _lockElapsed(UserInfo storage u) internal view returns (bool) {
+        return u.lockDays > 0 && block.timestamp >= u.unlockTime;
+    }
     /// @notice Lock state of a position. `lockDays` / `unlockTime` are the COMMITMENT ON RECORD;
     ///         `boostBps` is what the position is actually paid at RIGHT NOW, so once `expired` is
     ///         true it reads 10000 (1.00x) even if the stale commitment has not been swept out of
@@ -2229,7 +2244,7 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
         UserInfo storage u = _users[user_];
         lockDays = u.lockDays; unlockTime = uint256(u.unlockTime);
         boostBps = boostByDays(_effectiveLockDays(u));
-        expired = (u.lockDays > 0 && block.timestamp >= u.unlockTime);
+        expired = _lockElapsed(u);
     }
     /// @notice The lock duration the position is PAID for right now — 0 once the unlock has passed.
     /// @param user_ any position
@@ -2250,7 +2265,7 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
     /// @return true while expired weight is still tracked
     function hasStaleBoost(address user_) external view returns (bool) {
         UserInfo storage u = _users[user_];
-        if (u.lockDays == 0 || block.timestamp < u.unlockTime) return false;
+        if (!_lockElapsed(u)) return false;
         (uint256 be, uint256 bp) = _computeBoost(u);
         return u.trackedBoostedEffective > be || u.trackedBoostedPure > bp;
     }

@@ -19,6 +19,18 @@ from v1 re-added.
 
 ---
 
+## One reading per question (November 2026)
+
+No ABI change, no behaviour change. Three readings that each view wrote for itself are now one
+primitive each, the view being the only coordinate: the page of the locker registry
+(`_lockerPage`, read by `getLockers` and `expiredLockScan`), the elapsed commitment on record
+(`_lockElapsed`, read by `lockInfoOf`, `hasStaleBoost` and `expiredLockScan`) and backing over owed
+(`solvency()` reports `collateralRatio()`). `_processLockExpiry` keeps its own trigger: the views
+read the class, the processor acts on it, and a test pins the two equal
+(`test/hardening/MorphismParity.t.sol`, three tests, five mutants). The full suite gives the same
+verdict on every test before and after. Runtime: 24,299 bytes, 277 under the EIP-170 limit
+(24,545 before).
+
 ## Lapsed locks earn 1.00x from `unlockTime` (November 2026)
 
 No ABI change. A lock that lapsed between two touches used to be paid its boost for the whole
