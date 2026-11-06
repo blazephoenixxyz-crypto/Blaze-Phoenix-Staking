@@ -27,14 +27,22 @@ contract AdminSurfaceCoverageTest is Base {
     uint256 constant DUST = 1e10;
 
     function _seed() internal {
+        _seed(0);
+    }
+
+    /// `emptyPoolFor` seconds run with no position before alice's deposit. The schedule closes at
+    /// exactly the budget and leaves no tail, so their scheduled emission is the only residue the
+    /// sweep can find: 365 days of it are 12M − 1 632 000 wei.
+    function _seed(uint256 emptyPoolFor) internal {
         vm.prank(admin);
-        staking.fundEmission(180_000_000e18);
+        staking.fundEmission(90_000_000e18);
         // O construtor concede DEFAULT_ADMIN_ROLE + ROLE_ADMIN ao deployer, mas
         // NUNCA concede GUARDIAN a ninguem: pause() e declareEmergency() ficam
         // inalcancaveis ate uma tx separada o conceder (o Deploy.s.sol lembra-o
         // por console2.log, que e um aviso, nao um passo garantido).
         vm.prank(admin);
         staking.grantRole(keccak256("GUARDIAN_ROLE"), keeper);
+        vm.warp(vm.getBlockTimestamp() + emptyPoolFor);
         vm.prank(alice);
         staking.deposit(1_000_000e18, 365);
     }
@@ -125,12 +133,12 @@ contract AdminSurfaceCoverageTest is Base {
     ///         Se falhar, é um admin a conseguir apagar o direito de um
     ///         utilizador honesto sem sequer sair dos seus poderes.
     function test_Sweep_DoesNotStealAccruedUserRewards() public {
-        _seed();
+        _seed(365 days);   // the empty first year is the residue the sweep moves
 
         (,,,,,,,,, uint256 fim,,,,,,) = staking.getGlobalStats();
         vm.warp(fim + 1);
 
-        // A alice esteve em stake o programa inteiro e nunca reclamou.
+        // Alice was staked from the end of the empty year to the close and never claimed.
         (,,,,,, uint256 pendentesAntes,,,,,,,) = staking.getUserInfo(alice);
         assertGt(pendentesAntes, 0, "precondicao: alice tem recompensas por reclamar");
 
@@ -156,7 +164,7 @@ contract AdminSurfaceCoverageTest is Base {
 
     /// @notice Varrer duas vezes: a segunda não pode drenar nada.
     function test_Sweep_IsIdempotent() public {
-        _seed();
+        _seed(365 days);   // the empty first year is the residue the first sweep moves
         (,,,,,,,,, uint256 fim,,,,,,) = staking.getGlobalStats();
         vm.warp(fim + 1);
 

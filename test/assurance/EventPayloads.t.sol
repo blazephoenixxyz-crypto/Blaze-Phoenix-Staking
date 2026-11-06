@@ -132,15 +132,18 @@ contract EventPayloadsTest is Base {
         staking.sweepUndistributedEmission();
     }
 
-    function test_E_UndistributedEmissionSwept_halving_tail() public {
+    function test_E_UndistributedEmissionSwept_empty_first_year() public {
         vm.prank(admin);
-        staking.fundEmission(180_000_000e18);
-        _stake(alice, 10_000e18, 90);              // sole weight from emissionStart to emissionEnd
+        staking.fundEmission(90_000_000e18);
+        _warp(365 days);                           // the first year runs with an empty pool
+        _stake(alice, 10_000e18, 90);              // sole weight from emissionStart + 1 year to emissionEnd
         T = staking.emissionEnd();
         vm.warp(T);
-        // Σ emitted over the whole programme = TOTAL − TOTAL>>8, so the residue is TOTAL>>8.
+        // The schedule closes at exactly the budget (no tail), so the residue is the empty year's
+        // scheduled emission: E(start + 365 days) = R0 · 365 days, R0 = ⌊60M / (5·365 days)⌋
+        // = 380 517 503 805 175 038 wei/s, i.e. 12M − 1 632 000 wei (derived in Python).
         _expect();
-        emit BlazePhoenixStaking.UndistributedEmissionSwept(treasury, uint256(180_000_000e18) >> 8);
+        emit BlazePhoenixStaking.UndistributedEmissionSwept(treasury, 11_999_999_999_999_999_998_368_000);
         vm.prank(admin);
         staking.sweepUndistributedEmission();
     }
@@ -346,8 +349,8 @@ contract EventPayloadsTest is Base {
         assertEq(tbe, (uint256(10_000e18) * _boost(365)) / 10_000, "sole weight");
         uint256 acc0 = staking.accRewardPerShare();
         uint256 lrt = staking.lastRewardTime();
-        // Period 0 of the halving curve: R0 = 90M / (2·365 days) wei/s, linear in time.
-        uint256 reward = (uint256(90_000_000e18) / (2 * 365 days)) * (T - lrt);
+        // Period 0 of the halving curve: R0 = (120M / 2) / (5·365 days) wei/s, linear in time.
+        uint256 reward = (uint256(60_000_000e18) / (5 * 365 days)) * (T - lrt);
         uint256 rr = staking.rewardReserve();
         if (reward > rr) reward = rr;
         uint256 acc1 = acc0 + (reward * 1e18) / tbe;

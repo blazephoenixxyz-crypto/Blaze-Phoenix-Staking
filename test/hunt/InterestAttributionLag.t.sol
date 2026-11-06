@@ -56,7 +56,7 @@ contract InterestAttributionLagTest is Base {
     ///      campanhas de invariante que o mediram no CI.
     function _setUpBook(uint256 n) internal {
         vm.prank(admin);
-        staking.fundEmission(180_000_000e18);
+        staking.fundEmission(90_000_000e18);
 
         delete borrowers;
         for (uint256 i; i < n; ++i) {

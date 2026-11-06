@@ -91,7 +91,7 @@ async function earned(token, staking, who) {
 // ───────────────────────────────────────────────────────────────────────────────────────────
 await test('B1 PoC: an idle pure staker cannot keep a lapsed multiplier (yield misallocation)', async () => {
   const { chain, token, staking, admin, alice, bob } = await setup();
-  await staking.send(admin, 'fundEmission', [E18(100_000_000)]);
+  await staking.send(admin, 'fundEmission', [E18(90_000_000)]);
 
   const P = E18(1_000_000);
   await staking.send(alice, 'deposit', [P, 730]);
@@ -327,7 +327,7 @@ await test('B5 scan: the stale-boost backlog is measurable on-chain and self-era
 // ───────────────────────────────────────────────────────────────────────────────────────────
 await test('B6 incentive: re-locking strictly beats idling once a commitment lapses', async () => {
   const { chain, token, staking, admin, alice, bob } = await setup();
-  await staking.send(admin, 'fundEmission', [E18(100_000_000)]);
+  await staking.send(admin, 'fundEmission', [E18(90_000_000)]);
   const P = E18(1_000_000);
   await staking.send(alice, 'deposit', [P, 730]);
   await staking.send(bob,   'deposit', [P, 730]);
@@ -358,7 +358,7 @@ await test('B6 incentive: re-locking strictly beats idling once a commitment lap
 // ───────────────────────────────────────────────────────────────────────────────────────────
 await test('B7 no confiscation: the sweep PAYS the boosted backlog before re-pricing the future', async () => {
   const { chain, token, staking, admin, alice, carol } = await setup();
-  await staking.send(admin, 'fundEmission', [E18(100_000_000)]);
+  await staking.send(admin, 'fundEmission', [E18(90_000_000)]);
   await staking.send(alice, 'deposit', [E18(1_000_000), 730]);
   chain.mine(11);
   chain.warp(731n * DAY); chain.mine(11);
@@ -499,7 +499,7 @@ contract BlacklistToken {
 // ───────────────────────────────────────────────────────────────────────────────────────────
 await test('B10 lockStep is self-only; conservation holds across a long expiry-heavy sequence', async () => {
   const { chain, staking, admin, alice, bob, carol, keeper } = await setup();
-  await staking.send(admin, 'fundEmission', [E18(120_000_000)]);
+  await staking.send(admin, 'fundEmission', [E18(90_000_000)]);
 
   const r = await staking.send(keeper, 'lockStep', [alice.hex, keeper.hex]);
   ok(!r.ok && r.revert === 'Staking__NotSelf', `lockStep from outside -> NotSelf (${r.revert})`);

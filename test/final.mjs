@@ -20,19 +20,20 @@ import { ethers } from 'ethers';
 const DAY = 86400n, YEAR = 365n * DAY;
 const MAX_UINT = (1n << 256n) - 1n;
 const WAD = 10n ** 18n;
-// Biennial-halving schedule (contract v4): period p (0-indexed, 2 years each) emits 90M >> p,
-// closing after 8 periods with the 2^-8 tail (703,125 BZPX) never emitted. R0 is the period-0
+// Five-year-halving schedule: series S = 120M, period p (0-indexed, 5 years each) emits
+// (S/2) >> p, closing after 2 periods (60M + 30M = 90M) with no tail. R0 is the period-0
 // rate; every empty-window arm below sits inside period 0, where the curve is linear at R0.
-const TOTAL_EMISSION   = 180_000_000n * WAD;
-const HALVING_PERIOD   = 2n * YEAR;
-const EMISSION_PERIODS = 8n;
-const R0 = (TOTAL_EMISSION / 2n) / HALVING_PERIOD;
+const TOTAL_EMISSION   = 90_000_000n * WAD;      // TOTAL_REWARDS, the fundEmission cap
+const HALVING_SERIES   = 120_000_000n * WAD;     // the series S (private in the contract)
+const HALVING_PERIOD   = 5n * YEAR;
+const EMISSION_PERIODS = 2n;
+const R0 = (HALVING_SERIES / 2n) / HALVING_PERIOD;
 const emittedAt = (dt) => {                       // dt: seconds since emissionStart
   if (dt <= 0n) return 0n;
   if (dt >= EMISSION_PERIODS * HALVING_PERIOD)
-    return TOTAL_EMISSION - (TOTAL_EMISSION >> EMISSION_PERIODS);
+    return HALVING_SERIES - (HALVING_SERIES >> EMISSION_PERIODS);
   const p = dt / HALVING_PERIOD;
-  return (TOTAL_EMISSION - (TOTAL_EMISSION >> p)) + (R0 >> p) * (dt - p * HALVING_PERIOD);
+  return (HALVING_SERIES - (HALVING_SERIES >> p)) + (R0 >> p) * (dt - p * HALVING_PERIOD);
 };
 const DUST = 10n ** 10n;
 
@@ -84,7 +85,7 @@ async function world({ fundAll = true, actors = 6 } = {}) {
     await token.send(u, 'approve', [S, MAX_UINT]);
   }
   await staking.send(admin, 'grantRole', [ethers.id('GUARDIAN_ROLE'), guardian.hex]);
-  if (fundAll) await staking.send(admin, 'fundEmission', [E18(180_000_000)]);
+  if (fundAll) await staking.send(admin, 'fundEmission', [E18(90_000_000)]);
   const t0 = chain.time;
   return { chain, token, staking, admin, treasury, guardian, users, t0 };
 }
@@ -674,11 +675,11 @@ async function MR_emission() {
   const err = p.stranded > predicted ? p.stranded - predicted : predicted - p.stranded;
   console.log(`     predicted     : ${fmt(predicted)}   |model error| = ${fmt(err)}`);
 
-  // Run the programme to completion (16 years now) with the pool CONTINUOUSLY populated, then
+  // Run the programme to completion (10 years) with the pool CONTINUOUSLY populated, then
   // ask whether any route can still move the residue. The pool stays full for the whole
-  // remaining window, so what is left over is the empty window at the start PLUS the 2^-8 tail
-  // (703,125 BZPX) the halving schedule deliberately never emits.
-  for (let k = 0; k < 17; k++) {
+  // remaining window, so what is left over is the empty window at the start (the schedule
+  // closes at exactly TOTAL_REWARDS, with no tail).
+  for (let k = 0; k < 11; k++) {
     chain.warp(YEAR); chain.mine(11);
     await staking.send(users[0], 'claimRewards', []);
   }
@@ -731,15 +732,15 @@ async function mockScenarios() {
   {
     const w = await world({ fundAll: false });
     const { staking, admin } = w;
-    const a = await staking.send(admin, 'fundEmission', [E18(100_000_000)]);
-    const b = await staking.send(admin, 'fundEmission', [E18(80_000_000)]);
+    const a = await staking.send(admin, 'fundEmission', [E18(60_000_000)]);
+    const b = await staking.send(admin, 'fundEmission', [E18(30_000_000)]);
     const c = await staking.send(admin, 'fundEmission', [1n]);
     check(a.ok && b.ok, 'MOCK: emission funds incrementally up to the cap');
     check(!c.ok && c.revert === 'Staking__CapExceeded', 'MOCK: funding past TOTAL_REWARDS reverts',
           `got ${c.revert}`);
     const funded = BigInt(await staking.call('totalEmissionFunded'));
     const reserve = BigInt(await staking.call('rewardReserve'));
-    check(funded === E18(180_000_000) && reserve === funded,
+    check(funded === E18(90_000_000) && reserve === funded,
           'MOCK: totalEmissionFunded == rewardReserve before any accrual',
           `funded=${fmt(funded)} reserve=${fmt(reserve)}`);
     const z = await staking.send(admin, 'fundEmission', [0n]);
@@ -1043,7 +1044,7 @@ async function mockScenarios() {
     await staking.send(users[0], 'deposit', [E18(5_000_000), 365]);
     // Warp to just past the programme's close, read from the contract rather than
     // hard-coded: the schedule's length is a design parameter and a literal here
-    // silently turns "the sweep works" into "the sweep works on a 7-year clock".
+    // silently turns "the sweep works" into "the sweep works on a fixed-length clock".
     const emissionEnd = BigInt(await staking.call('emissionEnd'));
     chain.warp(emissionEnd - chain.time + DAY); chain.mine(20);
     const notAdmin = await staking.send(users[1], 'sweepUndistributedEmission', []);
@@ -1217,11 +1218,11 @@ async function mockScenarios() {
     check(!tooShort.ok && tooShort.revert === 'Staking__LockTooShort', 'MOCK: lock below MIN reverts',
           `got ${tooShort.revert}`);
 
-    // The 16-year programme leaves maxLockDaysAvailable pinned at the 2555-day policy cap until
-    // fewer than 2555 days remain (day 3285). Warp to day 4000: 5840 − 4000 = 1840 days left.
-    chain.warp(4000n * DAY); chain.mine(11);
+    // The 10-year programme leaves maxLockDaysAvailable pinned at the 2555-day policy cap until
+    // fewer than 2555 days remain (day 1095). Warp to day 2000: 3650 − 2000 = 1650 days left.
+    chain.warp(2000n * DAY); chain.mine(11);
     const maxNow = BigInt(await staking.call('maxLockDaysAvailable'));
-    check(maxNow === 1840n, 'MOCK: available lock length counts down with the emission clock',
+    check(maxNow === 1650n, 'MOCK: available lock length counts down with the emission clock',
           `got ${maxNow}`);
     const past = await staking.send(users[0], 'deposit', [E18(1_000), maxNow + 1n]);
     check(!past.ok && past.revert === 'Staking__LockExceedsEmissionEnd',

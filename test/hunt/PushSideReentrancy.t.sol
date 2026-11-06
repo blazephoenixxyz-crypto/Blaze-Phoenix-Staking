@@ -116,7 +116,7 @@ contract PushSideReentrancyTest is Test {
         }
 
         vm.prank(admin);
-        staking.fundEmission(180_000_000e18);
+        staking.fundEmission(90_000_000e18);
 
         vm.prank(honest);
         staking.deposit(1_000_000e18, 365);

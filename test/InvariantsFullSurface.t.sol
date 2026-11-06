@@ -59,7 +59,7 @@ contract FullSurfaceHandler is Test {
 
     /// Total simulated time advanced, and its ceiling.
     ///
-    /// The lock ceiling counts DOWN to the end of the 16-year emission, so a
+    /// The lock ceiling counts DOWN to the end of the 10-year emission, so a
     /// campaign that warps far enough forward reaches a state where no deposit
     /// is grantable at all. That is a legitimate end-state for the protocol but
     /// a useless one to fuzz in: CI showed campaigns where the guided warps to
@@ -96,7 +96,7 @@ contract FullSurfaceHandler is Test {
     function _hit(bytes32 k) internal { calls[k] += 1; }
 
     // ── the surface the previous handler already covered ─────────────────────
-    /// The lock ceiling is a DECREASING countdown to the end of the 16-year
+    /// The lock ceiling is a DECREASING countdown to the end of the 10-year
     /// emission, not a fixed 2555. CI caught this the hard way: once the guided
     /// warps below push the clock far enough forward, a flat bound(90, 2555)
     /// exceeds what is still grantable and EVERY deposit reverts — the campaign
