@@ -60,6 +60,11 @@ contract UnbookedLossReadIsALowerBoundTest is Base {
 
         assertFalse(r.solvent, "the read still sees the breach");
         assertGt(r.deficit, DUST, "and a deficit above the dust");
+        // Past the other stakes and the reserves, the read nets exactly them: no more is hidden.
+        assertApproxEqAbs(
+            r.deficit, unbooked - as_ - r.rewardReserve - r.protocolReserve, DUST,
+            "the read nets exactly the other stakes and the reserves"
+        );
         assertLe(r.deficit, realDeficit, "the read deficit is a lower bound of the real one");
         assertGe(r.backing + r.totalBadDebt + unbooked + DUST, r.owed, "backing + B + unbooked >= owed");
 
@@ -115,7 +120,9 @@ contract UnbookedLossReadIsALowerBoundTest is Base {
         assertEq(r.deficit, 0, "with no deficit read");
 
         // A pure staker's own claim passes its breach gate on that read, and the borrower
-        // window it carries reaches carol and books the loss beyond the reserve.
+        // window it carries reaches carol and books the loss beyond the reserve. Her own
+        // payment settles after the booking (LOSS-FIRST), so it is deferred, not paid at par.
+        uint256 aliceBefore = token.balanceOf(alice);
         vm.prank(alice);
         staking.claimPureYield();
         BlazePhoenixStaking.SolvencyReport memory a = staking.solvency();
@@ -123,6 +130,8 @@ contract UnbookedLossReadIsALowerBoundTest is Base {
         assertEq(cdAfter, 0, "the window seized her");
         assertApproxEqAbs(a.totalBadDebt, unbooked - r.protocolReserve, DUST, "booked: the loss beyond the reserve");
         assertFalse(a.solvent, "and the read turns");
+        assertFalse(staking.isSolvent(), "isSolvent() turns too");
+        assertEq(token.balanceOf(alice), aliceBefore, "LOSS-FIRST: her claim is deferred, not paid at par");
         assertGe(a.backing + a.totalBadDebt + DUST, a.owed, "once booked: backing + B >= owed");
     }
 }

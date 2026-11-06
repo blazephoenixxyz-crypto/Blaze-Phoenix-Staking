@@ -848,6 +848,26 @@ dict(nome='maintStep: the borrower window no longer seizes an underwater positio
       old='        if (_isLiquidatable(_users[who])) {\n            uint256 bonus = _executeLiquidation(who, beneficiary);',
       new='        if (false) { // MUTANT\n            uint256 bonus = _executeLiquidation(who, beneficiary);',
       teste='test_OWEDREAD_documents_anUnbookedLossReadsSolventUntilTheSweepBooksIt'),
+dict(nome='owed: past the stakes, the read also nets up to the protocol reserve (OWED-READ boundary)',
+      f=F,
+      old='        owed_ = ledgerNet + _sub0(totalRewardDistributed, totalRewardsPaid);\n',
+      new='        owed_ = ledgerNet + _sub0(_sub0(totalRewardDistributed, totalRewardsPaid), ledgerSum < totalDebt ? _min(totalDebt - ledgerSum, protocolReserve) : 0); // MUTANT\n',
+      teste='test_OWEDREAD_unbookedLossReadsAsABreachBoundedByTheRealDeficit'),
+dict(nome='isSolvent: always reads true, even once the loss is booked',
+      f=F,
+      old='    function isSolvent() external view returns (bool) { return !_hardBreach(); }',
+      new='    function isSolvent() external view returns (bool) { return true; } // MUTANT',
+      teste='test_OWEDREAD_documents_anUnbookedLossReadsSolventUntilTheSweepBooksIt'),
+dict(nome="claimPureYield: the sweep runs after the caller's settles, so an unbooked loss pays her at par (OWED-READ)",
+      f=F,
+      old='        _autoMaintain(msg.sender);   // LOSS-FIRST\n        _settlePendingRewards(msg.sender);\n        _settlePendingPureYield(msg.sender);\n        _resync(msg.sender);',
+      new='        _settlePendingRewards(msg.sender);\n        _settlePendingPureYield(msg.sender);\n        _autoMaintain(msg.sender); // MUTANT\n        _resync(msg.sender);',
+      teste='test_OWEDREAD_documents_anUnbookedLossReadsSolventUntilTheSweepBooksIt'),
+dict(nome='isSolvent: always reads false, even on a book the read nets in full',
+      f=F,
+      old='    function isSolvent() external view returns (bool) { return !_hardBreach(); }',
+      new='    function isSolvent() external view returns (bool) { return false; } // MUTANT',
+      teste='test_OWEDREAD_documents_anUnbookedLossReadsSolventUntilTheSweepBooksIt'),
 ]
 CONTRACTS = ("BlazePhoenixStaking",)
 
@@ -859,15 +879,20 @@ def run(t):
 
 def artefact_fingerprint():
     """sha256 of creation + runtime bytecode of each shipped contract (bp-dex: a mutant is a claim
-    about the artefact, not about the source; byte-identical means INERT)."""
+    about the artefact, not about the source; byte-identical means INERT). The CBOR metadata is
+    dropped first: it carries a hash of the source, so with it every edit, a comment included,
+    moved the fingerprint and the INERT gate could never fire. The runtime ends with it (its
+    length is the last two bytes) and the creation code embeds the same bytes, not at its end."""
     out = {}
     for c in CONTRACTS:
         f = os.path.join("out", f"{c}.sol", f"{c}.json")
         if not os.path.exists(f):
             return {}
         art = json.load(open(f))
-        obj = art.get("bytecode", {}).get("object", "") + "|" + art.get("deployedBytecode", {}).get("object", "")
-        out[c] = hashlib.sha256(obj.encode()).hexdigest()[:16]
+        run_ = art.get("deployedBytecode", {}).get("object", "")
+        meta = run_[-(2 * int(run_[-4:], 16) + 4):] if len(run_) > 6 else ""
+        obj = art.get("bytecode", {}).get("object", "") + "|" + run_
+        out[c] = hashlib.sha256((obj.replace(meta, "") if meta else obj).encode()).hexdigest()[:16]
     return out
 
 
@@ -879,6 +904,16 @@ def baseline():
     green = set(re.findall(r"\[PASS\]\s+(\w+)", out))
     red = set(re.findall(r"\[FAIL[^\]]*\]\s+(\w+)", out))
     return green, red, out
+
+
+def rebuild(files):
+    """Restoring a source does not rebuild it: out/ kept the last mutant's artefact for whatever
+    read it next without building (a size check, a fingerprint)."""
+    if not files:
+        return
+    r = subprocess.run(["forge", "build", *sorted(files)], capture_output=True, text=True)
+    if r.returncode:
+        print(f"  REBUILD FAILED (exit {r.returncode}): out/ may still hold the last mutant's artefact")
 
 
 def selection():
@@ -929,6 +964,7 @@ def main():
                 print(f"  [{i}] killed       {m['nome']}")
         finally:
             open(m["f"], "w").write(bak)
+    rebuild({m["f"] for _, m in mine})
     print()
     fails.extend(inert)
     if fails:
