@@ -39,7 +39,7 @@ contract UnbookedLossReadIsALowerBoundTest is Base {
             vm.roll(bn);
             vm.prank(carol);
             staking.claimRewards();
-            if (!staking.isSolvent()) return;
+            if (!staking.solvency().solvent) return;
         }
         revert("setup: no breach reached");
     }
@@ -58,14 +58,15 @@ contract UnbookedLossReadIsALowerBoundTest is Base {
         uint256 realDeficit = as_ + r.rewardReserve + r.protocolReserve + r.pendingDistribution - r.backing;
         assertApproxEqAbs(realDeficit, unbooked, DUST, "the real deficit is the unbooked loss");
 
-        assertFalse(r.solvent, "the read still sees the breach");
+        // The loop stopped on the first read of the breach; `isSolvent()` reads it too.
+        assertFalse(staking.isSolvent(), "isSolvent() reads the unbooked breach");
         assertGt(r.deficit, DUST, "and a deficit above the dust");
         // Past the other stakes and the reserves, the read nets exactly them: no more is hidden.
+        // With the real deficit above, this is the lower bound: it reads as_ + R + P under it.
         assertApproxEqAbs(
             r.deficit, unbooked - as_ - r.rewardReserve - r.protocolReserve, DUST,
             "the read nets exactly the other stakes and the reserves"
         );
-        assertLe(r.deficit, realDeficit, "the read deficit is a lower bound of the real one");
         assertGe(r.backing + r.totalBadDebt + unbooked + DUST, r.owed, "backing + B + unbooked >= owed");
 
         // Booking it (liquidation, open under a breach) moves it into the recorded loss.
@@ -123,6 +124,7 @@ contract UnbookedLossReadIsALowerBoundTest is Base {
         // window it carries reaches carol and books the loss beyond the reserve. Her own
         // payment settles after the booking (LOSS-FIRST), so it is deferred, not paid at par.
         uint256 aliceBefore = token.balanceOf(alice);
+        uint256 owedBefore = staking.pendingRewards(alice) + staking.pendingPureYield(alice);
         vm.prank(alice);
         staking.claimPureYield();
         BlazePhoenixStaking.SolvencyReport memory a = staking.solvency();
@@ -133,5 +135,9 @@ contract UnbookedLossReadIsALowerBoundTest is Base {
         assertFalse(staking.isSolvent(), "isSolvent() turns too");
         assertEq(token.balanceOf(alice), aliceBefore, "LOSS-FIRST: her claim is deferred, not paid at par");
         assertGe(a.backing + a.totalBadDebt + DUST, a.owed, "once booked: backing + B >= owed");
+        assertGe(
+            staking.pendingRewards(alice) + staking.pendingPureYield(alice) + DUST, owedBefore,
+            "deferred, not dropped: her claim stays on her position"
+        );
     }
 }

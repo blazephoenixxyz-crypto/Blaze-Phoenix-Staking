@@ -868,6 +868,16 @@ dict(nome='isSolvent: always reads false, even on a book the read nets in full',
       old='    function isSolvent() external view returns (bool) { return !_hardBreach(); }',
       new='    function isSolvent() external view returns (bool) { return false; } // MUTANT',
       teste='test_OWEDREAD_documents_anUnbookedLossReadsSolventUntilTheSweepBooksIt'),
+dict(nome='pure-yield settle: the breach credit is dropped, neither paid nor deferred (OWED-READ)',
+      f=F,
+      old='        if (_hardBreach()) { _rewardDeferred[user_] += due; return; }\n',
+      new='        if (_hardBreach()) { return; } // MUTANT\n',
+      teste='test_OWEDREAD_documents_anUnbookedLossReadsSolventUntilTheSweepBooksIt'),
+dict(nome='isSolvent: reads only the recorded loss, not the floored read (OWED-READ)',
+      f=F,
+      old='    function isSolvent() external view returns (bool) { return !_hardBreach(); }',
+      new='    function isSolvent() external view returns (bool) { return totalBadDebt == 0; } // MUTANT',
+      teste='test_OWEDREAD_unbookedLossReadsAsABreachBoundedByTheRealDeficit'),
 ]
 CONTRACTS = ("BlazePhoenixStaking",)
 
