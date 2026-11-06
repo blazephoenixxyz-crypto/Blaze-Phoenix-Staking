@@ -25,7 +25,7 @@ Usage:
   MUTANTS_ONLY=3,7 python3 ...                       # 1-based indices, for a local re-run
 Run it on a GREEN suite, alone: it rewrites src/ in place (and restores it) one mutant at a time.
 """
-import re, subprocess, sys, os, json, hashlib
+import re, subprocess, sys, os, json, hashlib, signal
 
 F = "src/BlazePhoenixStaking.sol"
 
@@ -918,12 +918,21 @@ def baseline():
 
 def rebuild(files):
     """Restoring a source does not rebuild it: out/ kept the last mutant's artefact for whatever
-    read it next without building (a size check, a fingerprint)."""
+    read it next without building (a size check, a fingerprint). The failure is returned for
+    main() to count: printed only, it left the run green over a stale out/."""
     if not files:
-        return
+        return None
     r = subprocess.run(["forge", "build", *sorted(files)], capture_output=True, text=True)
     if r.returncode:
         print(f"  REBUILD FAILED (exit {r.returncode}): out/ may still hold the last mutant's artefact")
+        return f"REBUILD FAILED (exit {r.returncode}): out/ may still hold the last mutant's artefact."
+    return None
+
+
+def unwind(signum, _frame):
+    """By default SIGTERM and SIGHUP (a timeout, a closed terminal) end the process without
+    unwinding: no finally runs, so src/ stays mutated and out/ is not rebuilt. Raising unwinds."""
+    raise SystemExit(128 + signum)
 
 
 def selection():
@@ -939,6 +948,8 @@ def selection():
 
 
 def main():
+    for s in (signal.SIGTERM, signal.SIGHUP):
+        signal.signal(s, unwind)
     fails = []
     mine, k, n = selection()
     paired = {m["teste"] for _, m in mine}
@@ -951,30 +962,34 @@ def main():
     for t in sorted(paired - green - red):
         fails.append(f"BASELINE MISSING: '{t}' was neither PASS nor FAIL in the baseline run.")
         print(f"  BASELINE ?    {t}")
-    for i, m in mine:
-        src = open(m["f"]).read()
-        if src.count(m["old"]) != 1:
-            fails.append(f"[{i}] {m['nome']}: target not found exactly once in {m['f']}.")
-            print(f"  [{i}] TARGET LOST  {m['nome']}"); continue
-        bak = src
-        try:
-            open(m["f"], "w").write(src.replace(m["old"], m["new"]))
-            ok, out = run(m["teste"])
-            fp = artefact_fingerprint()
-            if pristine and fp and fp == pristine:
-                inert.append(f"[{i}] {m['nome']}: INERT - bytecode identical to pristine.")
-                print(f"  [{i}] INERT        {m['nome']}")
-            elif ok:
-                fails.append(f"[{i}] {m['nome']}: '{m['teste']}' PASSED with the guard mutated - decorative.")
-                print(f"  [{i}] SURVIVED     {m['nome']}  ({m['teste']} passed mutated)")
-            elif "No tests match" in out or "Compiler run failed" in out:
-                fails.append(f"[{i}] {m['nome']}: '{m['teste']}' does not exist or did not compile.")
-                print(f"  [{i}] NO TEST      {m['nome']}")
-            else:
-                print(f"  [{i}] killed       {m['nome']}")
-        finally:
-            open(m["f"], "w").write(bak)
-    rebuild({m["f"] for _, m in mine})
+    try:
+        for i, m in mine:
+            src = open(m["f"]).read()
+            if src.count(m["old"]) != 1:
+                fails.append(f"[{i}] {m['nome']}: target not found exactly once in {m['f']}.")
+                print(f"  [{i}] TARGET LOST  {m['nome']}"); continue
+            bak = src
+            try:
+                open(m["f"], "w").write(src.replace(m["old"], m["new"]))
+                ok, out = run(m["teste"])
+                fp = artefact_fingerprint()
+                if pristine and fp and fp == pristine:
+                    inert.append(f"[{i}] {m['nome']}: INERT - bytecode identical to pristine.")
+                    print(f"  [{i}] INERT        {m['nome']}")
+                elif ok:
+                    fails.append(f"[{i}] {m['nome']}: '{m['teste']}' PASSED with the guard mutated - decorative.")
+                    print(f"  [{i}] SURVIVED     {m['nome']}  ({m['teste']} passed mutated)")
+                elif "No tests match" in out or "Compiler run failed" in out:
+                    fails.append(f"[{i}] {m['nome']}: '{m['teste']}' does not exist or did not compile.")
+                    print(f"  [{i}] NO TEST      {m['nome']}")
+                else:
+                    print(f"  [{i}] killed       {m['nome']}")
+            finally:
+                open(m["f"], "w").write(bak)
+    finally:
+        failed = rebuild({m["f"] for _, m in mine})
+    if failed:
+        fails.append(failed)
     print()
     fails.extend(inert)
     if fails:
