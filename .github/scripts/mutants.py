@@ -843,6 +843,11 @@ dict(nome='seizure: the keeper bonus is no longer capped at the seized stake',
       old='        seized = _min(seized, stake);\n',
       new='        // MUTANT\n',
       teste='test_LOSSFIRST_documents_theSeizureBonusIsPaidAtParAheadOfTheWindowsLoss'),
+dict(nome='maintStep: the borrower window no longer seizes an underwater position',
+      f=F,
+      old='        if (_isLiquidatable(_users[who])) {\n            uint256 bonus = _executeLiquidation(who, beneficiary);',
+      new='        if (false) { // MUTANT\n            uint256 bonus = _executeLiquidation(who, beneficiary);',
+      teste='test_OWEDREAD_documents_anUnbookedLossReadsSolventUntilTheSweepBooksIt'),
 ]
 CONTRACTS = ("BlazePhoenixStaking",)
 

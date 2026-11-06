@@ -2043,14 +2043,20 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
 
     /// @notice The single number the protocol stands behind: what it currently owes.
     /// @return every claim on the contract, recorded bad debt included (never netted)
+    /// @dev A lower bound until the next sweep: a loss not yet recorded (a borrower whose accrued
+    ///      debt has passed her stake) is read only in part, through the floors of `_owed()`. The
+    ///      borrower window's next sweep of that position, a keeper's liquidation or her emergency
+    ///      exit records it (docs/KNOWN_ISSUES.md).
     function owed() external view returns (uint256) { return _owed(); }
 
     /// @notice The physical BZPX the contract actually holds right now.
     /// @return the contract's BZPX balance
     function backing() external view returns (uint256) { return ML.rawBalanceOf(bzpx, address(this)); }
 
-    /// @notice TRUE iff backing >= owed (minus dust). The protocol is solvent.
+    /// @notice TRUE iff backing >= owed (minus dust): solvent on what has been recorded.
     /// @return false exactly when `tripBreaker` would succeed (outside an emergency)
+    /// @dev Reads `owed()`, a lower bound: with a loss not yet recorded it can read true while the
+    ///      claims exceed the backing, until the next sweep that reaches the borrower records it.
     function isSolvent() external view returns (bool) { return !_hardBreach(); }
 
     /// @notice Collateralisation ratio in WAD: backing / owed. 1e18 == exactly solvent,
@@ -2085,6 +2091,8 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
     ///         watchdog can read without trusting the team. Mirrors the Master Conservation
     ///         Identity term-by-term so the equation can be re-derived by the caller.
     /// @return r the report; `solvent` equals `isSolvent()`
+    /// @dev `owed` and `deficit` are lower bounds (see `owed()`): a loss not yet recorded can leave
+    ///      `deficit` at 0 and `solvent` true until the next sweep that reaches the borrower.
     function solvency() external view returns (SolvencyReport memory r) {
         uint256 bal = ML.rawBalanceOf(bzpx, address(this));
         uint256 o   = _owed();

@@ -35,7 +35,10 @@ seizure is still paid inside the window (`docs/KNOWN_ISSUES.md`). Pinned by
 transaction in every order of the borrower registry and of the batch, and each user is paid the
 same in all of them; an eighteenth documents the keeper bonus, capped at the seized equity, that
 the window still pays at par) and `test/fix1102/SelfCarrierNormalisation.t.sol`, with fourteen
-mutants.
+mutants. The solvency views now say they are lower bounds (NatSpec only): `owed()`, `solvency()`
+and `isSolvent()` read a loss not yet recorded only in part, and can read solvent with no deficit
+until the borrower window reaches the position (`docs/KNOWN_ISSUES.md`); pinned by
+`test/hardening/UnbookedLossReadIsALowerBound.t.sol`, with a fifteenth mutant.
 Runtime: 24,489 bytes, 87 under the EIP-170 limit (24,299 before).
 
 ## One reading per question (November 2026)

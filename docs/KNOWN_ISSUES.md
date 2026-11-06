@@ -123,6 +123,20 @@ rules, scope and awards are in [`SECURITY.md`](../SECURITY.md) and at
   (`test_LOSSFIRST_documents_theSeizureBonusIsPaidAtParAheadOfTheWindowsLoss`: the caller is
   paid the seized position's equity, never more than its own collateral, and the window then
   books a loss that leaves the pot short).
+- **A loss not yet recorded is read only in part.** `owed()` and the `owed` and `deficit` of
+  `solvency()` are lower bounds (its `surplus` and `collateralRatio()` upper bounds), and
+  `isSolvent()` reads through them: a borrower whose accrued debt has passed her stake carries a
+  loss nothing has recorded yet, and the read nets it against the other claims, so it can read
+  solvent with no deficit while the claims exceed the backing; past the other positions' stakes net
+  of their debts and the reserves, the floors of `_owed()` cap the netting, and the deficit read is
+  never above the real one. Until the borrower window's next sweep reaches the position (each user
+  transaction outside a pause scans `_maintBudget()` borrowers from a rotating cursor, at most
+  `MAINT_MAX_SCAN`, skipping its caller), or a keeper liquidates it, or the borrower exits in an
+  emergency, withdrawals and claims are paid at par in arrival order. Documented in
+  `src/BlazePhoenixStaking.sol` (`_owed`, `owed`, `isSolvent`, `solvency`) and
+  `test/hardening/UnbookedLossReadIsALowerBound.t.sol` (the read deficit is bounded by the real one;
+  `test_OWEDREAD_documents_anUnbookedLossReadsSolventUntilTheSweepBooksIt`: the loss reads solvent
+  until the sweep a pure staker's own claim carries books it).
 
 ## Out of scope
 
