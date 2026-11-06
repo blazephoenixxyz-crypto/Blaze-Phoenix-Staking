@@ -33,7 +33,9 @@ lock window acts on a lapsed borrower only once its interest is attributed. The 
 seizure is still paid inside the window (`docs/KNOWN_ISSUES.md`). Pinned by
 `test/hardening/MaintenanceBeforePayment.t.sol` (seventeen tests, red at `35dc558`; two replay one
 transaction in every order of the borrower registry and of the batch, and each user is paid the
-same in all of them) and `test/fix1102/SelfCarrierNormalisation.t.sol`, with thirteen mutants.
+same in all of them; an eighteenth documents the keeper bonus, capped at the seized equity, that
+the window still pays at par) and `test/fix1102/SelfCarrierNormalisation.t.sol`, with fourteen
+mutants.
 Runtime: 24,489 bytes, 87 under the EIP-170 limit (24,299 before).
 
 ## One reading per question (November 2026)

@@ -838,6 +838,11 @@ dict(nome='LOSS-FIRST sweep, every order: the borrower window books and pays in 
       old='        if (msg.sig == this.maintStep.selector || ML.rawBalanceOf(bzpx, address(this)) + CONSERVATION_DUST\n',
       new='        if (ML.rawBalanceOf(bzpx, address(this)) + CONSERVATION_DUST // MUTANT\n',
       teste='test_LOSSFIRST_everyOrderOfTheRegistryPaysEachUserTheSame'),
+dict(nome='seizure: the keeper bonus is no longer capped at the seized stake',
+      f=F,
+      old='        seized = _min(seized, stake);\n',
+      new='        // MUTANT\n',
+      teste='test_LOSSFIRST_documents_theSeizureBonusIsPaidAtParAheadOfTheWindowsLoss'),
 ]
 CONTRACTS = ("BlazePhoenixStaking",)
 

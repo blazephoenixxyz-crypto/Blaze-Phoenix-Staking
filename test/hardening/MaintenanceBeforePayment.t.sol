@@ -321,6 +321,45 @@ contract MaintenanceBeforePaymentTest is Base {
         assertEq(token.balanceOf(bob), b0 - 1e18, "the bonus was paid at par ahead of the caller's own loss");
     }
 
+    /// documents. The keeper bonus is the one payment the borrower window makes at par ahead of a
+    /// loss it may still book (docs/KNOWN_ISSUES.md). Alice carries the transaction: the window
+    /// seizes erin and pays alice the bonus there and then; its next step attributes bob's
+    /// interest, a loss the reserve cannot cover, and the pot ends short. The bonus is
+    /// `LIQ_BONUS_BPS` of the seized debt, capped at the seized position's equity, which here binds:
+    /// it comes out of erin's own collateral. A seizure that pays past that equity turns this red.
+    function test_LOSSFIRST_documents_theSeizureBonusIsPaidAtParAheadOfTheWindowsLoss() public {
+        _seizableBesideALoss();
+        (, uint256 debt,,,,,,,,,,,,) = staking.getUserInfo(erin);
+        (uint256 b0, uint256 bad0) = (token.balanceOf(alice), staking.totalBadDebt());
+        vm.recordLogs();
+        vm.prank(alice);
+        staking.claimRewards();
+        Vm.Log[] memory logs = vm.getRecordedLogs();
+        bytes32 accrued = keccak256("InterestAccrued(address,uint256,uint256)");
+        bytes32 swept = keccak256("MaintenanceSwept(address,address,uint256)");
+        (uint256 stakeAtSeizure, uint256 paidAt, uint256 lossAt) = (0, 0, 0);
+        for (uint256 i; i < logs.length; ++i) {
+            bytes32 t0 = logs[i].topics[0];
+            if (t0 == accrued) {
+                address who = address(uint160(uint256(logs[i].topics[1])));
+                (, uint256 newStake) = abi.decode(logs[i].data, (uint256, uint256));
+                if (who == erin) stakeAtSeizure = newStake;
+                if (who == bob && newStake == 0 && lossAt == 0) lossAt = i + 1;
+            }
+            if (t0 == swept && address(uint160(uint256(logs[i].topics[2]))) == erin) paidAt = i + 1;
+        }
+        assertGt(paidAt, 0, "setup: the window seized erin");
+        assertGt(stakeAtSeizure, debt, "setup: erin had equity at her seizure");
+        uint256 cap = debt * staking.LIQ_BONUS_BPS() / 10_000;
+        uint256 equity = stakeAtSeizure - debt;
+        assertLt(equity, cap, "setup: her equity caps the bonus");
+        assertEq(token.balanceOf(alice) - b0, equity,
+            "the caller is paid the seized equity, LIQ_BONUS_BPS of the debt capped, and nothing else");
+        assertGt(lossAt, paidAt, "the window books bob's loss after it paid the bonus");
+        assertGt(staking.totalBadDebt(), bad0 + DUST, "the loss is booked in the same transaction");
+        assertFalse(staking.isSolvent(), "and leaves the pot short");
+    }
+
     // ── the order, on a healthy book: the sweep attributes a third party before the caller is paid
     // One year in: alice pure, bob and carol borrowing, every lock expired. Each entry's sweep
     // attributes the borrowers it is not carried by; the caller's first payment must come after

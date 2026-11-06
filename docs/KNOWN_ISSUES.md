@@ -119,7 +119,10 @@ rules, scope and awards are in [`SECURITY.md`](../SECURITY.md) and at
   before the sweep starts; the bonus then stays in `protocolReserve`. Deferring it would need
   value held in flight across the window, outside every owed quantity the contract keeps.
   Documented in `docs/WHITEPAPER.md` (section 3.1), `src/BlazePhoenixStaking.sol`
-  (`_autoMaintain`, `_executeLiquidation`) and `test/hardening/MaintenanceBeforePayment.t.sol`.
+  (`_autoMaintain`, `_executeLiquidation`) and `test/hardening/MaintenanceBeforePayment.t.sol`
+  (`test_LOSSFIRST_documents_theSeizureBonusIsPaidAtParAheadOfTheWindowsLoss`: the caller is
+  paid the seized position's equity, never more than its own collateral, and the window then
+  books a loss that leaves the pot short).
 
 ## Out of scope
 

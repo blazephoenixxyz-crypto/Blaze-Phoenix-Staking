@@ -7,7 +7,7 @@ Each cell is the **number of tests** that exercise that area on that axis, measu
 Re-measured after the view readers were collapsed and the maintenance sweep was made to book
 every loss before it pays (the parity tests in `test/hardening/MorphismParity.t.sol`, and the
 third-party, seizure, carrier and order tests in `test/hardening/MaintenanceBeforePayment.t.sol`
-and `test/fix1102/SelfCarrierNormalisation.t.sol`): **374 tests in 52 `.t.sol` files**.
+and `test/fix1102/SelfCarrierNormalisation.t.sol`): **375 tests in 52 `.t.sol` files**.
 Regenerate with:
 
 ```bash
@@ -83,18 +83,18 @@ zero is a fact about the suite and the place to look first.
 
 | area | P | A | D | V | Q | S | G | T | E | Y | M | I | H | R | Z | K | W | O | X | C | N | U | L | J |
 |---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
-| deposit / top-up / lock | - | 32 | 65 | 56 | 19 | 6 | 53 | 194 | 47 | 57 | 44 | 17 | 3 | - | - | 17 | 33 | 34 | **0** | 103 | 63 | **0** | - | - |
+| deposit / top-up / lock | - | 32 | 65 | 57 | 20 | 6 | 53 | 195 | 48 | 57 | 44 | 17 | 3 | - | - | 17 | 33 | 34 | **0** | 104 | 64 | **0** | - | - |
 | withdraw | - | 1 | 4 | 5 | 3 | 2 | 12 | 21 | 4 | 7 | 11 | 1 | **0** | - | - | 2 | 3 | **0** | **0** | 10 | 3 | **0** | - | - |
-| borrow / repay | - | 12 | 51 | 45 | 14 | 4 | 27 | 141 | 37 | 43 | 17 | 9 | 3 | - | - | 5 | 22 | 18 | **0** | 70 | 46 | **0** | - | - |
+| borrow / repay | - | 12 | 51 | 46 | 15 | 4 | 27 | 142 | 38 | 43 | 17 | 9 | 3 | - | - | 5 | 22 | 18 | **0** | 71 | 47 | **0** | - | - |
 | interest | - | 1 | 4 | 6 | 6 | **0** | 3 | 22 | 4 | 9 | **0** | **0** | **0** | - | - | 2 | 2 | 6 | **0** | 5 | 15 | **0** | - | - |
-| emission / rewards | - | 20 | 55 | 49 | 13 | 5 | 31 | 129 | 35 | 41 | 26 | 10 | 1 | - | - | 26 | 26 | 16 | **0** | 102 | 46 | **0** | - | - |
+| emission / rewards | - | 20 | 55 | 50 | 14 | 5 | 31 | 130 | 36 | 41 | 26 | 10 | 1 | - | - | 26 | 26 | 16 | **0** | 103 | 47 | **0** | - | - |
 | pure yield | - | 7 | 7 | 8 | 7 | 1 | 7 | 29 | 6 | 10 | 4 | 4 | 1 | - | - | 3 | 4 | 6 | **0** | 14 | 21 | **0** | - | - |
-| liquidation | - | 1 | 7 | 3 | 2 | **0** | 8 | 23 | 4 | 11 | 4 | 2 | **0** | - | - | **0** | 3 | **0** | **0** | 9 | 9 | **0** | - | - |
+| liquidation | - | 1 | 7 | 4 | 3 | **0** | 8 | 24 | 5 | 11 | 4 | 2 | **0** | - | - | **0** | 3 | **0** | **0** | 10 | 10 | **0** | - | - |
 | maintenance windows | - | 3 | 8 | 1 | 3 | **0** | 6 | 20 | **0** | 5 | 6 | **0** | **0** | - | - | 1 | 1 | 4 | **0** | 4 | 6 | **0** | - | - |
 | lock sweep / poke | - | 33 | 28 | 11 | 2 | **0** | 13 | 50 | 10 | 14 | 11 | 7 | 1 | - | - | 9 | 5 | 11 | **0** | 26 | 15 | **0** | - | - |
 | emergency / breaker | - | 8 | 13 | 43 | 1 | 5 | 49 | 55 | 10 | 118 | 23 | 6 | 2 | - | - | 2 | 43 | 10 | **0** | 63 | 20 | **0** | - | - |
-| admin / reserves | - | 13 | 43 | 63 | 8 | 4 | 27 | 118 | 34 | 56 | 23 | 8 | 2 | - | - | 15 | 43 | 20 | **0** | 124 | 37 | **0** | - | - |
-| views / solvency | - | 12 | 31 | 37 | 9 | 8 | 27 | 103 | 14 | 42 | 24 | 9 | 1 | - | - | 5 | 27 | 18 | **0** | 57 | 41 | **0** | - | - |
+| admin / reserves | - | 13 | 43 | 64 | 9 | 4 | 27 | 119 | 35 | 56 | 23 | 8 | 2 | - | - | 15 | 43 | 20 | **0** | 125 | 38 | **0** | - | - |
+| views / solvency | - | 12 | 31 | 38 | 10 | 8 | 27 | 104 | 15 | 42 | 24 | 9 | 1 | - | - | 5 | 27 | 18 | **0** | 58 | 42 | **0** | - | - |
 
 288 cells: 60 without object, 228 measured, **39 empty**.
 
@@ -127,8 +127,8 @@ except in the maintenance-windows area.
 - **1** (13): A·withdraw, I·withdraw, A·interest, H·emission / rewards, S·pure yield, H·pure
   yield, A·liquidation, V·maintenance windows, K·maintenance windows, W·maintenance windows,
   H·lock sweep / poke, Q·emergency / breaker, H·views / solvency
-- **2** (10): S·withdraw, K·withdraw, K·interest, W·interest, Q·liquidation, I·liquidation,
-  Q·lock sweep / poke, H·emergency / breaker, K·emergency / breaker, H·admin / reserves
+- **2** (9): S·withdraw, K·withdraw, K·interest, W·interest, I·liquidation, Q·lock sweep / poke,
+  H·emergency / breaker, K·emergency / breaker, H·admin / reserves
 
 The full ordering (every count) is printed by the script.
 
