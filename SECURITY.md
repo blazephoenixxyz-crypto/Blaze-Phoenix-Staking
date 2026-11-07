@@ -96,11 +96,11 @@ test before the fix is written. Credits live in the Security Hall of Fame.
 
 ## Bounty programme
 
-**50,000,000 BZPX is allocated to security research** — 5% of a fixed
-1,000,000,000 supply, carved out of the token allocation for this and nothing
-else. The pool is shared with
+**Awards are floors.** An award may be revised upward until the programme
+closes and settles; it is never revised downward, and a researcher does not need
+to ask for a revision. The programme is shared with
 [BlazePhoenix-Dex](https://github.com/blazephoenixxyz-crypto/Blaze-Phoenix-Dex);
-a finding against either protocol draws from it.
+a finding against either protocol is settled on the same terms.
 
 Three things stated up front, because a researcher deserves to decide with open
 eyes rather than discover the terms after doing the work:

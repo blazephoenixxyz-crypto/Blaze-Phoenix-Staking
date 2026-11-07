@@ -12,7 +12,7 @@ below reported a real issue that we reproduced against this repo's own code.
 
 > Private disclosure: **security@blazephoenix.xyz** / blazephoenixxyz@proton.me.
 > Non-critical reports may be filed as a GitHub issue. Responsible disclosure is
-> credited here and, once the bounty pool is funded, paid.
+> credited here and, once the bounty is funded, paid.
 
 ---
 

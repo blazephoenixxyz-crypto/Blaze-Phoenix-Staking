@@ -81,7 +81,7 @@ the site's [/solvency](https://blazephoenix.xyz/solvency) page). The BZPX token 
 independent external audit has not happened yet and is planned before launch.
 
 What already runs on every push: the Foundry suite (build, tests, EIP-170 size
-gate) plus a **real-EVM Node harness of 9 suites**. The shared 40M BZPX bounty
+gate) plus a **real-EVM Node harness of 9 suites**. The bounty programme shared with the DEX
 has triaged **21 external reports — every confirmed finding fixed with
 regression tests, zero Critical**. Details: [`SECURITY.md`](./SECURITY.md).
 
