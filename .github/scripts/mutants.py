@@ -28,6 +28,7 @@ Run it on a GREEN suite, alone: it rewrites src/ in place (and restores it) one 
 import re, subprocess, sys, os, json, hashlib
 
 F = "src/BlazePhoenixStaking.sol"
+D = "script/Deploy.s.sol"
 
 M = [
  # ── exact boundaries (test/BoundaryEquality.t.sol) ────────────────────────────────────────────
@@ -1029,8 +1030,30 @@ dict(nome='seizure: the keeper bonus is no longer capped at the seized stake',
       old="            uint256 p  = dt / HALVING_PERIOD;                     // 0..1 here, 2 is the clamp above",
       new="            uint256 p; for (uint256 q = HALVING_PERIOD; q <= dt; q += HALVING_PERIOD) ++p; // MUTANT",
       teste="test_EmittedAtCostsTheSameGasAnywhereInEitherPeriod"),
+ # ── deploy script: its funding amount is pinned to TOTAL_REWARDS() (test/DeployEmissionPin.t.sol) ──
+ dict(nome="Deploy: pinEmission accepts any value (the equality check is gone)",
+      f=D,
+      old='        require(totalRewards == EMISSION, "Deploy: EMISSION != TOTAL_REWARDS()");',
+      new='        require(true, "Deploy: EMISSION != TOTAL_REWARDS()"); // MUTANT',
+      teste="test_PinEmissionRefusesOneWeiEitherSide"),
+ dict(nome="Deploy: run() funds the deployed cap without pinning it to EMISSION",
+      f=D,
+      old="        uint256 total = pinEmission(staking.TOTAL_REWARDS());",
+      new="        uint256 total = staking.TOTAL_REWARDS(); // MUTANT",
+      teste="test_DeployRunRefusesWhenTheDeployedCapDiffers"),
+ dict(nome="Deploy: run() funds EMISSION without reading the deployed cap",
+      f=D,
+      old="        uint256 total = pinEmission(staking.TOTAL_REWARDS());",
+      new="        uint256 total = EMISSION; // MUTANT",
+      teste="test_DeployRunRefusesWhenTheDeployedCapDiffers"),
+ dict(nome="Deploy: EMISSION drifts one wei above TOTAL_REWARDS",
+      f=D,
+      old="    uint256 public constant EMISSION = 90_000_000e18;",
+      new="    uint256 public constant EMISSION = 90_000_000e18 + 1; // MUTANT",
+      teste="test_DeployEmissionEqualsTotalRewards"),
 ]
-CONTRACTS = ("BlazePhoenixStaking",)
+# (source file under out/, contract): a mutant in script/ moves Deploy, not the staking contract
+CONTRACTS = (("BlazePhoenixStaking.sol", "BlazePhoenixStaking"), ("Deploy.s.sol", "Deploy"))
 
 
 def run(t):
@@ -1045,8 +1068,8 @@ def artefact_fingerprint():
     moved the fingerprint and the INERT gate could never fire. The runtime ends with it (its
     length is the last two bytes) and the creation code embeds the same bytes, not at its end."""
     out = {}
-    for c in CONTRACTS:
-        f = os.path.join("out", f"{c}.sol", f"{c}.json")
+    for sol, c in CONTRACTS:
+        f = os.path.join("out", sol, f"{c}.json")
         if not os.path.exists(f):
             return {}
         art = json.load(open(f))

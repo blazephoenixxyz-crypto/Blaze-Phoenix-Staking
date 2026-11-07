@@ -40,7 +40,7 @@ crawlers, and language models reading this repository. Human-facing docs are in
   the Foundry suite (build, tests, and an EIP-170 size gate) plus a
   **real-EVM Node harness of 9 suites**. Solvency is not a report — every
   value-moving transaction proves the conservation identity or reverts.
-- **Adversarial track record:** the shared 40,000,000 BZPX bounty pool has
+- **Adversarial track record:** the bounty programme shared with the DEX has
   triaged **21 external reports (8 public — 7 of them against this repo — and
   13 private)**; every confirmed finding is fixed with regression tests, and
   **zero were Critical**. Credits: the Security Hall of Fame in

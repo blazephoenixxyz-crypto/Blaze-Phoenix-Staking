@@ -48,6 +48,17 @@ interface IERC20Min {
 }
 
 contract Deploy is Script {
+    /// The amount this script funds. It is the script's own number, deliberately not read from the
+    /// contract: `pinEmission` compares it with the deployed `TOTAL_REWARDS()`, so editing either
+    /// side alone fails the run during simulation, before any transaction is broadcast.
+    uint256 public constant EMISSION = 90_000_000e18;
+
+    /// Returns `totalRewards` when it equals EMISSION; reverts otherwise.
+    function pinEmission(uint256 totalRewards) public pure returns (uint256) {
+        require(totalRewards == EMISSION, "Deploy: EMISSION != TOTAL_REWARDS()");
+        return totalRewards;
+    }
+
     function run() external {
         // ── inputs ────────────────────────────────────────────────────────────────────────────
         address bzpx      = vm.envAddress("BZPX_ADDRESS");
@@ -58,22 +69,23 @@ contract Deploy is Script {
         require(bzpx     != address(0), "BZPX_ADDRESS is zero");
         require(treasury != address(0), "TREASURY_ADDRESS is zero");
 
-        uint256 total = 90_000_000e18; // == BlazePhoenixStaking.TOTAL_REWARDS
-
         // ── preflight: deployer must actually hold the full emission ────────────────────────────
         uint256 bal = IERC20Min(bzpx).balanceOf(deployer);
         console2.log("Deployer        :", deployer);
         console2.log("BZPX token      :", bzpx);
         console2.log("Treasury        :", treasury);
         console2.log("Deployer BZPX   :", bal);
-        console2.log("Emission to fund:", total);
-        require(bal >= total, "deployer holds < 90M BZPX; fund the deployer first");
+        console2.log("Emission to fund:", EMISSION);
+        require(bal >= EMISSION, "deployer holds < 90M BZPX; fund the deployer first");
 
         // ── broadcast ───────────────────────────────────────────────────────────────────────────
         vm.startBroadcast(deployerPk);
 
         BlazePhoenixStaking staking = new BlazePhoenixStaking(bzpx, treasury);
         console2.log("Staking deployed:", address(staking));
+
+        // the script's amount must be the contract's cap, or nothing is funded
+        uint256 total = pinEmission(staking.TOTAL_REWARDS());
 
         // approve exactly the emission, then fund it in one call
         require(IERC20Min(bzpx).approve(address(staking), total), "approve failed");
