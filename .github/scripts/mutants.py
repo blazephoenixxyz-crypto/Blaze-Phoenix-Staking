@@ -15,7 +15,8 @@ unwatched and the run fails. Adding a guard to the contract means adding its lin
 
 The verdict is void, and reported as a failure, when
   - the paired test is already red at baseline (every mutant on it would score killed for free);
-  - the paired test does not exist (`No tests match`);
+  - the paired test does not exist (`No tests match`) or the mutated tree did not compile; this is
+    checked first: a failed build leaves out/ as it was, so the INERT test below would read it;
   - the deployed bytecode is byte-identical to pristine (INERT: the source moved, the artefact did
     not, so the test's verdict is about nothing).
 
@@ -25,7 +26,7 @@ Usage:
   MUTANTS_ONLY=3,7 python3 ...                       # 1-based indices, for a local re-run
 Run it on a GREEN suite, alone: it rewrites src/ in place (and restores it) one mutant at a time.
 """
-import re, subprocess, sys, os, json, hashlib, signal
+import re, subprocess, sys, os, json, hashlib, signal, tempfile
 
 F = "src/BlazePhoenixStaking.sol"
 D = "script/Deploy.s.sol"
@@ -1226,6 +1227,23 @@ def rebuild(files):
     return None
 
 
+def write_whole(path, text):
+    """Replace a source in one step: open(path, "w") truncates it before the write, so a signal or
+    an error in between leaves it empty or cut short. The text goes to a sibling temporary file
+    (same filesystem, same mode) and os.replace swaps it in: the source is either the old or the
+    new text, never a prefix."""
+    fd, tmp = tempfile.mkstemp(dir=os.path.dirname(os.path.abspath(path)), prefix=".mutant-")
+    try:
+        with os.fdopen(fd, "w") as fh:
+            fh.write(text)
+        os.chmod(tmp, os.stat(path).st_mode & 0o7777)
+        os.replace(tmp, path)
+    except BaseException:
+        if os.path.exists(tmp):
+            os.unlink(tmp)
+        raise
+
+
 def unwind(signum, _frame):
     """By default SIGTERM and SIGHUP (a timeout, a closed terminal) end the process without
     unwinding: no finally runs, so src/ stays mutated and out/ is not rebuilt. Raising unwinds."""
@@ -1270,19 +1288,19 @@ def main():
                 open(m["f"], "w").write(src.replace(m["old"], m["new"]))
                 ok, out = run(m["teste"])
                 fp = artefact_fingerprint()
-                if pristine and fp and fp == pristine:
+                if "No tests match" in out or "Compiler run failed" in out:
+                    fails.append(f"[{i}] {m['nome']}: '{m['teste']}' does not exist or did not compile.")
+                    print(f"  [{i}] NO TEST      {m['nome']}")
+                elif pristine and fp and fp == pristine:
                     inert.append(f"[{i}] {m['nome']}: INERT - bytecode identical to pristine.")
                     print(f"  [{i}] INERT        {m['nome']}")
                 elif ok:
                     fails.append(f"[{i}] {m['nome']}: '{m['teste']}' PASSED with the guard mutated - decorative.")
                     print(f"  [{i}] SURVIVED     {m['nome']}  ({m['teste']} passed mutated)")
-                elif "No tests match" in out or "Compiler run failed" in out:
-                    fails.append(f"[{i}] {m['nome']}: '{m['teste']}' does not exist or did not compile.")
-                    print(f"  [{i}] NO TEST      {m['nome']}")
                 else:
                     print(f"  [{i}] killed       {m['nome']}")
             finally:
-                open(m["f"], "w").write(bak)
+                write_whole(m["f"], bak)
     finally:
         failed = rebuild({m["f"] for _, m in mine})
     if failed:
