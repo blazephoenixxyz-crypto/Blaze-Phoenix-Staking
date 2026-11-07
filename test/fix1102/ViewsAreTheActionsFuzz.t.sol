@@ -19,7 +19,7 @@ contract ViewsAreTheActionsFuzzTest is Base {
     uint256 internal constant LIQ_H = 5e16;
 
     function _book(uint256 a, uint256 lockA, uint256 c, uint256 borrowBps) internal returns (uint256 debt) {
-        vm.prank(admin); staking.fundEmission(100_000_000e18);
+        vm.prank(admin); staking.fundEmission(90_000_000e18);
         vm.prank(alice); staking.deposit(a, lockA);
         vm.prank(carol); staking.deposit(c, 90);
         debt = (c * 50 / 100) * borrowBps / 10_000;

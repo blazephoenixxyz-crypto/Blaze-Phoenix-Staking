@@ -85,18 +85,18 @@ rules, scope and awards are in [`SECURITY.md`](../SECURITY.md) and at
   no loss after the sweep has paid), or by the permissionless `pokeExpiredLock` and
   `pokeExpiredLocks`. Until then, positions whose lock is still running share each window with
   that weight and are paid slightly less; the difference stays in the reserve and is not paid to
-  the lapsed position. Measured with ten lapsing positions beside a seven-year staker: 317.78 BZPX
+  the lapsed position. Measured with ten lapsing positions beside a seven-year staker: 84.74 BZPX
   less for the staker with one transaction a day (every lapsed weight normalised within
-  43,200 s), 43,120.45 BZPX with no traffic at all.
+  43,200 s), 11,498.79 BZPX with no traffic at all.
   The split reads the curve, not the accumulator, so it is exact only where the flow inside the
   window followed the curve over an unchanged book. A book that shrank inside the window, a
   reserve that ran dry, an emergency halt (nothing flowed while the curve moved on) or a position
   that is a large part of its own denominator (normalising it would have shrunk the denominator
   too) moves the split. The payout stays between the 1.00x share and the lapsed share it replaces,
   and what is not paid stays in the reserve. Measured: a single 730-day position left untouched to
-  the end of the programme collects 161,437,500 of the 179,296,875 BZPX emitted, and the other
-  17,859,375 stay in `rewardReserve`; a 90-day lock that lapses inside a 30-day halt collects
-  9,828,023.82 BZPX instead of 9,863,013.70. Normalised at `unlockTime`, the same positions collect
+  the end of the programme collects 76,800,000 of the 90,000,000 BZPX emitted, and the other
+  13,200,000 stay in `rewardReserve`; a 90-day lock that lapses inside a 30-day halt collects
+  2,620,806.35 BZPX instead of 2,630,136.99. Normalised at `unlockTime`, the same positions collect
   everything. Removing the weight at the exact instant needs per-day expiry buckets, which do not
   fit the EIP-170 size limit. Documented in `src/BlazePhoenixStaking.sol` (`_postUnlockAtBase`,
   `_flowEnd`, `_resync`), `docs/INVARIANTS_AND_TIME.md` (section 2 and R3),
@@ -108,8 +108,8 @@ rules, scope and awards are in [`SECURITY.md`](../SECURITY.md) and at
   settle pays the live weight and returns the stale excess to `rewardReserve`; until the resync,
   debt-free positions share each window with the stale weight and are paid slightly less.
   Measured over one year with an idle 20M position at 9.9M of debt beside a 1M debt-free position:
-  the debt-free position collects 4,054,054.05 BZPX of emission when nothing else transacts and
-  4,115,954.85 BZPX when it claims daily. Documented in `src/BlazePhoenixStaking.sol`
+  the debt-free position collects 1,081,081.08 BZPX of emission when nothing else transacts and
+  1,097,587.96 BZPX when it claims daily. Documented in `src/BlazePhoenixStaking.sol`
   (`_autoMaintain`, `_atLiveWeight`) and `test/fix1102/InterestStaleWeight.t.sol`.
 - **A seizure's keeper bonus is paid at par inside the borrower sweep.** It is the one payment the
   maintenance sweep makes ahead of a loss it may still book: when the borrower window seizes a

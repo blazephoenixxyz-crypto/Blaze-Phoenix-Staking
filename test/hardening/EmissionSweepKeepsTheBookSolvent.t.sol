@@ -7,8 +7,11 @@ import {BlazePhoenixStaking} from "../../src/BlazePhoenixStaking.sol";
 /// @notice SWEEP-SOLVENT. Oracle: `sweepUndistributedEmission` sends the emission residue to the
 ///         treasury only when the book still reads solvent after it, the rule `withdrawReserve`
 ///         already follows for the other protocol-owned balance.
-///         The book: the full programme funded (the 2^-8 tail, 703,125 BZPX, stays in
-///         `rewardReserve` after `emissionEnd`), one pure staker, one borrower at the maximum
+///         The book: the full programme funded and a first year with an empty pool. The schedule
+///         itself closes at exactly the budget and leaves no tail, so the residue is that year's
+///         scheduled emission, E(start + 365 days) = R0 · 365 days = 12M − 1 632 000 wei
+///         (R0 = ⌊60M / (5·365 days)⌋, derived in Python), which has no recipient and stays in
+///         `rewardReserve` after `emissionEnd`. Then one pure staker and one borrower at the maximum
 ///         ratio left untouched for 32 years. Carol's interest has outgrown what `totalStaked`
 ///         holds, so `totalStaked + protocolReserve < totalDebt`; the residue is what still keeps
 ///         `_owed()` covered.
@@ -21,7 +24,8 @@ contract EmissionSweepKeepsTheBookSolventTest is Base {
 
     function _book(uint256 years_) internal {
         vm.prank(admin);
-        staking.fundEmission(180_000_000e18);
+        staking.fundEmission(90_000_000e18);
+        vm.warp(vm.getBlockTimestamp() + 365 days);   // the empty first year: its emission is the residue
         vm.prank(alice);
         staking.deposit(10_000e18, 90);
         vm.prank(carol);
@@ -31,7 +35,7 @@ contract EmissionSweepKeepsTheBookSolventTest is Base {
         vm.prank(carol);
         staking.borrow(maxC);
         vm.roll(block.number + 11);
-        vm.warp(block.timestamp + years_ * 365 days);
+        vm.warp(vm.getBlockTimestamp() + years_ * 365 days);
     }
 
     function test_SWEEP_residueThatCoversTheClaimsStaysInThePot() public {
@@ -45,18 +49,20 @@ contract EmissionSweepKeepsTheBookSolventTest is Base {
         assertTrue(staking.isSolvent(), "the book still reads solvent");
     }
 
-    /// The healthy case is unchanged: with no hidden loss the residue is owed to nobody and leaves.
+    /// The healthy case is unchanged: with no hidden loss the residue is owed to nobody and leaves,
+    /// all of it: the empty first year's emission, 12M − 1 632 000 wei.
     function test_SWEEP_residueLeavesFromAHealthyBook() public {
         vm.prank(admin);
-        staking.fundEmission(180_000_000e18);
+        staking.fundEmission(90_000_000e18);
+        vm.warp(vm.getBlockTimestamp() + 365 days);   // the empty first year: its emission is the residue
         vm.prank(alice);
         staking.deposit(10_000e18, 90);
         vm.roll(block.number + 11);
-        vm.warp(block.timestamp + 17 * 365 days);
+        vm.warp(vm.getBlockTimestamp() + 17 * 365 days);
         uint256 t0 = token.balanceOf(treasury);
         vm.prank(admin);
         staking.sweepUndistributedEmission();
-        assertGt(token.balanceOf(treasury) - t0, 0, "the residue reached the treasury");
+        assertEq(token.balanceOf(treasury) - t0, 11_999_999_999_999_999_998_368_000, "the residue reached the treasury");
         assertTrue(staking.isSolvent(), "the book reads solvent after it");
     }
 

@@ -182,7 +182,7 @@ contract UnitTest is Base {
         assertEq(staking.totalEmissionFunded(), 15_000_000e18);
         assertEq(staking.rewardReserve(), 15_000_000e18);
         vm.expectRevert(BlazePhoenixStaking.Staking__CapExceeded.selector);
-        staking.fundEmission(180_000_000e18);            // cumulative cap is TOTAL_REWARDS
+        staking.fundEmission(90_000_000e18);            // cumulative cap is TOTAL_REWARDS
         vm.stopPrank();
     }
 
@@ -197,7 +197,7 @@ contract UnitTest is Base {
     // Bob acts, Alice stays idle. Pre-fix Alice kept her 1.25x weight forever and out-earned Bob
     // by 25%. Post-fix, Bob's single transaction carries the locker sweep that normalises her.
     function test_StaleBoost_IdlePureStakerIsNormalisedAutonomously() public {
-        vm.prank(admin); staking.fundEmission(100_000_000e18);
+        vm.prank(admin); staking.fundEmission(90_000_000e18);
         uint256 P = 1_000_000e18;
         vm.prank(alice); staking.deposit(P, 730);
         vm.prank(bob);   staking.deposit(P, 730);
@@ -258,7 +258,7 @@ contract UnitTest is Base {
     /// Re-pricing the FUTURE must never claw back the PAST: the sweep settles the boosted
     /// backlog before it touches the weight.
     function test_StaleBoost_SweepPaysBeforeItReprices() public {
-        vm.prank(admin); staking.fundEmission(100_000_000e18);
+        vm.prank(admin); staking.fundEmission(90_000_000e18);
         vm.prank(alice); staking.deposit(1_000_000e18, 730);
         vm.roll(block.number + 11);
         vm.warp(block.timestamp + 731 days); vm.roll(block.number + 11);
@@ -302,7 +302,7 @@ contract UnitTest is Base {
     /// The whole point of the report: committing capital must pay strictly more than not
     /// committing it, or the lock has no economic meaning.
     function test_StaleBoost_RelockingStrictlyBeatsIdling() public {
-        vm.prank(admin); staking.fundEmission(100_000_000e18);
+        vm.prank(admin); staking.fundEmission(90_000_000e18);
         uint256 P = 1_000_000e18;
         vm.prank(alice); staking.deposit(P, 730);
         vm.prank(bob);   staking.deposit(P, 730);

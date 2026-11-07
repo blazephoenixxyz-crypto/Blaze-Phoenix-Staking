@@ -38,12 +38,13 @@ import {ReentrancyGuard}            from "@openzeppelin/contracts/utils/Reentran
 ///         Fame in README.md, not in this file.
 ///
 ///         v4 — FINAL TOKENOMICS. The emission schedule moves from 180M-linear-over-7-years to
-///         180M on a biennial-halving curve (see the constants block): same budget, same
-///         determinism, same conservation identity — the accumulator now integrates the delta of
-///         a closed-form O(1) curve instead of a flat rate. Chosen over linear-with-cliff because
-///         a flat schedule ends abruptly (documented mercenary-capital exodus) while the halving
-///         tail hands over smoothly to real yield (interest + DEX fee-share). Rounding on the
-///         curve is sub-wei-per-second and always pro-protocol.
+///         90M over 10 years on a halving curve with two 5-year periods (see the constants
+///         block): 12M a year in years 1-5, 6M a year in years 6-10. Same determinism, same
+///         conservation identity — the accumulator integrates the delta of a closed-form O(1)
+///         curve instead of a flat rate. Two periods are the least front-loaded halving that fits
+///         90M in 10 years (five 2-year periods would open at 23.2M a year), and the close steps
+///         down from 6M a year, two thirds of the step a flat 9M-a-year schedule would end on.
+///         Rounding on the curve is sub-wei-per-second and always pro-protocol.
 ///
 ///     ┌────────────────────────────────────────────────────────────────────────────────┐
 ///     │  THE MASTER CONSERVATION IDENTITY  (the single equation the whole book obeys)    │
@@ -104,15 +105,15 @@ import {ReentrancyGuard}            from "@openzeppelin/contracts/utils/Reentran
 ///       `declareEmergency`, and a PERMISSIONLESS `tripBreaker` that anyone may call but ONLY when
 ///       the chain itself proves insolvency (`_hardBreach`: balance + dust < owed) — an objective,
 ///       un-spoofable condition, and reversible by the admin if the reading was transient.
-///     • DETERMINISTIC EMISSION — 180M BZPX on a BIENNIAL-HALVING curve (90M years 1-2, 45M
-///       years 3-4, …), a closed-form O(1) pure function of time (`emittedAt`) with no loop and
-///       no admin knob, hard-closing after 8 periods (16 years) with the 2^-8 tail swept to the
-///       treasury. Empty-pool intervals advance the clock (emission stays in reserve), so a
-///       latecomer can never capture a backlog. The admin funds the schedule through
+///     • DETERMINISTIC EMISSION — 90M BZPX on a HALVING curve with two 5-year periods (60M
+///       years 1-5, 30M years 6-10), a closed-form O(1) pure function of time (`emittedAt`) with
+///       no loop and no admin knob, closing after 2 periods (10 years) at exactly TOTAL_REWARDS:
+///       the schedule leaves no tail. Empty-pool intervals advance the clock (emission stays in
+///       reserve), so a latecomer can never capture a backlog. The admin funds the schedule through
 ///       `fundEmission` (cumulative cap TOTAL_REWARDS), and a window pays at most what
 ///       `rewardReserve` holds when it is settled.
 ///     • MANDATORY LOCKED STAKING. There is no liquid stake: every deposit commits its funds for
-///       90..2555 days (a decreasing countdown caps it at the time left to the 16-year emission
+///       90..2555 days (a decreasing countdown caps it at the time left to the 10-year emission
 ///       close). Borrowing is allowed against that collateral, but a position must be FULLY REPAID
 ///       (debt == 0) before any stake can be withdrawn — so there is no early-exit and no penalty.
 ///
@@ -182,29 +183,33 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
     bytes32 internal constant DOMAIN =
         0x5816eda62cdb6eafc2444acf6d8a49566581e22c236d75ac8e9a3ed4135def87;
 
-    // Emission: 180M BZPX on a BIENNIAL-HALVING schedule. Period p (0-indexed, 2 years each)
-    // emits 90M >> p, so the geometric series is exact by construction, not by calibration:
-    //     Σ_{p≥0} 90M / 2^p  =  180M.
+    // Emission: 90M BZPX over 10 years on a HALVING schedule of two 5-year periods, cut from one
+    // geometric series S = HALVING_SERIES = 120M. Period p (0-indexed, 5 years each) emits
+    // (S / 2) >> p — 60M in years 1-5 (12M a year), 30M in years 6-10 (6M a year) — so the
+    // anchors are exact by construction, not by calibration (S is divisible by 4):
+    //     Σ_{p<k} (S / 2) / 2^p  =  S − (S >> k),      k = 2:  120M − 30M  =  90M.
     // Cumulative emission is closed-form, O(1), shifts only — no loop, no oracle, no exp/log:
-    //     emitted(t) = (TOTAL − (TOTAL >> p)) + (R0 >> p)·(t − start − p·PERIOD),
-    //     p = ⌊(t − start) / PERIOD⌋,          R0 = 90M / PERIOD   [wei/s]
-    // The programme hard-closes after 8 full periods (16 years): by then 255/256 of the budget
-    // (179,296,875 BZPX) is out and the running rate is < 0.8% of the initial one, so the close
-    // is not a cliff — by design the tail hands over to real-yield (interest + DEX fee-share)
-    // rather than to a magic date that still pays. The exact residue, 180M >> 8 = 703,125 BZPX,
-    // plus whatever empty/underfunded windows stranded, is recoverable to the treasury via
-    // `sweepUndistributedEmission` — pro-protocol, never pro-user.
-    uint256 public  constant TOTAL_REWARDS          = 180_000_000e18;
-    uint256 public  constant HALVING_PERIOD         = 2 * 365 days;
-    uint256 public  constant EMISSION_PERIODS       = 8;
+    //     emitted(t) = (S − (S >> p)) + (R0 >> p)·(t − start − p·PERIOD),
+    //     p = ⌊(t − start) / PERIOD⌋,          R0 = (S / 2) / PERIOD   [wei/s]
+    // The programme closes after EMISSION_PERIODS full periods (10 years) at S − (S >> 2), which is
+    // exactly TOTAL_REWARDS: the schedule itself leaves no residue. The series is not the budget —
+    // TOTAL_REWARDS caps what `fundEmission` accepts, HALVING_SERIES shapes the curve — and the two
+    // agree only because S − (S >> EMISSION_PERIODS) == TOTAL_REWARDS, which a test pins by value.
+    // The close steps down from 6M a year to zero; from there real yield (interest + DEX
+    // fee-share) carries on. Whatever empty, throttled or underfunded windows stranded is
+    // recoverable to the treasury via `sweepUndistributedEmission` — pro-protocol, never pro-user.
+    uint256 public  constant TOTAL_REWARDS          = 90_000_000e18;
+    uint256 private constant HALVING_SERIES         = 120_000_000e18;
+    uint256 public  constant HALVING_PERIOD         = 5 * 365 days;
+    uint256 public  constant EMISSION_PERIODS       = 2;
     uint256 public  constant EMISSION_LENGTH        = EMISSION_PERIODS * HALVING_PERIOD;
-    uint256 public  constant INITIAL_REWARD_PER_SEC = (TOTAL_REWARDS / 2) / HALVING_PERIOD;
+    uint256 public  constant INITIAL_REWARD_PER_SEC = (HALVING_SERIES / 2) / HALVING_PERIOD;
 
     uint256 public  constant MAX_STAKE_PER_WALLET = 30_000_000e18;
 
     // Emission is throttled, not gated, below this weight. One wei staked alone would otherwise
     // absorb the ENTIRE schedule for as long as it is the only position — 30 days of solitude is
-    // ~2% of the whole 180,000,000 budget at the period-0 rate, bought for one wei. Below the
+    // ~1.1% of the whole 90,000,000 budget at the period-0 rate, bought for one wei. Below the
     // mark the rate is scaled
     // by `weight / MIN_EMISSION_WEIGHT`, so a dust pool earns dust while a genuinely small pool
     // earns proportionally. A hard cut-off here would have been worse than the problem it solves:
@@ -218,7 +223,7 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
     uint256 public  constant RESERVE_FACTOR_BPS   = 300;   // 3%
 
     // Lock is measured in DAYS, between MIN_LOCK_DAYS and MAX_LOCK_DAYS (a 7-year policy cap;
-    // the emission programme itself runs 16 years). Boost is continuous in the committed duration:
+    // the emission programme itself runs 10 years). Boost is continuous in the committed duration:
     //     boost(d) = 10000 + 750·(d/365) + 250·(d/365)²   [bps]
     //   d =   90 -> ~1.02x     d = 365 (1y)  -> 1.10x      d = 1825 (5y) -> 2.00x
     //   d =  730 (2y) -> 1.25x d = 2555 (7y) -> 2.75x
@@ -584,13 +589,15 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
     ///         advance while nothing is earning — that is what stops a latecomer harvesting a
     ///         backlog they were never exposed to, and it stays exactly as it is. The consequence
     ///         is that an empty window leaves that window's scheduled emission in `rewardReserve`
-    ///         with no recipient — as does the 2^-8 tail (703,125 BZPX) the halving schedule
-    ///         deliberately never emits: past `emissionEnd` the accumulator can never advance again,
-    ///         `deposit` is closed, and `withdrawReserve` is bounded by `protocolReserve`. Without
-    ///         this function those tokens are owed to nobody and reachable by nobody, and `_owed()`
-    ///         overstates real liabilities by that amount for the rest of the contract's life —
-    ///         which would distort `collateralRatio()` and `solvency()`, the two interfaces offered
-    ///         as trustless verification.
+    ///         with no recipient (so does the part of a window that MIN_EMISSION_WEIGHT damps away;
+    ///         the schedule itself closes at exactly TOTAL_REWARDS and leaves no tail): past
+    ///         `emissionEnd` the accumulator can never advance again, `deposit` is closed, and
+    ///         `withdrawReserve` is bounded by `protocolReserve`. Without this function those tokens
+    ///         are owed to nobody and reachable by nobody, and `_owed()` overstates real liabilities
+    ///         by that amount for the rest of the contract's life — which would distort
+    ///         `collateralRatio()` and `solvency()`, the two interfaces offered as trustless
+    ///         verification. A programme that stranded nothing leaves a zero residue, and the call
+    ///         is then refused with `Staking__ZeroAmount`.
     ///
     ///         `_updateGlobal()` runs first so every token that is still legitimately payable is
     ///         settled into the accumulator before the remainder is treated as undistributable.
@@ -1542,7 +1549,7 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
         // The window's scheduled emission is the DELTA of the closed-form curve. `_emittedAt` is
         // monotone non-decreasing, so this can never underflow, and every property the linear
         // schedule had (deterministic, pure function of time, skipped windows stay in reserve)
-        // carries over unchanged — only the curve's shape moved from flat to biennial halving.
+        // carries over unchanged — only the curve's shape moved from flat to a halving.
         uint256 reward  = _windowReward(t, tbe);
         if (reward == 0) { lastRewardTime = block.timestamp; return; }
         accRewardPerShare      += ML.mulDiv(reward, WAD, tbe);
@@ -1561,27 +1568,29 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
         reward = _min(reward, rewardReserve);
     }
 
-    /// @dev Cumulative scheduled emission at time `x` — the biennial-halving closed form
-    ///      (see the constants block). O(1): one division, two shifts, one multiplication.
-    ///      Monotone non-decreasing: within a period it grows linearly at `R0 >> p`; at each
-    ///      rollover the sub-wei remainder the floored rate left behind (< PERIOD wei, i.e.
-    ///      < 1e-10 BZPX) is folded into the `TOTAL − (TOTAL >> p)` term, a jump UP that keeps
-    ///      the curve on the exact geometric series instead of drifting below it.
-    ///      `unchecked` is safe: dt < EMISSION_LENGTH (~5.05e8 s), rate ≤ R0 (~1.43e18 wei/s),
-    ///      so the product is < 1e27, and `TOTAL >> p` never exceeds TOTAL.
+    /// @dev Cumulative scheduled emission at time `x` — the halving closed form (see the
+    ///      constants block). O(1): one division, two shifts, one multiplication.
+    ///      Monotone non-decreasing: within a period it grows linearly at `R0 >> p`; at the
+    ///      rollover and at the close the remainder the floored rate left behind (< PERIOD wei:
+    ///      8,160,000 and 4,080,000 wei) is folded into the `S − (S >> p)` term, a jump UP that
+    ///      keeps the curve on the exact geometric series, so the close reads exactly
+    ///      S − (S >> EMISSION_PERIODS) = TOTAL_REWARDS. The clamp is the closed form at
+    ///      p = EMISSION_PERIODS, not the budget, so it cannot step the curve down.
+    ///      `unchecked` is safe: dt < EMISSION_LENGTH (~3.2e8 s), rate ≤ R0 (~3.9e17 wei/s),
+    ///      so the product is < 1.3e26, and `S >> p` never exceeds S.
     function _emittedAt(uint256 x) internal view returns (uint256) {
         if (x <= emissionStart) return 0;
-        if (x >= emissionEnd)   return TOTAL_REWARDS - (TOTAL_REWARDS >> EMISSION_PERIODS);
+        if (x >= emissionEnd)   return HALVING_SERIES - (HALVING_SERIES >> EMISSION_PERIODS);
         unchecked {
             uint256 dt = x - emissionStart;
-            uint256 p  = dt / HALVING_PERIOD;                     // 0..7 here, 8 is the clamp above
-            return (TOTAL_REWARDS - (TOTAL_REWARDS >> p))
+            uint256 p  = dt / HALVING_PERIOD;                     // 0..1 here, 2 is the clamp above
+            return (HALVING_SERIES - (HALVING_SERIES >> p))
                  + (INITIAL_REWARD_PER_SEC >> p) * (dt - p * HALVING_PERIOD);
         }
     }
 
     /// @notice Cumulative emission the schedule has released up to `timestamp` — the O(1)
-    ///         biennial-halving closed form, exposed so anyone can verify the whole curve
+    ///         halving closed form, exposed so anyone can verify the whole curve
     ///         on-chain for free (same ethos as `solvency()` / `collateralRatio()`).
     /// @param  timestamp any time; before the start it reads 0, after the close the final total
     /// @return cumulative scheduled emission in wei of BZPX (not what was actually paid)

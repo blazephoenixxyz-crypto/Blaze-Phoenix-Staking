@@ -36,7 +36,7 @@ async function world({ token = 'Token', fund = true } = {}) {
     await tk.send(u, 'approve', [st.addr.toString(), MAX_UINT]);
   }
   await st.send(admin, 'grantRole', [GUARDIAN_ROLE, guardian.hex]);
-  if (fund) await st.send(admin, 'fundEmission', [E18(180_000_000)]);
+  if (fund) await st.send(admin, 'fundEmission', [E18(90_000_000)]);
   return { chain, token: tk, staking: st, admin, treasury, guardian, users };
 }
 

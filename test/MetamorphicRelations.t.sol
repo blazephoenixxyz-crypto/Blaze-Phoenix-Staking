@@ -20,8 +20,9 @@ pragma solidity 0.8.28;
 //    MR-E1  cumulative emission is monotone, never exceeds TOTAL_REWARDS
 //    MR-E2  inside one halving period the emission is exactly linear at R0 >> p
 //    CO-E   at every period anchor the emission is the geometric series
-//           TOTAL * (1 - 2^-k), exactly; anywhere, the closed form sits at or
-//           above the sum of the floored rates and less than p * PERIOD wei over it
+//           S * (1 - 2^-k), S = 120M, exactly (0, 60M, 90M); anywhere, the closed
+//           form sits at or above the sum of the floored rates and less than
+//           p * PERIOD wei over it
 //    MR-D1  the reward channel is linear: twice the stake (same lock, same
 //           block) earns twice the reward, within 2 wei             [derived below]
 //    MR-D2  the reward channel is additive: one deposit of a + b and two
@@ -137,23 +138,26 @@ contract MetamorphicRelationsTest is Base {
         assertEq(staking.emittedAt(x + delta) - staking.emittedAt(x), r * delta, "MR-E2: not linear at R0 >> p");
     }
 
-    /// CO-E anchors. TOTAL_REWARDS = 1.8e26 = 2^26 * 9 * 5^25, so TOTAL >> k == TOTAL / 2^k exactly
-    /// for k <= 8, and the specified geometric series TOTAL * (1 - 2^-k) is met to the wei.
+    /// CO-E anchors. The series is S = 120 000 000e18; the contract keeps it private, so it is
+    /// pinned here by literal, not read back. S = 1.2e26 = 2^27 * 3 * 5^25, so S >> k == S / 2^k
+    /// exactly for k <= 2, and the specified geometric series S * (1 - 2^-k) is met to the wei:
+    /// 0, 60M, 90M. The close, S * (1 - 2^-2), is the published budget of 90 000 000e18.
     function test_EmissionAtEveryPeriodAnchorIsTheGeometricSeries() public view {
         uint256 s = staking.emissionStart();
-        uint256 P = staking.HALVING_PERIOD();
-        uint256 T = staking.TOTAL_REWARDS();
-        assertEq(T % (2 ** 8), 0, "precondition of the exactness: TOTAL divisible by 2^8");
-        for (uint256 k = 0; k <= 8; k++) {
-            assertEq(staking.emittedAt(s + k * P), T - T / (2 ** k), "CO-E: anchor off the geometric series");
+        uint256 P = 157_680_000;                    // 5 * 365 days, the published period
+        uint256 S = 120_000_000e18;                 // the halving series
+        assertEq(S % (2 ** 2), 0, "precondition of the exactness: S divisible by 2^2");
+        for (uint256 k = 0; k <= 2; k++) {
+            assertEq(staking.emittedAt(s + k * P), S - S / (2 ** k), "CO-E: anchor off the geometric series");
         }
-        assertEq(staking.emittedAt(staking.emissionEnd() + 365 days), T - T / 256, "CO-E: flat after the close");
+        assertEq(S - S / 4, 90_000_000e18, "precondition: the series closes on the published budget");
+        assertEq(staking.emittedAt(s + 2 * P + 365 days), S - S / 4, "CO-E: flat after the close");
     }
 
     /// CO-E differential. Oracle: integrate the floored rates, sum_{k<p} (R0 >> k) * P + (R0 >> p) * r.
-    /// R0 = floor(T / (2P)), so R0 >> k = floor(T / (2^(k+1) P)) and (R0 >> k) * P lies in
-    /// (T / 2^(k+1) - P, T / 2^(k+1)]. Summed over k < p against the exact T (1 - 2^-p): the
-    /// closed form is >= the oracle and exceeds it by less than p * P wei.
+    /// R0 = floor(S / (2P)) for the series S, so R0 >> k = floor(S / (2^(k+1) P)) and (R0 >> k) * P
+    /// lies in (S / 2^(k+1) - P, S / 2^(k+1)]. Summed over k < p against the exact S (1 - 2^-p):
+    /// the closed form is >= the oracle and exceeds it by less than p * P wei.
     function testFuzz_ClosedFormEmissionVersusTheSumOfRates(uint256 x) public view {
         uint256 s = staking.emissionStart();
         uint256 P = staking.HALVING_PERIOD();
@@ -185,7 +189,7 @@ contract MetamorphicRelationsTest is Base {
         uint256 t0 = this.clockTs();
         uint256 n0 = this.clockBlock();
 
-        vm.prank(admin); staking.fundEmission(100_000_000e18);
+        vm.prank(admin); staking.fundEmission(90_000_000e18);
         vm.prank(alice); staking.deposit(A, lockDays);
         vm.prank(bob);   staking.deposit(2 * A, lockDays);
         vm.warp(t0 + dt);
@@ -209,7 +213,7 @@ contract MetamorphicRelationsTest is Base {
         uint256 t0 = this.clockTs();
         uint256 n0 = this.clockBlock();
 
-        vm.prank(admin); staking.fundEmission(100_000_000e18);
+        vm.prank(admin); staking.fundEmission(90_000_000e18);
         vm.prank(alice); staking.deposit(a + b, lockDays);
         vm.prank(bob);   staking.deposit(a, lockDays);
         vm.prank(bob);   staking.deposit(b, lockDays);

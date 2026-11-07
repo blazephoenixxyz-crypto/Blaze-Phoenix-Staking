@@ -40,7 +40,7 @@ async function world({ fund = true } = {}) {
     await tk.send(u, 'approve', [st.addr.toString(), MAX_UINT]);
   }
   await st.send(admin, 'grantRole', [ethers.id('GUARDIAN_ROLE'), guardian.hex]);
-  if (fund) await st.send(admin, 'fundEmission', [E18(180_000_000)]);
+  if (fund) await st.send(admin, 'fundEmission', [E18(90_000_000)]);
   return { chain, token: tk, staking: st, admin, treasury, guardian, users };
 }
 
@@ -232,7 +232,7 @@ console.log('\n── B1 :: the gap between deployment and funding ────�
   console.log(`     120 days staked into an unfunded contract → pending ${fmt(pend)}`);
   check(pend === 0n, 'B1: an unfunded contract cannot accrue a reward liability it cannot pay',
         `it promised ${fmt(pend)} with nothing behind it`);
-  await staking.send(admin, 'fundEmission', [E18(180_000_000)]);
+  await staking.send(admin, 'fundEmission', [E18(90_000_000)]);
   const after = BigInt(await staking.call('pendingRewards', [users[0].hex]));
   check(after === 0n, 'B1: funding later does not retroactively pay the unfunded window',
         `funding created ${fmt(after)} of backdated entitlement`);

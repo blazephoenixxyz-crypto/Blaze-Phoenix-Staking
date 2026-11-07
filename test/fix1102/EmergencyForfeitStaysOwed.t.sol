@@ -29,7 +29,7 @@ contract EmergencyForfeitStaysOwedTest is Base {
     /// Three debt-free positions at the halt, each with unpaid emission, two with unpaid pure
     /// yield (carol borrowed for 100 days, then repaid). Every one of them exits.
     function test_FORFEIT_documents_anEmergencyExitsForfeitStaysOwedWithNoHolder() public {
-        vm.prank(admin); staking.fundEmission(100_000_000e18);
+        vm.prank(admin); staking.fundEmission(90_000_000e18);
         vm.prank(alice); staking.deposit(1_000_000e18, 2555);
         vm.prank(bob);   staking.deposit(2_000_000e18, 365);
         vm.prank(carol); staking.deposit(4_000_000e18, 365);

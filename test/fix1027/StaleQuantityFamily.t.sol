@@ -211,7 +211,7 @@ contract StaleQuantityFamilyTest is Base {
     ///      the quote at the trip, after checking that it does not grow while the halt lasts.
     function _haltFromDay80ToDay110(uint256 lockDays_) internal returns (uint256 p0, uint256 t0) {
         vm.prank(admin);
-        staking.fundEmission(100_000_000e18);
+        staking.fundEmission(90_000_000e18);
         t0 = vm.getBlockTimestamp();   // via-ir may re-read `block.timestamp` after the warps
         _stake(alice, S, lockDays_);
         uint256 t = t0 + 80 days;
@@ -268,7 +268,7 @@ contract StaleQuantityFamilyTest is Base {
 
     function test_3326_META_cancel_refuses_emission_moved_in_the_emergency() public {
         vm.prank(admin);
-        staking.fundEmission(100_000_000e18);
+        staking.fundEmission(90_000_000e18);
         _stake(alice, S, 90);
         vm.warp(block.timestamp + 10 days);
         _guardian();
@@ -390,7 +390,7 @@ contract StaleQuantityFamilyTest is Base {
 
     function test_PAYATPAR_reward_settle_into_a_skim_reverts_PaidIntoBreach() public {
         vm.prank(admin);
-        staking.fundEmission(180_000_000e18);
+        staking.fundEmission(90_000_000e18);
         _stake(alice, S, 90);
         vm.warp(block.timestamp + 30 days);
         assertGt(staking.pendingRewards(alice), 0, "nothing to pay");

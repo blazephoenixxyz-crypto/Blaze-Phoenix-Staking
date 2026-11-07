@@ -12,7 +12,7 @@ const GAS = 30_000_000n;
 
 export class Chain {
   constructor() {
-    this.time = 1_900_000_000n;   // a fixed start far before the 7-year horizon overflows
+    this.time = 1_900_000_000n;   // a fixed start far before the 10-year horizon overflows
     this.blockNum = 1n;
     this.nonces = new Map();      // address(lowercase) -> bigint
     this.wallets = {};
