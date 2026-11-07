@@ -1029,6 +1029,83 @@ dict(nome='seizure: the keeper bonus is no longer capped at the seized stake',
       old="            uint256 p  = dt / HALVING_PERIOD;                     // 0..1 here, 2 is the clamp above",
       new="            uint256 p; for (uint256 q = HALVING_PERIOD; q <= dt; q += HALVING_PERIOD) ++p; // MUTANT",
       teste="test_EmittedAtCostsTheSameGasAnywhereInEitherPeriod"),
+# ── EMISSION-90M: the tests rewritten for the 90M halving programme, each paired with a mutant
+# that turns it red. The comment over each entry names the assert the run must fail on: a red
+# from any other failure (a revert, a setup assert) is not this proof. X5 (lockStep repricing
+# without its settles) is left out: two of its three pairs pass mutated; its guard is the
+# lockStep settle entry above.
+# X1 - assert "log != expected log" (expectEmit RewardClaimed: the due moves with R0)
+ dict(nome="emission: the halving series grows (HALVING_SERIES 120M becomes 121M): a claim pays period 0 at the wrong rate",
+      f=F,
+      old="    uint256 private constant HALVING_SERIES         = 120_000_000e18;",
+      new="    uint256 private constant HALVING_SERIES         = 121_000_000e18; // MUTANT",
+      teste="test_E_RewardClaimed_payload"),
+# X1 - assert "log != expected log" (expectEmit UndistributedEmissionSwept: the residue is no longer E(start + 365 days))
+ dict(nome="emission: the halving series grows (HALVING_SERIES 120M becomes 121M): the empty first year's residue moves",
+      f=F,
+      old="    uint256 private constant HALVING_SERIES         = 120_000_000e18;",
+      new="    uint256 private constant HALVING_SERIES         = 121_000_000e18; // MUTANT",
+      teste="test_E_UndistributedEmissionSwept_empty_first_year"),
+# X1 - assert "the residue reached the treasury"
+ dict(nome="emission: the halving series grows (HALVING_SERIES 120M becomes 121M): the residue the treasury receives moves",
+      f=F,
+      old="    uint256 private constant HALVING_SERIES         = 120_000_000e18;",
+      new="    uint256 private constant HALVING_SERIES         = 121_000_000e18; // MUTANT",
+      teste="test_SWEEP_residueLeavesFromAHealthyBook"),
+# X2 - assert "ACHADO: a varredura reduziu o que a utilizadora ja tinha acumulado"
+ dict(nome="sweepUndistributedEmission: the residue is read before _updateGlobal settles the window already earned",
+      f=F,
+      old="        _updateGlobal();\n        uint256 residue = rewardReserve;\n",
+      new="        uint256 residue = rewardReserve; // MUTANT\n",
+      teste="test_Sweep_DoesNotStealAccruedUserRewards"),
+# X3 - assert "next call did not revert as expected" (expectRevert Staking__ZeroAmount on the second sweep)
+ dict(nome="sweepUndistributedEmission: an empty reserve is swept again instead of refused with ZeroAmount",
+      f=F,
+      old="        if (residue == 0) revert Staking__ZeroAmount();\n        rewardReserve = 0;\n",
+      new="        rewardReserve = 0; // MUTANT\n",
+      teste="test_Sweep_IsIdempotent"),
+# X4 - assert "expired: un-boosted emission denominator"
+ dict(nome="_autoMaintain: a transaction no longer carries the expired-lock sweep (an idle position keeps its boost)",
+      f=F,
+      old="        _sweepExpiredLocks(beneficiary, lBudget);",
+      new="        // MUTANT",
+      teste="test_StaleBoost_IdlePureStakerIsNormalisedAutonomously"),
+# X4 - assert "1.00x idle + 1.25x committed"
+ dict(nome="_autoMaintain: a transaction no longer carries the expired-lock sweep (the idle position is not repriced)",
+      f=F,
+      old="        _sweepExpiredLocks(beneficiary, lBudget);",
+      new="        // MUTANT",
+      teste="test_StaleBoost_RelockingStrictlyBeatsIdling"),
+# X4 - assert "paid in full, to the wei"
+ dict(nome="_autoMaintain: a transaction no longer carries the expired-lock sweep (the boosted backlog is not paid)",
+      f=F,
+      old="        _sweepExpiredLocks(beneficiary, lBudget);",
+      new="        // MUTANT",
+      teste="test_StaleBoost_SweepPaysBeforeItReprices"),
+# X6 - assert "RT: a debt-free round trip lost principal"
+ dict(nome="withdraw: the debt-free exit pays half the principal",
+      f=F,
+      old="        if (!ML.rawTransfer(bzpx, msg.sender, amount_)) revert Staking__TransferFailed();\n        emit Withdrawn(msg.sender, amount_, 0, 0, amount_);",
+      new="        if (!ML.rawTransfer(bzpx, msg.sender, amount_ / 2)) revert Staking__TransferFailed(); // MUTANT\n        emit Withdrawn(msg.sender, amount_, 0, 0, amount_);",
+      teste="testFuzz_DebtFreeRoundTripNeverLosesPrincipal"),
+# X7 - assert "log != expected log" (expectEmit UndistributedEmissionSwept: the amount reads 0)
+ dict(nome="sweepUndistributedEmission: the event reports the zeroed reserve, not the residue",
+      f=F,
+      old="        emit UndistributedEmissionSwept(treasury, residue);",
+      new="        emit UndistributedEmissionSwept(treasury, rewardReserve); // MUTANT",
+      teste="test_E_UndistributedEmissionSwept_empty_first_year"),
+# X8 - assert "MR-D1: the reward channel is not linear in the stake"
+ dict(nome="_atLiveWeight: the live weight reads the book's total stake, not the position's",
+      f=F,
+      old="        uint256 eq = _sub0(s, u.debt);\n",
+      new="        uint256 eq = _sub0(totalStaked, u.debt); // MUTANT\n",
+      teste="testFuzz_TwiceTheStakeEarnsTwiceTheReward"),
+# X9 - assert "MR-D2: splitting a deposit changed the reward"
+ dict(nome="deposit: a top-up overwrites the stake instead of adding to it",
+      f=F,
+      old="        u.staked      += amount_;\n        u.depositBlock = uint64(block.number);\n",
+      new="        u.staked       = amount_; // MUTANT\n        u.depositBlock = uint64(block.number);\n",
+      teste="testFuzz_SplitDepositEarnsWhatOneDepositEarns"),
 ]
 CONTRACTS = ("BlazePhoenixStaking",)
 
