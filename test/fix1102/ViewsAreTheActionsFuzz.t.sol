@@ -58,11 +58,12 @@ contract ViewsAreTheActionsFuzzTest is Base {
         staking.borrow(m + 1);
     }
 
-    /// daysToLiquidation, read right after the borrow, is when liquidate starts to accept: two
-    /// days before it liquidate refuses and the readings say one or two days at a health above
-    /// the threshold; two days after it liquidate settles and the readings say zero days at a
-    /// health at or below the threshold. Nobody touches the book in between, so the rate the
-    /// estimate prices is the rate the index charges.
+    /// daysToLiquidation, read right after the borrow, is the last day liquidate refuses: at
+    /// dStar days liquidate refuses and the readings say zero days at a health at or above the
+    /// threshold; one day later liquidate settles at a health at or below it. The estimate is the
+    /// floor of the slack over the daily charge, so the day it flips is exact, not a window.
+    /// Nobody touches the book in between, so the rate the estimate prices is the rate the index
+    /// charges.
     function testFuzz_DaysToLiquidationIsWhenLiquidateStartsToAccept(
         uint256 a, uint256 lockA, uint256 c, uint256 borrowBps
     ) public {
@@ -78,22 +79,20 @@ contract ViewsAreTheActionsFuzzTest is Base {
         uint256 n1 = this.clockBlock();
         uint256 snap = vm.snapshotState();
 
-        vm.warp(t1 + (dStar - 2) * 1 days); vm.roll(n1 + 1);
-        uint256 left = staking.daysToLiquidation(carol);
-        assertGe(left, 1, "two days early: the estimate still reads at least a day");
-        assertLe(left, 2, "two days early: the estimate reads at most two days");
-        assertGe(staking.healthFactor(carol), LIQ_H, "two days early: the health is above the threshold");
+        vm.warp(t1 + dStar * 1 days); vm.roll(n1 + 1);
+        assertEq(staking.daysToLiquidation(carol), 0, "the last day: the estimate reads zero");
+        assertGe(staking.healthFactor(carol), LIQ_H, "the last day: the health is at or above the threshold");
         vm.prank(keeper);
         vm.expectRevert(BlazePhoenixStaking.Staking__NotLiquidatable.selector);
         staking.liquidate(carol);
         vm.revertToState(snap);
 
-        vm.warp(t1 + (dStar + 2) * 1 days); vm.roll(n1 + 1);
-        assertEq(staking.daysToLiquidation(carol), 0, "two days late: the estimate reads zero");
-        assertLe(staking.healthFactor(carol), LIQ_H, "two days late: the health is at or below the threshold");
+        vm.warp(t1 + (dStar + 1) * 1 days); vm.roll(n1 + 1);
+        assertEq(staking.daysToLiquidation(carol), 0, "one day later: the estimate reads zero");
+        assertLe(staking.healthFactor(carol), LIQ_H, "one day later: the health is at or below the threshold");
         uint256 liq0 = staking.totalLiquidations();
         vm.prank(keeper); staking.liquidate(carol);
-        assertEq(staking.totalLiquidations(), liq0 + 1, "two days late: liquidate settled");
+        assertEq(staking.totalLiquidations(), liq0 + 1, "one day later: liquidate settled");
     }
 
     /// maxLockDaysAvailable is the longest lock that ends inside the emission programme: a deposit

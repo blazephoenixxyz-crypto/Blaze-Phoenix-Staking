@@ -1082,13 +1082,13 @@ dict(nome="claimPureYield: the sweep runs between the emission and the pure-yiel
 # from any other failure (a revert, a setup assert) is not this proof. X5 (lockStep repricing
 # without its settles) is left out: two of its three pairs pass mutated; its guard is the
 # lockStep settle entry above.
-# X1 - assert "log != expected log" (expectEmit RewardClaimed: the due moves with R0)
+# X1 - assert "RewardClaimed param mismatch at amount" (expectEmit RewardClaimed: the due moves with R0)
  dict(nome="emission: the halving series grows (HALVING_SERIES 120M becomes 121M): a claim pays period 0 at the wrong rate",
       f=F,
       old="    uint256 private constant HALVING_SERIES         = 120_000_000e18;",
       new="    uint256 private constant HALVING_SERIES         = 121_000_000e18; // MUTANT",
       teste="test_E_RewardClaimed_payload"),
-# X1 - assert "log != expected log" (expectEmit UndistributedEmissionSwept: the residue is no longer E(start + 365 days))
+# X1 - assert "UndistributedEmissionSwept param mismatch at amount" (expectEmit UndistributedEmissionSwept: the residue is no longer E(start + 365 days))
  dict(nome="emission: the halving series grows (HALVING_SERIES 120M becomes 121M): the empty first year's residue moves",
       f=F,
       old="    uint256 private constant HALVING_SERIES         = 120_000_000e18;",
@@ -1130,13 +1130,14 @@ dict(nome="claimPureYield: the sweep runs between the emission and the pure-yiel
       old="        _sweepExpiredLocks(beneficiary, lBudget);",
       new="        // MUTANT",
       teste="test_StaleBoost_SweepPaysBeforeItReprices"),
-# X6 - assert "RT: a debt-free round trip lost principal"
+# X6 - revert Staking__InvariantBreached(), not the RT assert: the unpaid half moves the balance and
+# not the books, so `conserves` reverts the withdraw first. X6b below is the RT assert's own mutant.
  dict(nome="withdraw: the debt-free exit pays half the principal",
       f=F,
       old="        if (!ML.rawTransfer(bzpx, msg.sender, amount_)) revert Staking__TransferFailed();\n        emit Withdrawn(msg.sender, amount_, 0, 0, amount_);",
       new="        if (!ML.rawTransfer(bzpx, msg.sender, amount_ / 2)) revert Staking__TransferFailed(); // MUTANT\n        emit Withdrawn(msg.sender, amount_, 0, 0, amount_);",
       teste="testFuzz_DebtFreeRoundTripNeverLosesPrincipal"),
-# X7 - assert "log != expected log" (expectEmit UndistributedEmissionSwept: the amount reads 0)
+# X7 - assert "UndistributedEmissionSwept param mismatch at amount" (expectEmit UndistributedEmissionSwept: the amount reads 0, got=0)
  dict(nome="sweepUndistributedEmission: the event reports the zeroed reserve, not the residue",
       f=F,
       old="        emit UndistributedEmissionSwept(treasury, residue);",
@@ -1175,6 +1176,79 @@ dict(nome="claimPureYield: the sweep runs between the emission and the pure-yiel
       old="    uint256 public constant EMISSION = 90_000_000e18;",
       new="    uint256 public constant EMISSION = 90_000_000e18 + 1; // MUTANT",
       teste="test_DeployEmissionEqualsTotalRewards"),
+ # ── G-1109: tests of main..staking-integ-1109 that had no mutant, and the tightened pins ──
+# X6b - assert "RT: a debt-free round trip lost principal" (the skim lands in protocolReserve: the books still balance)
+ dict(nome='withdraw: the debt-free exit pays half the principal and books the other half as protocol revenue',
+      f=F,
+      old='        if (!ML.rawTransfer(bzpx, msg.sender, amount_)) revert Staking__TransferFailed();\n        emit Withdrawn(msg.sender, amount_, 0, 0, amount_);',
+      new='        if (!ML.rawTransfer(bzpx, msg.sender, amount_ / 2)) revert Staking__TransferFailed(); // MUTANT\n        protocolReserve += amount_ - amount_ / 2;\n        emit Withdrawn(msg.sender, amount_, 0, 0, amount_);',
+      teste='testFuzz_DebtFreeRoundTripNeverLosesPrincipal'),
+# G-1109 - assert "a third party was paid at par before the sweep's last attribution" (all 8 thirdPartyOrder tests)
+ dict(nome='LOSS-FIRST sweep: the borrower window pays the positions it settles at par again (third-party order, every entry point)',
+      f=F,
+      old='        if (msg.sig == this.maintStep.selector || ML.rawBalanceOf(bzpx, address(this)) + CONSERVATION_DUST\n',
+      new='        if (ML.rawBalanceOf(bzpx, address(this)) + CONSERVATION_DUST // MUTANT\n',
+      teste='test_LOSSFIRST_thirdPartyOrder_'),
+# G-1109 - assert "the last day: the health is at or above the threshold" (the estimate is one day late: at its day the clamp reads zero and the health is already below)
+ dict(nome='daysToLiquidation: the estimate reads one day more than the slack buys',
+      f=F,
+      old='        d = daily == 0 ? type(uint256).max : (s - stakeAtLiq) / daily;',
+      new='        d = daily == 0 ? type(uint256).max : (s - stakeAtLiq) / daily + 1; // MUTANT',
+      teste='testFuzz_DaysToLiquidationIsWhenLiquidateStartsToAccept'),
+# G-1109 - assert "one day later: the health is at or below the threshold" (the estimate is one day early; floored at zero so the view cannot underflow first)
+ dict(nome='daysToLiquidation: the estimate reads one day less than the slack buys',
+      f=F,
+      old='        d = daily == 0 ? type(uint256).max : (s - stakeAtLiq) / daily;',
+      new='        d = daily == 0 ? type(uint256).max : _sub0((s - stakeAtLiq) / daily, 1); // MUTANT',
+      teste='testFuzz_DaysToLiquidationIsWhenLiquidateStartsToAccept'),
+# G-1109 - assert "one day more would outlast the close"
+ dict(nome='maxLockDaysAvailable: the countdown is one day short of the emission close',
+      f=F,
+      old='        uint256 d = (emissionEnd - block.timestamp) / 1 days;',
+      new='        uint256 d = (emissionEnd - block.timestamp) / 1 days - 1; // MUTANT',
+      teste='testFuzz_MaxLockDaysIsTheLongestLockInsideTheProgramme'),
+# G-1109 - expectRevert Staking__EmergencyNotActive not met: "next call did not revert as expected"
+ dict(nome='syncEquity: the emergency-only door opens outside an emergency',
+      f=F,
+      old='    function syncEquity(address user_) external {\n        if (!emergencyMode) revert Staking__EmergencyNotActive();\n',
+      new='    function syncEquity(address user_) external {\n        // MUTANT\n',
+      teste='test_P1_SYNC_reverts_outside_an_emergency'),
+# G-1109 - assert "alice trackedEquity" (the sync re-reads equity without the frozen interest)
+ dict(nome='syncEquity: refreshes the tracked equity without attributing the frozen interest',
+      f=F,
+      old='        _accrueInterestFor(user_);\n        UserInfo storage u = _users[user_];\n        _applyBoost(u, u.trackedBoostedEffective, u.trackedBoostedPure);',
+      new='        UserInfo storage u = _users[user_]; // MUTANT\n        _applyBoost(u, u.trackedBoostedEffective, u.trackedBoostedPure);',
+      teste='test_P1_SYNC_refreshes_equity_and_leaves_the_weights'),
+# G-1109 - Staking__StaleEquity() instead of the full payout (the solvent exit reads the stale-book guard)
+ dict(nome='emergencyWithdraw: the stale-equity branch runs on a solvent pot too',
+      f=F,
+      old='            if (pot < eCorr) {',
+      new='            if (true) { // MUTANT',
+      teste='test_P1_EMG_solvent_exit_needs_no_sync'),
+# G-1109 - expectRevert InvariantBreached not met on claimPureYield ("Error != expected error" or "next call did not revert")
+ dict(nome='claimPureYield: the hard-breach refusal is removed (P6)',
+      f=F,
+      old='        if (block.number <= u.depositBlock + MIN_DEPOSIT_BLOCKS) revert Staking__FlashLoanProtection();\n        if (_hardBreach()) revert Staking__InvariantBreached();',
+      new='        if (block.number <= u.depositBlock + MIN_DEPOSIT_BLOCKS) revert Staking__FlashLoanProtection();\n        // MUTANT',
+      teste='test_P6_claims_stay_closed_under_breach'),
+# G-1109 - expectRevert Staking__StaleEquity not met on the stale book: "next call did not revert as expected"
+ dict(nome='emergencyWithdraw: the breached haircut scales against a stale book (STALE-EQUITY guard removed)',
+      f=F,
+      old='                if (g > a + CONSERVATION_DUST || a > g + CONSERVATION_DUST) revert Staking__StaleEquity();',
+      new='                // MUTANT',
+      teste='test_EMG_HAIRCUT_payout_does_not_depend_on_exit_order'),
+# G-1109 - expectRevert "Deploy: EMISSION != TOTAL_REWARDS()" not met for an x above EMISSION
+ dict(nome='Deploy: pinEmission accepts any value at or above EMISSION (one-sided pin)',
+      f=D,
+      old='        require(totalRewards == EMISSION, "Deploy: EMISSION != TOTAL_REWARDS()");',
+      new='        require(totalRewards >= EMISSION, "Deploy: EMISSION != TOTAL_REWARDS()"); // MUTANT',
+      teste='testFuzz_PinEmissionRefusesAnyOtherValue'),
+# G-1109 - assert "deployer kept a remainder" (fundEmission pulls one wei less than it books; the script requires read the books)
+ dict(nome='fundEmission: books amount_ but pulls one wei less',
+      f=F,
+      old='        _updateGlobal();\n        if (!ML.rawTransferFrom(bzpx, msg.sender, address(this), amount_)) revert Staking__TransferFailed();\n        totalEmissionFunded += amount_;',
+      new='        _updateGlobal();\n        if (!ML.rawTransferFrom(bzpx, msg.sender, address(this), amount_ - 1)) revert Staking__TransferFailed(); // MUTANT\n        totalEmissionFunded += amount_;',
+      teste='test_DeployRunFundsTheFullEmission'),
 ]
 # (source file under out/, contract): a mutant in script/ moves Deploy, not the staking contract
 CONTRACTS = (("BlazePhoenixStaking.sol", "BlazePhoenixStaking"), ("Deploy.s.sol", "Deploy"))
