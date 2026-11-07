@@ -19,19 +19,20 @@ import {BlazePhoenixStaking} from "../../src/BlazePhoenixStaking.sol";
 ///         reserves and the pure staker's own claim carries emission as well as pure yield.
 contract UnbookedLossReadIsALowerBoundTest is Base {
     uint256 internal constant DUST = 1e10;
-    /// @dev The curve releases TOTAL_REWARDS * (1 - 2^-EMISSION_PERIODS) over its 16 years and
-    ///      the funding is R_LEFT above it, so the reserve keeps at least R_LEFT once it ends.
+    /// @dev The curve hands out TOTAL_REWARDS by its close and the funding cap is the same number,
+    ///      so nothing can be funded above the curve: the whole cap is funded. That the reserve
+    ///      still holds R_LEFT or more at the breach, about ten years after the curve ends, is
+    ///      asserted by each test, not assumed.
     uint256 internal constant R_LEFT = 20_000e18;
 
     function _stakeDebt(address u) internal view returns (uint256 s, uint256 d) {
         (s, d, , , , , , , , , , , , ) = staking.getUserInfo(u);
     }
 
-    function _fundEmissionLeaving(uint256 left) internal {
+    function _fundTheWholeCap() internal {
         uint256 total = staking.TOTAL_REWARDS();
-        uint256 amount = total - (total >> staking.EMISSION_PERIODS()) + left;
         vm.prank(admin);
-        staking.fundEmission(amount);
+        staking.fundEmission(total);
     }
 
     function _reachUnbookedLoss(bool funded) internal {
@@ -39,7 +40,7 @@ contract UnbookedLossReadIsALowerBoundTest is Base {
         staking.deposit(10_000e18, 90);
         vm.prank(carol);
         staking.deposit(1_000_000e18, 90);
-        if (funded) _fundEmissionLeaving(R_LEFT);
+        if (funded) _fundTheWholeCap();
         vm.roll(block.number + 11);
         vm.prank(carol);
         staking.borrow(500_000e18);
@@ -113,7 +114,7 @@ contract UnbookedLossReadIsALowerBoundTest is Base {
         staking.deposit(10_000e18, 90);
         vm.prank(carol);
         staking.deposit(1_000_000e18, 90);
-        if (funded) _fundEmissionLeaving(R_LEFT);
+        if (funded) _fundTheWholeCap();
         vm.roll(block.number + 11);
         vm.prank(carol);
         staking.borrow(500_000e18);
