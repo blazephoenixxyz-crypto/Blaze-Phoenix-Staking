@@ -8,8 +8,8 @@ Re-measured after the view readers were collapsed and the maintenance sweep was 
 every loss before it pays (the parity tests in `test/hardening/MorphismParity.t.sol`, and the
 third-party, seizure, carrier and order tests in `test/hardening/MaintenanceBeforePayment.t.sol`
 and `test/fix1102/SelfCarrierNormalisation.t.sol`), and after a loss not yet recorded was pinned
-reading solvent (`test/hardening/UnbookedLossReadIsALowerBound.t.sol`): **376 tests in 52 `.t.sol`
-files**.
+reading solvent (`test/hardening/UnbookedLossReadIsALowerBound.t.sol`, with the emission reserve
+empty and live): **378 tests in 52 `.t.sol` files**.
 Regenerate with:
 
 ```bash
@@ -85,18 +85,18 @@ zero is a fact about the suite and the place to look first.
 
 | area | P | A | D | V | Q | S | G | T | E | Y | M | I | H | R | Z | K | W | O | X | C | N | U | L | J |
 |---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
-| deposit / top-up / lock | - | 32 | 65 | 57 | 20 | 6 | 53 | 196 | 48 | 57 | 44 | 17 | 3 | - | - | 17 | 33 | 34 | **0** | 104 | 64 | **0** | - | - |
+| deposit / top-up / lock | - | 32 | 65 | 57 | 20 | 6 | 53 | 198 | 48 | 57 | 44 | 17 | 3 | - | - | 17 | 33 | 34 | **0** | 104 | 64 | **0** | - | - |
 | withdraw | - | 1 | 4 | 5 | 3 | 2 | 12 | 21 | 4 | 7 | 11 | 1 | **0** | - | - | 2 | 3 | **0** | **0** | 10 | 3 | **0** | - | - |
-| borrow / repay | - | 12 | 51 | 46 | 15 | 4 | 27 | 143 | 38 | 43 | 17 | 9 | 3 | - | - | 5 | 22 | 18 | **0** | 71 | 47 | **0** | - | - |
+| borrow / repay | - | 12 | 51 | 46 | 15 | 4 | 27 | 145 | 38 | 43 | 17 | 9 | 3 | - | - | 5 | 22 | 18 | **0** | 71 | 47 | **0** | - | - |
 | interest | - | 1 | 4 | 6 | 6 | **0** | 3 | 22 | 4 | 9 | **0** | **0** | **0** | - | - | 2 | 2 | 6 | **0** | 5 | 15 | **0** | - | - |
-| emission / rewards | - | 20 | 55 | 50 | 14 | 5 | 31 | 131 | 36 | 41 | 26 | 10 | 1 | - | - | 26 | 26 | 16 | **0** | 103 | 47 | **0** | - | - |
-| pure yield | - | 7 | 7 | 8 | 7 | 1 | 7 | 30 | 6 | 10 | 4 | 4 | 1 | - | - | 3 | 4 | 6 | **0** | 14 | 21 | **0** | - | - |
-| liquidation | - | 1 | 7 | 4 | 3 | **0** | 8 | 24 | 5 | 11 | 4 | 2 | **0** | - | - | **0** | 3 | **0** | **0** | 10 | 10 | **0** | - | - |
+| emission / rewards | - | 20 | 55 | 50 | 14 | 5 | 31 | 133 | 36 | 41 | 26 | 10 | 1 | - | - | 26 | 26 | 16 | **0** | 103 | 47 | **0** | - | - |
+| pure yield | - | 7 | 7 | 8 | 7 | 1 | 7 | 31 | 6 | 10 | 4 | 4 | 1 | - | - | 3 | 4 | 6 | **0** | 14 | 21 | **0** | - | - |
+| liquidation | - | 1 | 7 | 4 | 3 | **0** | 8 | 25 | 5 | 11 | 4 | 2 | **0** | - | - | **0** | 3 | **0** | **0** | 10 | 10 | **0** | - | - |
 | maintenance windows | - | 3 | 8 | 1 | 3 | **0** | 6 | 20 | **0** | 5 | 6 | **0** | **0** | - | - | 1 | 1 | 4 | **0** | 4 | 6 | **0** | - | - |
 | lock sweep / poke | - | 33 | 28 | 11 | 2 | **0** | 13 | 50 | 10 | 14 | 11 | 7 | 1 | - | - | 9 | 5 | 11 | **0** | 26 | 15 | **0** | - | - |
 | emergency / breaker | - | 8 | 13 | 43 | 1 | 5 | 49 | 55 | 10 | 118 | 23 | 6 | 2 | - | - | 2 | 43 | 10 | **0** | 63 | 20 | **0** | - | - |
-| admin / reserves | - | 13 | 43 | 64 | 9 | 4 | 27 | 120 | 35 | 56 | 23 | 8 | 2 | - | - | 15 | 43 | 20 | **0** | 125 | 38 | **0** | - | - |
-| views / solvency | - | 12 | 31 | 38 | 10 | 8 | 27 | 105 | 15 | 42 | 24 | 9 | 1 | - | - | 5 | 27 | 18 | **0** | 58 | 42 | **0** | - | - |
+| admin / reserves | - | 13 | 43 | 64 | 9 | 4 | 27 | 122 | 35 | 56 | 23 | 8 | 2 | - | - | 15 | 43 | 20 | **0** | 125 | 38 | **0** | - | - |
+| views / solvency | - | 12 | 31 | 38 | 10 | 8 | 27 | 107 | 15 | 42 | 24 | 9 | 1 | - | - | 5 | 27 | 18 | **0** | 58 | 42 | **0** | - | - |
 
 288 cells: 60 without object, 228 measured, **39 empty**.
 

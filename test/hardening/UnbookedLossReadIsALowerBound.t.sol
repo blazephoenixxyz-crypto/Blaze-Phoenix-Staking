@@ -14,18 +14,32 @@ import {BlazePhoenixStaking} from "../../src/BlazePhoenixStaking.sol";
 ///         The book: a small pure staker and one large borrower who alone acts (her own claim
 ///         every 10 days), so her interest is attributed as it accrues and never exceeds her
 ///         stake in one slice; after ~20 years her debt passes her stake with nothing booked.
+///         Each test runs twice: with the emission reserve empty, and funded before the borrow so
+///         that it is still live at the breach (R > 0), where the read nets it with the other
+///         reserves and the pure staker's own claim carries emission as well as pure yield.
 contract UnbookedLossReadIsALowerBoundTest is Base {
     uint256 internal constant DUST = 1e10;
+    /// @dev The curve releases TOTAL_REWARDS * (1 - 2^-EMISSION_PERIODS) over its 16 years and
+    ///      the funding is R_LEFT above it, so the reserve keeps at least R_LEFT once it ends.
+    uint256 internal constant R_LEFT = 20_000e18;
 
     function _stakeDebt(address u) internal view returns (uint256 s, uint256 d) {
         (s, d, , , , , , , , , , , , ) = staking.getUserInfo(u);
     }
 
-    function _reachUnbookedLoss() internal {
+    function _fundEmissionLeaving(uint256 left) internal {
+        uint256 total = staking.TOTAL_REWARDS();
+        uint256 amount = total - (total >> staking.EMISSION_PERIODS()) + left;
+        vm.prank(admin);
+        staking.fundEmission(amount);
+    }
+
+    function _reachUnbookedLoss(bool funded) internal {
         vm.prank(alice);
         staking.deposit(10_000e18, 90);
         vm.prank(carol);
         staking.deposit(1_000_000e18, 90);
+        if (funded) _fundEmissionLeaving(R_LEFT);
         vm.roll(block.number + 11);
         vm.prank(carol);
         staking.borrow(500_000e18);
@@ -45,7 +59,19 @@ contract UnbookedLossReadIsALowerBoundTest is Base {
     }
 
     function test_OWEDREAD_unbookedLossReadsAsABreachBoundedByTheRealDeficit() public {
-        _reachUnbookedLoss();
+        _reachUnbookedLoss(false);
+        _checkTheBreachReadIsBoundedByTheRealDeficit();
+    }
+
+    /// @dev The same breach with the emission reserve live: the read nets it with the protocol
+    ///      reserve, and once the loss is booked `owed` carries it again.
+    function test_OWEDREAD_liveEmissionReserve_theBreachNetsItWithTheOtherReserves() public {
+        _reachUnbookedLoss(true);
+        assertGe(staking.rewardReserve(), R_LEFT, "setup: the emission reserve is live at the breach");
+        _checkTheBreachReadIsBoundedByTheRealDeficit();
+    }
+
+    function _checkTheBreachReadIsBoundedByTheRealDeficit() internal {
         BlazePhoenixStaking.SolvencyReport memory r = staking.solvency();
         (uint256 cs, uint256 cd) = _stakeDebt(carol);
         (uint256 as_, ) = _stakeDebt(alice);
@@ -73,18 +99,21 @@ contract UnbookedLossReadIsALowerBoundTest is Base {
         vm.prank(keeper);
         staking.liquidate(carol);
         BlazePhoenixStaking.SolvencyReport memory a = staking.solvency();
-        assertGe(a.backing + a.totalBadDebt + DUST, a.owed, "once booked: backing + B >= owed");
+        assertApproxEqAbs(
+            a.owed, a.backing + a.totalBadDebt, DUST, "once booked: owed == backing + B, every reserve included"
+        );
     }
 
     /// @dev The same book, stopped while the loss is still inside what the read nets: past the
     ///      protocol reserve, below the pure stake plus the reserves. That window (~10k wide) is
     ///      narrower than one 10-day slice of interest at the rate cap (~20k), so the clock takes
     ///      10-day steps while the gap is wide and daily steps near it.
-    function _reachApparentSolvency() internal {
+    function _reachApparentSolvency(bool funded) internal {
         vm.prank(alice);
         staking.deposit(10_000e18, 90);
         vm.prank(carol);
         staking.deposit(1_000_000e18, 90);
+        if (funded) _fundEmissionLeaving(R_LEFT);
         vm.roll(block.number + 11);
         vm.prank(carol);
         staking.borrow(500_000e18);
@@ -105,7 +134,20 @@ contract UnbookedLossReadIsALowerBoundTest is Base {
     }
 
     function test_OWEDREAD_documents_anUnbookedLossReadsSolventUntilTheSweepBooksIt() public {
-        _reachApparentSolvency();
+        _reachApparentSolvency(false);
+        _checkTheSweepBooksTheLossAheadOfHerPayment();
+    }
+
+    /// @dev The same book with the emission reserve live: her claim now carries emission too,
+    ///      and the emission settle runs after the booking as well, so it is deferred with the rest.
+    function test_OWEDREAD_documents_liveEmissionReserve_herEmissionIsDeferredToo() public {
+        _reachApparentSolvency(true);
+        assertGe(staking.rewardReserve(), R_LEFT, "setup: the emission reserve is live");
+        assertGt(staking.pendingRewards(alice), DUST, "setup: her claim carries emission");
+        _checkTheSweepBooksTheLossAheadOfHerPayment();
+    }
+
+    function _checkTheSweepBooksTheLossAheadOfHerPayment() internal {
         BlazePhoenixStaking.SolvencyReport memory r = staking.solvency();
         (uint256 cs, uint256 cd) = _stakeDebt(carol);
         (uint256 as_, ) = _stakeDebt(alice);

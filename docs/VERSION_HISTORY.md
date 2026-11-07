@@ -38,7 +38,9 @@ the window still pays at par) and `test/fix1102/SelfCarrierNormalisation.t.sol`,
 mutants. The solvency views now say they are lower bounds (NatSpec only): `owed()`, `solvency()`
 and `isSolvent()` read a loss not yet recorded only in part, and can read solvent with no deficit
 until the borrower window reaches the position (`docs/KNOWN_ISSUES.md`); pinned by
-`test/hardening/UnbookedLossReadIsALowerBound.t.sol`, with a fifteenth mutant.
+`test/hardening/UnbookedLossReadIsALowerBound.t.sol`, with a fifteenth mutant; the same two books
+run again with the emission reserve live at the breach, where the read nets it with the protocol
+reserve and the caller's emission is deferred with her pure yield, with two more mutants.
 Runtime: 24,489 bytes, 87 under the EIP-170 limit (24,299 before).
 
 ## One reading per question (November 2026)

@@ -878,6 +878,17 @@ dict(nome='isSolvent: reads only the recorded loss, not the floored read (OWED-R
       old='    function isSolvent() external view returns (bool) { return !_hardBreach(); }',
       new='    function isSolvent() external view returns (bool) { return totalBadDebt == 0; } // MUTANT',
       teste='test_OWEDREAD_unbookedLossReadsAsABreachBoundedByTheRealDeficit'),
+# ── OWED-READ with the emission reserve live (R > 0 at the breach; test/hardening/UnbookedLossReadIsALowerBound.t.sol)
+dict(nome='_owed: the emission reserve left out of the ledger (OWED-READ, R > 0)',
+     f=F,
+     old='        uint256 ledgerSum = totalStaked + rewardReserve + protocolReserve;\n',
+     new='        uint256 ledgerSum = totalStaked + protocolReserve; // MUTANT\n',
+     teste='test_OWEDREAD_liveEmissionReserve_theBreachNetsItWithTheOtherReserves'),
+dict(nome="claimPureYield: the sweep runs between the emission and the pure-yield settles, so an unbooked loss pays her emission at par (OWED-READ, R > 0)",
+     f=F,
+     old='        _autoMaintain(msg.sender);   // LOSS-FIRST\n        _settlePendingRewards(msg.sender);\n        _settlePendingPureYield(msg.sender);\n        _resync(msg.sender);',
+     new='        _settlePendingRewards(msg.sender);\n        _autoMaintain(msg.sender); // MUTANT\n        _settlePendingPureYield(msg.sender);\n        _resync(msg.sender);',
+     teste='test_OWEDREAD_documents_liveEmissionReserve_herEmissionIsDeferredToo'),
 ]
 CONTRACTS = ("BlazePhoenixStaking",)
 
