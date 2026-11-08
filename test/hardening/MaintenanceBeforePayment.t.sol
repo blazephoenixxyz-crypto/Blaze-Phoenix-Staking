@@ -477,6 +477,16 @@ contract MaintenanceBeforePaymentTest is Base {
     // paid, and the lock window that pays runs after it. Red at 35dc558: carol was paid at par
     // before bob was attributed. `repay` is carried by carol herself, so its window holds bob
     // alone and has no later attribution to order against; it runs the same window.
+    // Dave is a debt-free locker whose lock lapsed with the others: only the lock window settles
+    // him, and it pays him at par, so every carrier below pays a third party and the order is
+    // measured, not vacuous. Without him the six user-carried variants paid nobody but alice.
+
+    function _healthyBookWithAnIdleLocker() internal {
+        _fund(dave);
+        vm.prank(dave);
+        staking.deposit(1_000e18, 90);
+        _healthyBook();
+    }
 
     function _assertNoThirdPartyPaidBeforeTheSweepEnds(address carrier) internal view {
         Vm.Log[] memory logs = vm.getRecordedLogs();
@@ -494,60 +504,61 @@ contract MaintenanceBeforePaymentTest is Base {
             if ((t0 == reward || t0 == pure_) && firstPaid == type(uint256).max) firstPaid = i;
         }
         assertGt(attributed, 1, "setup: the sweep attributed two third parties");
+        assertTrue(firstPaid != type(uint256).max, "setup: a third party was paid at par");
         assertGt(firstPaid, lastAttributed, "a third party was paid at par before the sweep's last attribution");
     }
 
     function test_LOSSFIRST_thirdPartyOrder_deposit() public {
-        _healthyBook();
+        _healthyBookWithAnIdleLocker();
         vm.prank(alice);
         staking.deposit(1e18, 90);
         _assertNoThirdPartyPaidBeforeTheSweepEnds(alice);
     }
 
     function test_LOSSFIRST_thirdPartyOrder_borrow() public {
-        _healthyBook();
+        _healthyBookWithAnIdleLocker();
         vm.prank(alice);
         staking.borrow(1e18);
         _assertNoThirdPartyPaidBeforeTheSweepEnds(alice);
     }
 
     function test_LOSSFIRST_thirdPartyOrder_withdraw() public {
-        _healthyBook();
+        _healthyBookWithAnIdleLocker();
         vm.prank(alice);
         staking.withdraw(1e18);
         _assertNoThirdPartyPaidBeforeTheSweepEnds(alice);
     }
 
     function test_LOSSFIRST_thirdPartyOrder_claimRewards() public {
-        _healthyBook();
+        _healthyBookWithAnIdleLocker();
         vm.prank(alice);
         staking.claimRewards();
         _assertNoThirdPartyPaidBeforeTheSweepEnds(alice);
     }
 
     function test_LOSSFIRST_thirdPartyOrder_claimPureYield() public {
-        _healthyBook();
+        _healthyBookWithAnIdleLocker();
         vm.prank(alice);
         staking.claimPureYield();
         _assertNoThirdPartyPaidBeforeTheSweepEnds(alice);
     }
 
     function test_LOSSFIRST_thirdPartyOrder_lock() public {
-        _healthyBook();
+        _healthyBookWithAnIdleLocker();
         vm.prank(alice);
         staking.lock(365);
         _assertNoThirdPartyPaidBeforeTheSweepEnds(alice);
     }
 
     function test_LOSSFIRST_thirdPartyOrder_pokeExpiredLock() public {
-        _healthyBook();
+        _healthyBookWithAnIdleLocker();
         vm.prank(keeper);
         staking.pokeExpiredLock(alice);
         _assertNoThirdPartyPaidBeforeTheSweepEnds(keeper);
     }
 
     function test_LOSSFIRST_thirdPartyOrder_pokeExpiredLocks() public {
-        _healthyBook();
+        _healthyBookWithAnIdleLocker();
         address[] memory users = new address[](1);
         users[0] = alice;
         vm.prank(keeper);

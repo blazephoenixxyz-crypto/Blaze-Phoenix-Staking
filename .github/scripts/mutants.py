@@ -1249,6 +1249,24 @@ dict(nome="claimPureYield: the sweep runs between the emission and the pure-yiel
       old='        _updateGlobal();\n        if (!ML.rawTransferFrom(bzpx, msg.sender, address(this), amount_)) revert Staking__TransferFailed();\n        totalEmissionFunded += amount_;',
       new='        _updateGlobal();\n        if (!ML.rawTransferFrom(bzpx, msg.sender, address(this), amount_ - 1)) revert Staking__TransferFailed(); // MUTANT\n        totalEmissionFunded += amount_;',
       teste='test_DeployRunFundsTheFullEmission'),
+# J-1109 - assert "a third party was paid at par before the sweep's last attribution" (the lock window pays dave ahead of the borrower window)
+ dict(nome='_autoMaintain: the lock window runs before the borrower window',
+      f=F,
+      old='        _sweepBorrowers(beneficiary, bBudget);\n        _sweepExpiredLocks(beneficiary, lBudget);',
+      new='        _sweepExpiredLocks(beneficiary, lBudget); // MUTANT\n        _sweepBorrowers(beneficiary, bBudget);',
+      teste='test_LOSSFIRST_thirdPartyOrder_'),
+# J-1109 - assert "the stale-weight excess of a borrower is the residue" / "a lock normalised after its unlock returns the boost it drew there"
+ dict(nome='_settlePendingRewards: pays the window at the tracked weight (no P1-C, no LOCK-STALE)',
+      f=F,
+      old='            uint256 paid   = _atLiveWeight(u, u.staked, earned);',
+      new='            uint256 paid   = earned; // MUTANT',
+      teste='test_RESIDUE_'),
+# J-1109 - assert "the treasury received the whole residue" / "with no positions, everything goes to the treasury"
+ dict(nome='sweepUndistributedEmission: sends half the residue and keeps the rest booked',
+      f=F,
+      old='        rewardReserve = 0;\n        if (!ML.rawTransfer(bzpx, treasury, residue)) revert Staking__TransferFailed();',
+      new='        rewardReserve = residue - residue / 2; // MUTANT\n        if (!ML.rawTransfer(bzpx, treasury, residue / 2)) revert Staking__TransferFailed();',
+      teste='test_RESIDUE_theAdminSweepsItWholeToTheTreasury|test_EmptyProgrammeSweepsTheWholeBudgetToTreasury'),
 ]
 # (source file under out/, contract): a mutant in script/ moves Deploy, not the staking contract
 CONTRACTS = (("BlazePhoenixStaking.sol", "BlazePhoenixStaking"), ("Deploy.s.sol", "Deploy"))
