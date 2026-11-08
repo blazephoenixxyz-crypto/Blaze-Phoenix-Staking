@@ -1267,6 +1267,30 @@ dict(nome="claimPureYield: the sweep runs between the emission and the pure-yiel
       old='        rewardReserve = 0;\n        if (!ML.rawTransfer(bzpx, treasury, residue)) revert Staking__TransferFailed();',
       new='        rewardReserve = residue - residue / 2; // MUTANT\n        if (!ML.rawTransfer(bzpx, treasury, residue / 2)) revert Staking__TransferFailed();',
       teste='test_RESIDUE_theAdminSweepsItWholeToTheTreasury|test_EmptyProgrammeSweepsTheWholeBudgetToTreasury'),
+# I-fix 1109 - assert "I7: paid above distributed" (both debts floored: the shrunk sequence pays one wei above the emission)
+ dict(nome='_wadUp: floors both debts (no round-up at the checkpoint)',
+      f=F,
+      old='        return ML.mulDiv(a, b, WAD) + (mulmod(a, b, WAD) == 0 ? 0 : 1);',
+      new='        return ML.mulDiv(a, b, WAD); // MUTANT',
+      teste='test_I7_rewardDebt_shrunkSequencePaysNoMoreThanDistributed'),
+# I-fix 1109 - assert "I7 emission grind: paid above distributed" (only rewardDebt floored; the last exit also reverts TransferFailed on the short balance)
+ dict(nome='_checkpoint: floors rewardDebt only',
+      f=F,
+      old='        u.rewardDebt     = _wadUp(u.trackedBoostedEffective, accRewardPerShare);',
+      new='        u.rewardDebt     = ML.mulDiv(u.trackedBoostedEffective, accRewardPerShare, WAD); // MUTANT',
+      teste='test_I7_lastExit_claimSweepWithdraw_everyPrincipalLeavesWhole|test_I7_rewardDebt_grindingSybilsCannotPayAboveDistributed'),
+# I-fix 1109 - assert "I7 pure grind: paid above distributed" (only pureYieldDebt floored: grinding sybils overdraw the pure channel)
+ dict(nome='_checkpoint: floors pureYieldDebt only',
+      f=F,
+      old='        u.pureYieldDebt  = _wadUp(u.trackedBoostedPure,      accPureYieldPerShare);',
+      new='        u.pureYieldDebt  = ML.mulDiv(u.trackedBoostedPure, accPureYieldPerShare, WAD); // MUTANT',
+      teste='test_I7_pureYieldDebt_grindingSybilsCannotPayAboveDistributed'),
+# I-fix 1109 - assert "I7: rewardDebt rounded an exact product up" (a flat +1 instead of the ceiling)
+ dict(nome='_wadUp: adds one wei even on an exact product',
+      f=F,
+      old='        return ML.mulDiv(a, b, WAD) + (mulmod(a, b, WAD) == 0 ? 0 : 1);',
+      new='        return ML.mulDiv(a, b, WAD) + 1; // MUTANT',
+      teste='test_I7_anExactProductAddsNothing'),
 ]
 # (source file under out/, contract): a mutant in script/ moves Deploy, not the staking contract
 CONTRACTS = (("BlazePhoenixStaking.sol", "BlazePhoenixStaking"), ("Deploy.s.sol", "Deploy"))
