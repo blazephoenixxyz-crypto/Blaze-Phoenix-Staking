@@ -20,11 +20,13 @@ commit where that was measured. A test that never failed has not been shown to d
 ## 2. A curated mutation guard, not mutation coverage
 
 Every guard is paired, by hand, with one **exact** line of source in `.github/scripts/mutants.py`:
-alter that one line and the named test must go red. Three ways a verdict is void, all reported as
+alter that one line and the named test must go red. Four ways a verdict is void, all reported as
 failures rather than skipped:
 
 - the paired test is **already red** at baseline (it is not watching the mutant);
 - the **target line is gone** (`check_targets.py` fails before anything is mutated);
+- the paired test **does not exist**, or the mutated tree **did not compile** (checked before
+  INERT, because a failed build leaves the last artefact in place);
 - the mutant's deployed bytecode is **byte-identical** to pristine (INERT — usually a masked or
   dead branch), flagged separately so it cannot masquerade as a caught mutant.
 
@@ -72,7 +74,9 @@ the refusal is *distance-sensitive*. Reachability is argued per mutant, in the r
 
 - **Boundary equality** — each bound asserted at the bound and one wei past it.
 - **Regime suites** — `test/fix205/` pins the hardening fixes; `test/hunt/` holds the adversarial
-  campaigns (push-side reentrancy, admin surface, attribution lag, exact attribution).
+  campaigns (push-side reentrancy, admin surface, attribution lag, exact attribution);
+  `test/attack/` attacks the emission schedule, the rounding of reward debts and reentrancy
+  through a hook token.
 - **Canonical oracles** — expected values computed by an independent route (closed form,
   geometric series, published literals), never by re-running the code under test.
 - **Metamorphic relations** — equalities between runs that differ only in a parameter that must not

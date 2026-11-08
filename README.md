@@ -81,9 +81,9 @@ the site's [/solvency](https://blazephoenix.xyz/solvency) page). The BZPX token 
 independent external audit has not happened yet and is planned before launch.
 
 What already runs on every push: the Foundry suite (build, tests, EIP-170 size
-gate) plus a **real-EVM Node harness of 9 suites**. The bounty programme shared with the DEX
-has triaged **21 external reports — every confirmed finding fixed with
-regression tests, zero Critical**. Details: [`SECURITY.md`](./SECURITY.md).
+gate) plus a **real-EVM Node harness of 9 suites**. Every confirmed finding is fixed in public,
+red-first: it becomes a failing test before the fix is written, and each new guard ships with a
+mutant in `.github/scripts/mutants.py` that the suite must catch. Details: [`SECURITY.md`](./SECURITY.md).
 
 ## 1. The Master Conservation Identity (the "supreme" equation)
 
@@ -157,7 +157,9 @@ totalUncollectedInterest`. A wallet, dashboard, or watchdog can read it in a sin
 
 There is **no keeper requirement and no governance knob**. Every ordinary user transaction
 (`deposit / borrow / repay / withdraw / claimRewards / claimPureYield / lock / pokeExpiredLock`)
-ends by calling `_autoMaintain`, which drives **two** rotating windows:
+calls `_autoMaintain` right after the global update and before it settles its caller, so every
+loss the transaction books precedes any payment at par (LOSS-FIRST). It drives **two** rotating
+windows:
 
 **Window 1 — the borrower registry (solvency).** Walks `_borrowers` from a persistent cursor,
 **liquidates** anything underwater (seizure surplus to whoever carried the gas), and otherwise
@@ -178,7 +180,7 @@ on-chain state*, no admin input:
 scan = clamp( MAINT_BASE
             + entries / MAINT_DENSITY              // more entries    -> wider scan
             + secondsSinceLastSweep / MAINT_GAP_UNIT,  // longer idle  -> wider scan
-            0, MAINT_MAX_SCAN )                    // hard per-tx ceiling -> bounded gas
+            0, min(MAINT_MAX_SCAN, entries) )      // hard per-tx ceiling -> bounded gas
 ```
 
 A locker *probe* is cheap (two slots) but normalising a position is not, so the two are budgeted
@@ -246,13 +248,18 @@ with `lockInfoOf(user)` (its `unlockTime` gives the time left), `maxLockDaysAvai
 - **Single-writer boost accounting** (`_applyBoost`): the *only* writer of the boosted-total
   denominators. Plain checked subtraction means any desync reverts instead of corrupting state.
   Even the emergency hatch funnels through it — no ghost shares.
-- **Zero backdoor:** no admin sweep of principal; reserve withdrawals go *only* to an **immutable
-  treasury**, with no caller-chosen destination.
+- **Zero backdoor:** no admin sweep of principal; reserve withdrawals (`withdrawReserve`, bounded
+  by `protocolReserve`) and the post-close emission residue (`sweepUndistributedEmission`) go
+  *only* to an **immutable treasury**, with no caller-chosen destination.
 - **Pull-only emergency:** `emergencyWithdraw()` returns your net equity (`staked − debt`) and
   closes the position; unpaid emission and pure yield are forfeited, and in a breached emergency the
   payout is scaled pro rata to what the contract holds. It is *not* conservation-guarded, so it
   works even in a breached state.
 - **CEI settlement:** reward/yield debt is written **before** the token transfer.
+- **Debts round up (I7):** at every checkpoint `rewardDebt` and `pureYieldDebt` are written as the
+  ceiling of `weight × accumulator / 1e18` (an exact product adds nothing), so each constant-weight
+  segment pays `floor(w·A1) − ceil(w·A0) ≤ w·(A1 − A0)` and the sum paid never passes the sum
+  distributed, dust weights included.
 - **Deterministic emission:** empty-pool intervals advance the clock (emission stays in reserve),
   so a latecomer can never capture an accumulated backlog.
 - **Flash-loan guard:** `MIN_DEPOSIT_BLOCKS` between deposit and withdraw/claim/lock.
@@ -264,8 +271,8 @@ with `lockInfoOf(user)` (its `unlockTime` gives the time left), `maxLockDaysAvai
 
 BZPX is assumed to be a **standard, well-behaved ERC-20**: no receiver blacklist/freeze, no
 fee-on-transfer or rebasing (the conservation identity needs `amount sent == amount received`),
-and no transfer pause that can trap the protocol. Transfer hooks are tolerated (every entry-point
-is `nonReentrant`). These hold by construction for BZPX; they are listed as explicit invariants for
+and no transfer pause that can trap the protocol. Transfer hooks are tolerated (every entry point that
+transfers tokens is `nonReentrant`, and `maintStep` / `lockStep` accept only the contract itself). These hold by construction for BZPX; they are listed as explicit invariants for
 any fork against a different asset.
 
 ---
@@ -323,9 +330,9 @@ Three things about how it is used matter more than the formula itself:
 
 The programme closes after 2 periods (10 years) at exactly `TOTAL_REWARDS` = 90M, with no tail:
 the rate steps from 12M/year to 6M/year at year 5 and from 6M/year to zero at year 10, and from
-there real yield (borrow interest, plus the DEX fee-share routed to the reserve) carries on.
-Anything stranded by empty or throttled windows is recoverable **only** to the immutable treasury
-and only after the close.
+there real yield (borrow interest) carries on. Anything stranded by empty or throttled windows is
+recoverable **only** to the immutable treasury, only after the close, and only through the admin's
+`sweepUndistributedEmission()`, which is refused when the book would read a hard breach after it.
 
 Why halving rather than the linear schedule it replaces: a flat curve ends on a date at its full
 rate, and the capital that came for emission leaves on that date, all at once. Over the same ten
@@ -379,7 +386,7 @@ Findings are disclosed responsibly, reproduced on our side and triaged against t
 invariant suite. Technical detail stays in the verified source and our private records, never on
 a credits page. Thank you to the researchers who read the source and told us privately:
 
-Ezeek33 · Mohaseen · BabaYagaLeet · Karan Rathod · duxun · [NetGakarot](https://github.com/NetGakarot) · [amitbhakar](https://github.com/amitbhakar) · llen · [AmanDara1](https://github.com/AmanDara1) · [Binod Bk](https://github.com/Binodbk) · momonom207 · Tarun Pardeshi · [eveeyrp](https://x.com/eveeyRP) · [siam siddik](https://github.com/siamdiddik) · Fauzi Susanto · Ibnu76 · Makino Ken · [destinyae](https://x.com/0xDestinyae) · Anonymous · Mohd Huzaifa · superagent · sus1lo · Amir · Charan · acit aja · Ashish · Josh W · M2000 Slash · 0xkonde · Cico Agung · [Fersdoven Josua](https://github.com/saptoji) · [sbekk](https://x.com/boyygantemk) · rety6363 · Marcin Sikora · Akira Nakao · Borutobro · Tuan Berdasi · [OxHulk](https://x.com/OxHulk) · oncodewa · Jo arsy · Mansor · Yudha Eka Saputra · Raditya · [BK001](https://github.com/CHARIRAbdelhamid) · Brian Wahyu · budi · ALZEA · [Pavan Baile](https://www.linkedin.com/in/pavan-baile-0bb596244) · Widya Kuya · Ricki Ariadi · biasaajash · Bandreg · polabears · Danu Fandiyana (anmxx) · PapaCZ · WANZ · TOT · fortworun · KHIKHI · Garin · Luis_MZ · Agis Apriansyah · Joko
+Ezeek33 · Mohaseen · BabaYagaLeet · Karan Rathod · duxun · [NetGakarot](https://github.com/NetGakarot) · [amitbhakar](https://github.com/amitbhakar) · llen · [AmanDara1](https://github.com/AmanDara1) · [Binod Bk](https://github.com/Binodbk) · momonom207 · Tarun Pardeshi · [eveeyrp](https://x.com/eveeyRP) · [siam siddik](https://github.com/siamdiddik) · Fauzi Susanto · Ibnu76 · Makino Ken · [destinyae](https://x.com/0xDestinyae) · Anonymous · Mohd Huzaifa · superagent · sus1lo · Amir · Charan · acit aja · Ashish · Josh W · M2000 Slash · 0xkonde · Cico Agung · [Fersdoven Josua](https://github.com/saptoji) · [sbekk](https://x.com/boyygantemk) · rety6363 · Marcin Sikora · Akira Nakao · Borutobro · Tuan Berdasi · [OxHulk](https://x.com/OxHulk) · oncodewa · Jo arsy · Mansor · Yudha Eka Saputra · Raditya · [BK001](https://github.com/CHARIRAbdelhamid) · Brian Wahyu · budi · ALZEA · [Pavan Baile](https://www.linkedin.com/in/pavan-baile-0bb596244) · Widya Kuya · Ricki Ariadi · biasaajash · Bandreg · polabears · Danu Fandiyana (anmxx) · PapaCZ · WANZ · TOT · fortworun · KHIKHI · Garin · Luis_MZ · Agis Apriansyah · Joko · auditor_1b3f2c · Thomas · bai bo
 
 Please email **contact@blazephoenix.xyz** with your GitHub handle to be credited under the
 [bounty programme](./SECURITY.md).

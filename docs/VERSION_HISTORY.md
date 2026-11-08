@@ -19,6 +19,31 @@ from v1 re-added.
 
 ---
 
+## Reward debts round up; attack suite (November 2026)
+
+No ABI change. `_checkpoint` now rounds `rewardDebt` and `pureYieldDebt` up (`_wadUp`), in the
+protocol's favour. A floored debt handed the position the dropped fraction (< 1 wei) at every
+resync, and with a dust denominator the accumulator's own floor left nothing to absorb it. Rounded
+up, each constant-weight segment pays floor(w·A1) − ceil(w·A0) ≤ w·(A1 − A0), so the sum paid in a
+window stays within the sum distributed. Pinned by `test/attack/DebtRoundsUp.t.sol` (eight tests,
+red at `1f54743` with the debts floored; one of them pins that an exact product is not bumped),
+with four mutants; the register row is in `SHARED_QUANTITIES.md`.
+
+The same round adds `test/attack/`: `EmissionAttack.t.sol` (eleven tests),
+`EmissionShareInvariant.t.sol` (two) and `HookTokenReentrancy.t.sol` (a hook token that re-enters
+every external door of the contract from inside its transfer), and
+`test/hardening/EmissionResidueOrigin.t.sol` (six tests: where the emission left in `rewardReserve`
+comes from, and that only the admin's `sweepUndistributedEmission` reaches it, only to the treasury,
+only after the close). The deploy script funds its own amount, pinned to the deployed
+`TOTAL_REWARDS()`, and any difference fails the run in simulation (`test/DeployEmissionPin.t.sol`,
+five tests, four mutants). A further mutant pins the keeper bonus of a seizure to the seized
+equity. The mutation harness reports a mutant whose tree does not compile as a void verdict, never
+as INERT. The 90M schedule is described under v4 below; the solvency views read as lower bounds
+under the next entry.
+
+Measured in CI on the merge of pull request #32: 427 Foundry tests green, 235 mutant targets found
+by `check_targets.py`, runtime 24,538 bytes, 38 under the EIP-170 limit of 24,576.
+
 ## Losses before payments inside the sweep (November 2026)
 
 No ABI change. LOSS-FIRST put every loss the maintenance sweep books ahead of the caller's own

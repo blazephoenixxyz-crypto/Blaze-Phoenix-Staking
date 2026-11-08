@@ -48,7 +48,9 @@ the `FullSurfaceConservationTest` walk (see below).
 | `test/*.t.sol` | unit, boundary, metamorphic and parity tests — named for the property each pins |
 | `test/fix205/` | regression tests for the hardening fixes (views quote == execution, dust denominator, interest attribution, emergency and exit) |
 | `test/hunt/` | adversarial campaigns: push-side reentrancy, admin surface, attribution lag, exact attribution |
-| `test/assurance/` | literal oracles: the emission delivery index and the constants no other test pinned by value |
+| `test/assurance/` | literal oracles: the emission delivery index, the emission schedule, event payloads, the pause regime and the constants no other test pinned by value |
+| `test/fix1027/`, `test/fix1102/`, `test/hardening/` | regression tests for later fixes, one file per property: stale weights and denominators, commitment pricing, the maintenance sweep booking every loss before it pays, solvency reads, the emission residue |
+| `test/attack/` | adversarial suite: emission (curve, funding, timing, privilege), a stateful fair-share invariant, ERC777-style hook reentrancy, and the reward-debt rounding (`DebtRoundsUp.t.sol`) |
 | `test/InvariantsFullSurface.t.sol` | the stateful campaign (`FullSurfaceHandler` + `InvariantsFullSurfaceTest`) **and** the fixed-order conservation walk (`FullSurfaceConservationTest`) |
 | `test/GuardWatchers.t.sol` | watchers for refusal selectors no other test named |
 | `test/formal/` | Halmos specification for the MathLib primitives (report-only) |
@@ -81,9 +83,11 @@ this fail?* Three things every test carries:
 ## What the suite is measured by
 
 - **The mutation guard** — curated mutants in `.github/scripts/mutants.py`, each pairing one exact
-  line of source with the one test that must go red once that line is altered. Three ways a
+  line of source with the one test that must go red once that line is altered. Four ways a
   verdict is void and reported as a failure: the paired test is already red at baseline; the
-  target line is gone; the deployed bytecode is byte-identical to pristine (INERT).
+  target line is gone; the paired test does not exist or the mutated tree does not compile
+  (checked before INERT, because a failed build leaves the last artefact in place); the deployed
+  bytecode is byte-identical to pristine (INERT).
 - **The shared-quantity register** — each row states the question a multi-producer quantity
   answers and the named test that binds it (`SHARED_QUANTITIES.md`). The check fails a `PINNED` row
   whose test file is missing or never names the quantity.

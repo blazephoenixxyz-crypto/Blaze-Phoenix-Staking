@@ -172,10 +172,11 @@ Every row is tagged `[conferido]`: the expression was read at that line.
 | 74 | 1893, 1912 | `mulDiv(tracked, acc, WAD)` in the quotes | `W · (WAD/W) / WAD` → wei | consistent [conferido] |
 | 75 | 1259-1260 | excess weight `tracked − computed` | W | consistent [conferido] |
 | 76 | `_postUnlockAtBase` (after `cedd80d`) | `mulDiv(amount, w·(xu − x0) + base·(x1 − xu), tracked·(x1 − x0))` | `wei · (W·x) / (W·x)` → wei, for either clock `x`: `wei` on the emission curve (`_emittedAt`), `s` for pure yield; numerator and denominator carry the same `x`, so the split is a pure fraction of `amount` | consistent [conferido] |
+| 77 | `_wadUp` (after `cedd80d`) | `mulDiv(a, b, WAD) + (mulmod(a, b, WAD) == 0 ? 0 : 1)`, written by `_checkpoint` into rewardDebt / pureYieldDebt | `W · (WAD/W) / WAD` → wei, plus 0 or 1 wei (the ceiling) → wei; compared with the same floored product as row 34 | consistent [conferido] |
 
 ## Result
 
-76 expression rows, 0 dimensional inconsistencies. The per-share accumulators divide `wei` by a
+77 expression rows, 0 dimensional inconsistencies. The per-share accumulators divide `wei` by a
 boosted weight `W` (rows 29, 45) and multiply back by the same `W` class at settlement (row 34), so
 the boost scale cancels; the interest index is a WAD-scaled pure number per unit of debt (rows 36,
 39, 41, 47) and every consumer multiplies it by a debt in `wei` and divides by WAD (rows 37, 48).

@@ -63,6 +63,16 @@ rules, scope and awards are in [`SECURITY.md`](../SECURITY.md) and at
   rate. Measured with 9.9M BZPX borrowed against 21M staked, over one year: 331,650.00 BZPX of
   interest with no transaction in between, 333,730.36 BZPX with one a day. Documented in
   `docs/INVARIANTS_AND_TIME.md` (R1) and `test/fix1102/InterestStaleWeight.t.sol`.
+- **Emission a window does not release is not handed to later windows.** Each window releases
+  only the delta of the emission curve over that window (`_windowReward`), damped while the boosted
+  weight is below `MIN_EMISSION_WEIGHT` and capped by `rewardReserve`. A window with no weight, or
+  one inside an emergency, releases nothing and the clock moves on. What is not released stays in
+  `rewardReserve`; after `emissionEnd` only the admin can move it, only to the treasury, with
+  `sweepUndistributedEmission`, which first settles everything still payable and is refused in an
+  emergency or when the book would read a hard breach after it. Documented in
+  `src/BlazePhoenixStaking.sol` (`_updateGlobal`, `_windowReward`, `sweepUndistributedEmission`),
+  `README.md` (section 4 and Emission), `docs/WHITEPAPER.md` (section 6.2) and
+  `test/hardening/EmissionResidueOrigin.t.sol`.
 
 ## Accepted and documented limits
 
