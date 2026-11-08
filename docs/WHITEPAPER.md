@@ -814,7 +814,8 @@ The protocol is tested by two complementary suites:
   B1 uses only the v3.0.0 ABI, so it runs verbatim against the vulnerable contract and fails there
   on the reported divergence itself (idle:active yield ratio 1.25× and a 2.25M denominator, against
   the corrected 1.00× and 2.0M) rather than on a missing function.
-- **7 invariants** under random action sequences (256 runs × 128,000 calls each):
+- **7 invariants** under random action sequences (Foundry's invariant runner, with the
+  configuration in `foundry.toml`):
   - `invariant_solvent` — `isSolvent()` always true
   - `invariant_conservationBit` — bit 0 of `auditInvariants()` never set
   - `invariant_boostBounded` — boosted denominators never exceed `stake × maxBoost / base`
@@ -825,8 +826,8 @@ The protocol is tested by two complementary suites:
   - `invariant_staleBoostExcessIsBounded` — transiently stale weight stays inside the
     `stake × maxBoost` envelope
 
-**Result: 330/330 JS checks pass (80 integrity + 76 adversarial + 174 lock-expiry).** The Foundry
-suite is run where Foundry is available; it is not installable in the offline sandbox.
+**Result:** on the merge of pull request #32 the Foundry suite ran 427 tests green in CI, and the
+nine real-EVM suites of 9.1 gate the same build.
 
 ---
 

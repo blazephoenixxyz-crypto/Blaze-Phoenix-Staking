@@ -1,6 +1,6 @@
 # Invariants in systems that carry time
 
-*An engineering report drawn from the BlazePhoenix Staking findings — what the seven disclosed
+*An engineering report drawn from the BlazePhoenix Staking findings — what the disclosed
 defects had in common, why the protocol's own guards could not see any of them, and the rules
 that fall out of that.*
 
@@ -23,7 +23,7 @@ That sentence is the whole report. Everything below is evidence for it and conse
 
 ## 2. The evidence
 
-Seven defects were found in this protocol. Every single one of them left the books balanced.
+The defects disclosed in this protocol are listed below. All but one left the books balanced.
 
 | Finding | What it broke | Conservation broken? |
 |---|---|---|
@@ -44,7 +44,7 @@ emergency halt, a reserve that ran dry, a book that moved) the position's own pa
 approximate too, between its 1.00x share and its lapsed share. Both residues are accepted limits,
 measured in `docs/KNOWN_ISSUES.md`.
 
-Six out of seven were **pure redistribution**. Value moved between participants and the totals
+All but one were **pure redistribution**. Value moved between participants and the totals
 never changed. The protocol's `conserves` guard checks that the change in the real balance equals
 the change in what the ledger claims to owe — and a redistribution is delta-neutral on both sides.
 
@@ -173,7 +173,7 @@ Value and time are two axes. A deployed contract lives in more.
 | # | Dimension | The question | What we found |
 |---|---|---|---|
 | 1 | **Value conservation** | Does the money add up? | Already sealed. Residual measured at exactly 0 wei across four decades of capital scale. |
-| 2 | **Time trajectory** | When was it earned, and who was present? | Six of seven findings lived here. |
+| 2 | **Time trajectory** | When was it earned, and who was present? | Every disclosed finding but one lived here. |
 | 3 | **Liveness** | Can it be frozen or deadlocked? | Held. Runaway rates saturate; a poisoned position cannot stall a third party; sweeps stay bounded. |
 | 4 | **Privilege** | Can authority drain it? | Held. Asking for `uint256.max` returns protocol revenue and nothing of principal. No redirect, rescue or upgrade entry point exists. |
 | 5 | **Incentives** | Is anyone paid to keep it clean? | Held. An untended leveraged book self-cleans through ordinary traffic, no keeper asked. |

@@ -40,10 +40,9 @@ that reaches an insolvent state is the highest-value finding possible here.
 
 But conservation is only half the model, and the more interesting half is the
 other one. A ledger can balance to the wei on every block and still hand the
-wrong person the money. Six of the seven defects previously found in this
-protocol were **pure redistribution** — the totals never changed, and the
-conservation guard was working perfectly the entire time while measuring the
-wrong dimension. Reports are therefore especially valuable when they demonstrate:
+wrong person the money. A **pure redistribution** leaves the totals unchanged:
+the conservation guard keeps working perfectly while measuring the wrong
+dimension. Reports are therefore especially valuable when they demonstrate:
 
 - **Wrong recipient** — a participant earning from a window they were absent for
   (just-in-time capture), or holding weight from a commitment that has already
@@ -79,7 +78,7 @@ in [`README.md`](./README.md), with your consent and under the name or handle yo
 choose. Credit is given for the finding, the root-cause analysis, and the
 remediation reasoning where they came from you — attribution is not rounded down.
 
-## Verification pipeline and track record
+## Verification pipeline
 
 An independent external audit has not happened yet; it is planned before
 launch. What runs on every push, today, in public CI: the Foundry suite
@@ -88,11 +87,10 @@ Solvency is enforced per-transaction on-chain — every value-moving call proves
 the conservation identity or reverts — and is publicly readable at any time
 via `isSolvent()` or https://blazephoenix.xyz/solvency
 
-Track record so far, across this repo and the DEX sibling: **21 external
-reports triaged (8 public + 13 private), every confirmed finding fixed with
-regression tests, zero Critical.** Three HIGHs against this contract were
-confirmed and closed in public, red-first: the finding becomes a failing CI
-test before the fix is written. Credits live in the Security Hall of Fame.
+Every confirmed finding is fixed in public, red-first: the finding becomes a
+failing CI test before the fix is written, and each new guard ships with a
+mutant in `.github/scripts/mutants.py` that the suite must catch (see
+[`CONTRIBUTING.md`](./CONTRIBUTING.md)). Credits live in the Security Hall of Fame.
 
 ## Bounty programme
 

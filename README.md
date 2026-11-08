@@ -81,9 +81,9 @@ the site's [/solvency](https://blazephoenix.xyz/solvency) page). The BZPX token 
 independent external audit has not happened yet and is planned before launch.
 
 What already runs on every push: the Foundry suite (build, tests, EIP-170 size
-gate) plus a **real-EVM Node harness of 9 suites**. The bounty programme shared with the DEX
-has triaged **21 external reports — every confirmed finding fixed with
-regression tests, zero Critical**. Details: [`SECURITY.md`](./SECURITY.md).
+gate) plus a **real-EVM Node harness of 9 suites**. Every confirmed finding is fixed in public,
+red-first: it becomes a failing test before the fix is written, and each new guard ships with a
+mutant in `.github/scripts/mutants.py` that the suite must catch. Details: [`SECURITY.md`](./SECURITY.md).
 
 ## 1. The Master Conservation Identity (the "supreme" equation)
 
@@ -157,7 +157,9 @@ totalUncollectedInterest`. A wallet, dashboard, or watchdog can read it in a sin
 
 There is **no keeper requirement and no governance knob**. Every ordinary user transaction
 (`deposit / borrow / repay / withdraw / claimRewards / claimPureYield / lock / pokeExpiredLock`)
-ends by calling `_autoMaintain`, which drives **two** rotating windows:
+calls `_autoMaintain` right after the global update and before it settles its caller, so every
+loss the transaction books precedes any payment at par (LOSS-FIRST). It drives **two** rotating
+windows:
 
 **Window 1 — the borrower registry (solvency).** Walks `_borrowers` from a persistent cursor,
 **liquidates** anything underwater (seizure surplus to whoever carried the gas), and otherwise
@@ -178,7 +180,7 @@ on-chain state*, no admin input:
 scan = clamp( MAINT_BASE
             + entries / MAINT_DENSITY              // more entries    -> wider scan
             + secondsSinceLastSweep / MAINT_GAP_UNIT,  // longer idle  -> wider scan
-            0, MAINT_MAX_SCAN )                    // hard per-tx ceiling -> bounded gas
+            0, min(MAINT_MAX_SCAN, entries) )      // hard per-tx ceiling -> bounded gas
 ```
 
 A locker *probe* is cheap (two slots) but normalising a position is not, so the two are budgeted
@@ -384,7 +386,7 @@ Findings are disclosed responsibly, reproduced on our side and triaged against t
 invariant suite. Technical detail stays in the verified source and our private records, never on
 a credits page. Thank you to the researchers who read the source and told us privately:
 
-Ezeek33 · Mohaseen · BabaYagaLeet · Karan Rathod · duxun · [NetGakarot](https://github.com/NetGakarot) · [amitbhakar](https://github.com/amitbhakar) · llen · [AmanDara1](https://github.com/AmanDara1) · [Binod Bk](https://github.com/Binodbk) · momonom207 · Tarun Pardeshi · [eveeyrp](https://x.com/eveeyRP) · [siam siddik](https://github.com/siamdiddik) · Fauzi Susanto · Ibnu76 · Makino Ken · [destinyae](https://x.com/0xDestinyae) · Anonymous · Mohd Huzaifa · superagent · sus1lo · Amir · Charan · acit aja · Ashish · Josh W · M2000 Slash · 0xkonde · Cico Agung · [Fersdoven Josua](https://github.com/saptoji) · [sbekk](https://x.com/boyygantemk) · rety6363 · Marcin Sikora · Akira Nakao · Borutobro · Tuan Berdasi · [OxHulk](https://x.com/OxHulk) · oncodewa · Jo arsy · Mansor · Yudha Eka Saputra · Raditya · [BK001](https://github.com/CHARIRAbdelhamid) · Brian Wahyu · budi · ALZEA · [Pavan Baile](https://www.linkedin.com/in/pavan-baile-0bb596244) · Widya Kuya · Ricki Ariadi · biasaajash · Bandreg · polabears · Danu Fandiyana (anmxx) · PapaCZ · WANZ · TOT · fortworun · KHIKHI · Garin · Luis_MZ · Agis Apriansyah · Joko
+Ezeek33 · Mohaseen · BabaYagaLeet · Karan Rathod · duxun · [NetGakarot](https://github.com/NetGakarot) · [amitbhakar](https://github.com/amitbhakar) · llen · [AmanDara1](https://github.com/AmanDara1) · [Binod Bk](https://github.com/Binodbk) · momonom207 · Tarun Pardeshi · [eveeyrp](https://x.com/eveeyRP) · [siam siddik](https://github.com/siamdiddik) · Fauzi Susanto · Ibnu76 · Makino Ken · [destinyae](https://x.com/0xDestinyae) · Anonymous · Mohd Huzaifa · superagent · sus1lo · Amir · Charan · acit aja · Ashish · Josh W · M2000 Slash · 0xkonde · Cico Agung · [Fersdoven Josua](https://github.com/saptoji) · [sbekk](https://x.com/boyygantemk) · rety6363 · Marcin Sikora · Akira Nakao · Borutobro · Tuan Berdasi · [OxHulk](https://x.com/OxHulk) · oncodewa · Jo arsy · Mansor · Yudha Eka Saputra · Raditya · [BK001](https://github.com/CHARIRAbdelhamid) · Brian Wahyu · budi · ALZEA · [Pavan Baile](https://www.linkedin.com/in/pavan-baile-0bb596244) · Widya Kuya · Ricki Ariadi · biasaajash · Bandreg · polabears · Danu Fandiyana (anmxx) · PapaCZ · WANZ · TOT · fortworun · KHIKHI · Garin · Luis_MZ · Agis Apriansyah · Joko · auditor_1b3f2c · Thomas · bai bo
 
 Please email **contact@blazephoenix.xyz** with your GitHub handle to be credited under the
 [bounty programme](./SECURITY.md).
