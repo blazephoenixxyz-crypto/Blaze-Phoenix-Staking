@@ -244,7 +244,7 @@ be faults in how they were measured. Not one of them survived investigation.
 An AMM or a swap lives in the instant. A transaction opens and closes; the state carries no
 history. A defect has a window measured in blocks and its blast radius is local.
 
-A system like this one **accounts for time as if it were mass**. A seven-year emission schedule.
+A system like this one **accounts for time as if it were mass**. A ten-year emission schedule.
 Locks from ninety days to seven years. Interest integrating across decades. Every invariant that
 depends on the clock carries a value nobody can observe directly — it becomes visible only when
 somebody touches the position, and by then the error has been compounding.
@@ -298,7 +298,7 @@ reliable predictor of where the next bug lives is the dimension nobody has named
 
 ## 10. Postscript — v4 applies §3 to its own emission
 
-v4 replaced the flat emission rate with a biennial-halving curve, which made `rate(s)`
+v4 replaced the flat emission rate with a five-year-halving curve, which made `rate(s)`
 time-varying for the first time. The rectangle approximation of §3 —
 `rate(t₁) · (t₁ − t₀)` — would now be a live instance of the *retroactive re-pricing* family:
 a window crossing a halving boundary would be paid entirely at whichever period's rate the

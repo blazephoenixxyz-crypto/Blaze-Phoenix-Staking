@@ -11,13 +11,49 @@ between them.
 | v2 | `2.1.0` | `2.0.0-staking` | Security core: on-chain conservation guard, permissionless liquidation, no backdoor |
 | v3 | `3.0.0` | `3.0.0-staking` | v2 core **+** fully autonomous maintenance **+** public solvency proofs |
 | v3.1 | `3.1.0` | `3.0.0-staking` | v3 **+** lock expiry priced against the clock **+** the locker maintenance window |
-| **v4 (final)** | **`4.0.0`** | **`3.0.0-staking`** | v3.1 **+** final tokenomics: 180M biennial-halving emission, closed-form O(1) |
+| **v4 (final)** | **`4.0.0`** | **`3.0.0-staking`** | v3.1 **+** final tokenomics: 90M five-year-halving emission, closed-form O(1) |
 | **v4 hardened** | **`4.0.0`** | **`3.0.0-staking`** | v4 **+** terminal-distress round: floor-free `conserves`, index-coupled clamp, 75% aggregate util cap, pro-rata emergency haircut, honest telemetry |
 
 v3 = **v2 base**, with the two requested additions and the useful UX views that v2 had dropped
 from v1 re-added.
 
 ---
+
+## Losses before payments inside the sweep (November 2026)
+
+No ABI change. LOSS-FIRST put every loss the maintenance sweep books ahead of the caller's own
+payments, but not ahead of the sweep's own. The borrower window paid each position it settled as
+it went, so a position settled early in the window was paid out of a pot that a later step of the
+same window left short; the lock window, which runs after it, could pay one position and then
+attribute a lapsed borrower's loss; and the caller's own interest was attributed only after the
+sweep had paid. Now the caller's interest, and that of the positions `pokeExpiredLock` and
+`pokeExpiredLocks` name, is attributed before anything is paid; the borrower window credits what
+it settles (`_rewardDeferred`, paid by the position's next settlement outside the window); and the
+lock window acts on a lapsed borrower only once its interest is attributed. The keeper bonus of a
+seizure is still paid inside the window (`docs/KNOWN_ISSUES.md`). Pinned by
+`test/hardening/MaintenanceBeforePayment.t.sol` (seventeen tests, red at `35dc558`; two replay one
+transaction in every order of the borrower registry and of the batch, and each user is paid the
+same in all of them; an eighteenth documents the keeper bonus, capped at the seized equity, that
+the window still pays at par) and `test/fix1102/SelfCarrierNormalisation.t.sol`, with fourteen
+mutants. The solvency views now say they are lower bounds (NatSpec only): `owed()`, `solvency()`
+and `isSolvent()` read a loss not yet recorded only in part, and can read solvent with no deficit
+until the borrower window reaches the position (`docs/KNOWN_ISSUES.md`); pinned by
+`test/hardening/UnbookedLossReadIsALowerBound.t.sol`, with a fifteenth mutant; the same two books
+run again with the emission reserve live at the breach, where the read nets it with the protocol
+reserve and the caller's emission is deferred with her pure yield, with two more mutants.
+Runtime: 24,489 bytes, 87 under the EIP-170 limit (24,299 before).
+
+## One reading per question (November 2026)
+
+No ABI change, no behaviour change. Three readings that each view wrote for itself are now one
+primitive each, the view being the only coordinate: the page of the locker registry
+(`_lockerPage`, read by `getLockers` and `expiredLockScan`), the elapsed commitment on record
+(`_lockElapsed`, read by `lockInfoOf`, `hasStaleBoost` and `expiredLockScan`) and backing over owed
+(`solvency()` reports `collateralRatio()`). `_processLockExpiry` keeps its own trigger: the views
+read the class, the processor acts on it, and a test pins the two equal
+(`test/hardening/MorphismParity.t.sol`, three tests, five mutants). The full suite gives the same
+verdict on every test before and after. Runtime: 24,299 bytes, 277 under the EIP-170 limit
+(24,545 before).
 
 ## Lapsed locks earn 1.00x from `unlockTime` (November 2026)
 
@@ -105,27 +141,35 @@ for the rounding-dust path. Foundry 57/57 across 10 suites; Node harness 9/9 sui
 
 ---
 
-## v4 — final tokenomics: the biennial-halving emission curve
+## v4 — final tokenomics: the five-year-halving emission curve
 
-The only economic change: the schedule moves from **180M linear over 7 years** to **180M on a
-biennial-halving curve** — period `p` (0-indexed, 2 years each) emits `90M >> p`, so
-Σ 90M/2ᵖ = 180M exactly by construction. Chosen over the linear schedule because a flat curve
-ends in a cliff (documented mercenary-capital exodus at linear ends), while the geometric tail
-fades into the real-yield regime (borrow interest + DEX fee-share) with no magic date.
+The only economic change: the schedule moves from **180M linear over 7 years** to **90M on a
+five-year-halving curve** — period `p` (0-indexed, 5 years each) emits `60M >> p` over 2 periods:
+12M/year in years 1–5 (60M), 6M/year in years 6–10 (30M), 90M exactly. The curve is cut from the
+series S = 120M, and `S − (S >> 2) = 90M = TOTAL_REWARDS` by construction. Chosen over the
+linear schedule because a flat curve ends in a cliff at its full rate (documented
+mercenary-capital exodus at linear ends): over the same ten years a flat schedule would close on
+a 9M/year step, the two five-year periods close on 6M/year, and from there the real-yield regime
+(borrow interest + DEX fee-share) carries on.
+
+Revised 2026-11-06, before launch and with `VERSION` unchanged: the first v4 cut emitted 180M on
+a biennial halving (8 two-year periods, 16 years, a 180M >> 8 = 703,125 BZPX tail the schedule
+never emitted). The budget moved to 90M over 10 years; the closed form now reads a series
+constant of its own (`HALVING_SERIES` = 120M) instead of the budget, and the accumulator and the
+sweep are unchanged.
 
 Mechanics:
 
 - Cumulative emission is **closed-form O(1)** — one division, two shifts, one multiplication;
   no loop, no oracle, no exp/log:
-  `emitted(t) = (TOTAL − (TOTAL >> p)) + (R0 >> p)·(t − start − p·PERIOD)`, `p = ⌊(t−start)/PERIOD⌋`.
+  `emitted(t) = (S − (S >> p)) + (R0 >> p)·(t − start − p·PERIOD)`, `p = ⌊(t−start)/PERIOD⌋`.
 - `_updateGlobal` integrates the **delta** of that curve per window, replacing the flat
   `REWARD_PER_SEC × elapsed` term. Everything else in the accumulator is untouched.
-- The programme **hard-closes after 8 periods (16 years)**: 255/256 of the budget
-  (179,296,875 BZPX) emitted, running rate < 0.8% of initial — a fade, not a cliff. The exact
-  `180M >> 8 = 703,125 BZPX` residue is recoverable via the pre-existing
+- The programme **hard-closes after 2 periods (10 years)** at exactly `TOTAL_REWARDS` = 90M,
+  with no tail; anything stranded by empty windows is recoverable via the pre-existing
   `sweepUndistributedEmission`, pro-protocol.
 - Rounding is always pro-protocol: the floored rate's sub-wei remainder (< 1e-10 BZPX per
-  rollover) folds into the `TOTAL − (TOTAL >> p)` term, keeping the curve on the exact series.
+  rollover) folds into the `S − (S >> p)` term, keeping the curve on the exact series.
 
 Surface changes:
 
@@ -135,7 +179,7 @@ Surface changes:
   as `solvency()`); `emissionProgress()` now reports emitted/TOTAL (the curve, not the clock).
 - `MAX_LOCK_DAYS` stays 2555 — now a policy cap (the boost curve and its overflow proof are
   calibrated on d ≤ 2555), no longer equal to the programme length. `maxLockDaysAvailable()`
-  stays pinned at 2555 until fewer than 2555 days remain to the 16-year close.
+  stays pinned at 2555 until fewer than 2555 days remain to the 10-year close.
 
 **Untouched, verified by the existing suites:** the Master Conservation Identity and the
 `conserves` guard, deterministic no-backlog-capture emission (empty windows advance the clock;

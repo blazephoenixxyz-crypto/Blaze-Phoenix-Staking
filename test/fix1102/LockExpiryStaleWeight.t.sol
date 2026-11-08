@@ -17,7 +17,7 @@ contract LapsedLockSplitTest is Base {
     uint256 internal constant S = 1_000_000e18;
     uint256 internal constant DUST = 1e10;      // CONSERVATION_DUST
     uint256 internal constant BASE_BPS = 10_000;
-    uint256 internal constant LOCK = 730;       // 1.25x; the window below spans the first halving
+    uint256 internal constant LOCK = 730;       // 1.25x; the emission window below runs past the first halving
     address internal dave = address(0xDA7E);
 
     /// Dave (stake S) holds a 1.00x position checkpointed at t0: a 90-day lock that lapsed and
@@ -25,7 +25,7 @@ contract LapsedLockSplitTest is Base {
     /// `borrower`, carol borrows at t0, so interest (the pure-yield flow) runs over the window.
     /// Nobody touches anything between t0 and the settle, so the denominators hold still.
     function _fixture(bool emission, bool borrower) internal returns (uint256 t0, uint256 tu) {
-        if (emission) { vm.prank(admin); staking.fundEmission(180_000_000e18); }
+        if (emission) { vm.prank(admin); staking.fundEmission(90_000_000e18); }
         uint256 start = staking.emissionStart();
         token.mint(dave, S);
         vm.prank(dave); token.approve(address(staking), type(uint256).max);
@@ -59,14 +59,17 @@ contract LapsedLockSplitTest is Base {
 
     /// Oracle: dave is the 1.00x unit. Per unit of weight, the window paid him what alice's weight
     /// earned at every instant; alice's weight was B/BASE of his up to tu and equal after it. The
-    /// emission window flows on the curve: E(t) = `emittedAt(t)`, which halves inside this window,
-    /// so wall time would mis-split it. Expected:
+    /// emission window flows on the curve: E(t) = `emittedAt(t)`, which halves at start + 5 years,
+    /// inside this window (t0 = start + 1 year, tu = start + 3 years, t1 = start + 5 years + 180
+    /// days), so wall time would mis-split it. Inside one period the curve is linear and the two
+    /// splits agree to the wei, so a window that stops short of the halving cannot tell them apart.
+    /// Expected:
     ///     alice = dave * (B * (E(tu) - E(t0)) + BASE * (E(t1) - E(tu))) / (BASE * (E(t1) - E(t0))).
     /// The emission alice's lapsed boost did not earn is back in `rewardReserve`:
     ///     reserve after = reserve before - (E(t1) - E(t0)) + (dave * B / BASE - alice).
     function test_LapsedLockEmissionIsPaidTheBoostUntilUnlockAndBaseAfter() public {
         (uint256 t0, uint256 tu) = _fixture(true, false);
-        uint256 t1 = tu + 180 days;
+        uint256 t1 = staking.emissionStart() + 5 * 365 days + 180 days;   // 180 days past the first halving
         uint256 r0 = staking.rewardReserve();
         (uint256 quoteA, uint256 paidA, uint256 paidD) = _settle(t1);
         uint256 b = staking.boostByDays(LOCK);
@@ -74,6 +77,8 @@ contract LapsedLockSplitTest is Base {
         uint256 eu = staking.emittedAt(tu);
         uint256 e1 = staking.emittedAt(t1);
         assertGt(paidD, 0, "fixture: emission flowed");
+        assertTrue((eu - e0) * (t1 - t0) != (e1 - e0) * (tu - t0),
+            "fixture: the curve and wall-time splits differ in this window (it crosses the halving)");
         uint256 expected = paidD * (b * (eu - e0) + BASE_BPS * (e1 - eu)) / (BASE_BPS * (e1 - e0));
         assertApproxEqAbs(paidA, expected, DUST, "lapsed boost paid past unlockTime (emission)");
         assertEq(quoteA, paidA, "pendingRewards is the payment");
@@ -114,7 +119,7 @@ contract LapsedLockSplitTest is Base {
     /// and what dave's weight earned over the tail [tu, t1] (views only; nothing else is touched).
     function _shrinkingBook(bool poke) internal returns (uint256 gainA, uint256 tailD) {
         address q = address(0x51C0);
-        vm.prank(admin); staking.fundEmission(180_000_000e18);
+        vm.prank(admin); staking.fundEmission(90_000_000e18);
         token.mint(dave, S); token.mint(q, 20 * S);
         vm.prank(dave); token.approve(address(staking), type(uint256).max);
         vm.prank(q);    token.approve(address(staking), type(uint256).max);
@@ -186,7 +191,7 @@ contract LockExpiryStaleWeightTest is Base {
     }
 
     function _run(uint256 n, uint256 gap, uint256 tail, bool ideal) internal returns (R memory r) {
-        vm.prank(admin); staking.fundEmission(180_000_000e18);
+        vm.prank(admin); staking.fundEmission(90_000_000e18);
         uint256 t0 = vm.getBlockTimestamp();   // via_ir may re-read TIMESTAMP after a warp
         _mk(committed, STAKE, 2555);
         for (uint256 i = 0; i < n; i++) _mk(_locker(i), STAKE, baseDays + 10 * i);

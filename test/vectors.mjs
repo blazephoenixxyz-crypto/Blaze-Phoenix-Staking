@@ -37,7 +37,7 @@ async function world({ token = 'Token' } = {}) {
     await tk.send(u, 'approve', [st.addr.toString(), MAX_UINT]);
   }
   await st.send(admin, 'grantRole', [ethers.id('GUARDIAN_ROLE'), guardian.hex]);
-  await st.send(admin, 'fundEmission', [E18(180_000_000)]);
+  await st.send(admin, 'fundEmission', [E18(90_000_000)]);
   return { chain, token: tk, staking: st, admin, treasury, guardian, users };
 }
 const solvent = async (st) => st.call('isSolvent');
@@ -89,7 +89,7 @@ console.log('\n── V2 :: first-depositor and dust-weight inflation ───�
   // The property is proportionality, not a hard zero. Emission below the throttle mark is scaled
   // by weight, so a dust position earns dust rather than the whole schedule. Measured against the
   // counterfactual it would have captured unthrottled.
-  const unthrottled = (180_000_000n * WAD / (7n * 365n * DAY)) * (30n * DAY);
+  const unthrottled = 380_517_503_805_175_038n * (30n * DAY)   /* R0 x 30 days */;
   console.log(`     unthrottled, that solitary window would have been worth ${fmt(unthrottled)}`);
   console.log(`     dust actually captured ${dustRw} wei — a factor of ${dustRw === 0n ? '∞' : (Number(unthrottled / dustRw)).toExponential(2)} less`);
   check(dustRw * 1_000_000_000_000n < unthrottled, 'V2: a dust position captures a negligible fraction of the schedule',

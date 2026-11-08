@@ -201,7 +201,7 @@ await test('emission: fund once, accrue, claim pays out', async () => {
   ok(r.ok, `incremental fund succeeds (${r.revert})`);
   eq(await staking.call('totalEmissionFunded'), E18(15_000_000), 'totalEmissionFunded accumulates');
   eq(await staking.call('rewardReserve'), E18(15_000_000), 'rewardReserve accumulates');
-  r = await staking.send(admin, 'fundEmission', [E18(180_000_000)]);
+  r = await staking.send(admin, 'fundEmission', [E18(90_000_000)]);
   ok(!r.ok && r.revert === 'Staking__CapExceeded', `over-cap fund -> CapExceeded (${r.revert})`);
   await staking.send(alice, 'deposit', [E18(1_000_000), 365]);
   chain.warp(30n * DAY); chain.mine(2);

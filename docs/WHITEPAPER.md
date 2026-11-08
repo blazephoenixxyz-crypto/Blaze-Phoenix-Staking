@@ -227,7 +227,11 @@ is a temporary, admin-undoable pause.
 Every ordinary user transaction runs `_autoMaintain` first, right after the global
 accrual and before its own breach read and its own payments: every loss the sweep books
 (a borrower's interest outgrowing its stake, a seizure the reserve cannot cover) is on the
-books before anything leaves at par in the same transaction (LOSS-FIRST). The
+books before anything leaves at par in the same transaction (LOSS-FIRST). The order holds
+inside the sweep as well: the caller's own interest is attributed before the sweep starts, the
+borrower window credits what it settles instead of paying it (§3.2), and the lock window acts
+only where its settle books no loss (§3.3). The one payment at par inside the borrower window is
+the keeper bonus of a seizure (`docs/KNOWN_ISSUES.md`). The
 number of positions it will scan is determined by `_maintBudget()`:
 
 ```
@@ -266,6 +270,10 @@ For each position in the window:
    reached or touched; its own settle pays the live weight either way, and the difference
    stays in the reserve (`docs/KNOWN_ISSUES.md`).
 
+Every settle in this window, the seized position's included, credits the position instead of
+paying it: a later step of the same window can still book a loss, so what it settles stays owed
+to the position (`pendingRewards` quotes it) and its next settlement outside this window pays it.
+
 ### 3.3 The second window: expired locks on debt-free positions
 
 The borrower registry is, by construction, blind to a **pure staker** (`debt == 0`) — precisely the
@@ -290,6 +298,12 @@ Worst case per transaction is `MAINT_MAX_SCAN + MAINT_MAX_LOCK_ACTIONS` iteratio
 
 `expiredLockScan(offset, limit)` measures the outstanding backlog on-chain with no indexer;
 `pokeExpiredLock(user)` and `pokeExpiredLocks(users)` let anyone clear it at their own gas cost.
+
+The window acts only where its settle books no loss (LOSS-FIRST, §3.1): on a debt-free position,
+or on a borrower whose interest the transaction has already attributed (the caller's own, and a
+poked position's, are attributed before the sweep). It rotates past any other lapsed borrower,
+which the borrower window, its own transaction or a poke normalises. `pokeExpiredLock` and
+`pokeExpiredLocks` attribute the positions they name before they pay any of them.
 
 Unlike the borrower window, this window **does not skip the transaction's own beneficiary**,
 and the asymmetry is deliberate (BP-2026-008). The borrower sweep excludes the beneficiary
@@ -335,7 +349,7 @@ deposit(uint256 amount, uint256 lockDays)
 - **Minimum:** 90 days
 - **Maximum:** 2555 days (7 years)
 - **Countdown cap:** `min(MAX_LOCK_DAYS, daysUntilEmissionEnd)` — no lock can
-  outlast the 7-year emission window
+  outlast the 10-year emission window
 - **Extends-only:** a top-up may only push the unlock later, never earlier
 
 There is no liquid staking mode.
@@ -527,25 +541,26 @@ remainder recorded as `totalBadDebt`.
 
 ## 6. Emission
 
-### 6.1 Schedule — biennial halving, closed-form O(1)
+### 6.1 Schedule — five-year halving, closed-form O(1)
 
 ```
-TOTAL_REWARDS          = 180,000,000 BZPX
-HALVING_PERIOD         = 2 × 365 days
-EMISSION_PERIODS       = 8                                   (programme closes after 16 years)
-INITIAL_REWARD_PER_SEC = (TOTAL_REWARDS / 2) / HALVING_PERIOD ≈ 1.427 BZPX/s
+TOTAL_REWARDS          = 90,000,000 BZPX                     (the fundEmission cap)
+HALVING_SERIES         = 120,000,000 BZPX                    (the series S the curve is cut from)
+HALVING_PERIOD         = 5 × 365 days
+EMISSION_PERIODS       = 2                                   (programme closes after 10 years)
+INITIAL_REWARD_PER_SEC = (HALVING_SERIES / 2) / HALVING_PERIOD ≈ 0.3805 BZPX/s
 ```
 
-Period `p` (0-indexed, 2 years each) emits `90M >> p` — 90M in years 1–2, 45M in
-years 3–4, 22.5M in years 5–6, and so on. The geometric series sums to 180M
-**exactly by construction**: Σ 90M/2ᵖ = 180M.
+Period `p` (0-indexed, 5 years each) emits `60M >> p` — 60M in years 1–5 (12M per year) and
+30M in years 6–10 (6M per year). The two periods sum to 90M **exactly by construction**:
+`S − (S >> 2) = 120M − 30M = 90M = TOTAL_REWARDS`.
 
 Cumulative emission is a closed form — one division, two shifts, one
 multiplication; no loop, no oracle, no exp/log:
 
 ```
-emitted(t) = (TOTAL − (TOTAL >> p)) + (R0 >> p) · (t − start − p·PERIOD),
-p = ⌊(t − start) / PERIOD⌋
+emitted(t) = (S − (S >> p)) + (R0 >> p) · (t − start − p·PERIOD),
+p = ⌊(t − start) / PERIOD⌋     (clamped at S − (S >> 2) = 90M from year 10 on)
 ```
 
 The accumulator integrates the **delta** of this curve per window, so every
@@ -553,18 +568,19 @@ property of the previous linear schedule (determinism, no backlog capture,
 skipped windows staying in reserve) carries over unchanged. The curve is
 exposed on-chain as `emittedAt(timestamp)` so anyone can verify it for free.
 
-The programme hard-closes after 8 full periods: by then 255/256 of the budget
-(179,296,875 BZPX) is out and the running rate is below 0.8% of the initial
-one, so the close is a fade into real yield (borrow interest + DEX fee-share),
-not a cliff. The exact residue — `180M >> 8 = 703,125 BZPX` — is recoverable to
+The programme hard-closes after 2 full periods at exactly `TOTAL_REWARDS`, with no tail: the
+rate steps from 12M to 6M per year at year 5 and from 6M per year to zero at year 10, and from
+there real yield (borrow interest + DEX fee-share) carries on. What the schedule could not
+distribute (windows with an empty or throttled pool, or frozen by an emergency) is recoverable to
 the treasury via `sweepUndistributedEmission`, pro-protocol, never pro-user, and only
 while the contract still reads solvent after the sweep: a residue the pot needs to cover what it
 owes stays in the pot.
 
-Why halving instead of linear: a flat schedule ends abruptly, and the
-mercenary-capital exodus at linear cliffs is well documented; a halving tail
-halves the peak sell-pressure of an annual-halving curve (45M/yr max) while
-keeping twice the incentive horizon.
+Why halving instead of linear: a flat schedule ends abruptly at its full rate, and the
+mercenary-capital exodus at linear cliffs is well documented. Over the same ten years a flat
+schedule would close on a 9M-a-year step; the two five-year periods close on 6M a year, two
+thirds of it, and they are the least front-loaded halving that fits 90M in ten years (five
+two-year periods would open at 23.2M a year).
 
 Rewards are distributed pro-rata to `totalBoostedEffective` (stake × boost,
 net of debt) via the standard accumulator pattern.
@@ -827,7 +843,7 @@ After deploy, the admin must:
 1. Call `grantRole(keccak256("GUARDIAN_ROLE"), guardian)` to enable
    `pause()` / `declareEmergency()`
 2. Call `fundEmission(amount)` to seed the reward reserve. This is **incremental** — it may be
-   called multiple times, with cumulative funding hard-capped at 180,000,000 BZPX.
+   called multiple times, with cumulative funding hard-capped at 90,000,000 BZPX.
 
 ---
 

@@ -2,26 +2,26 @@
 pragma solidity 0.8.28;
 
 // ─────────────────────────────────────────────────────────────────────────────────────────────
-// BlazePhoenix Staking — one-shot deploy + full 180M emission funding.
+// BlazePhoenix Staking — one-shot deploy + full 90M emission funding.
 //
 // Read this script top to bottom before running it; nothing in it is meant to be clever.
 //
 // What it does, atomically, from the deployer account:
 //   1. Deploys BlazePhoenixStaking(bzpx, treasury)
-//   2. Approves the staking contract to pull exactly TOTAL_REWARDS (180,000,000 BZPX)
+//   2. Approves the staking contract to pull exactly TOTAL_REWARDS (90,000,000 BZPX)
 //   3. Calls fundEmission(TOTAL_REWARDS) to seed the reward reserve in full
 //   4. Verifies the reserve, the funded counter, and solvency post-fund
 //
 // PRECONDITIONS (the script checks the balance one and reverts early if unmet):
 //   • The BZPX token is already deployed at BZPX_ADDRESS.
-//   • The deployer (the key behind PRIVATE_KEY) holds >= 180,000,000 BZPX.
+//   • The deployer (the key behind PRIVATE_KEY) holds >= 90,000,000 BZPX.
 //   • BZPX is a standard ERC-20 (no fee-on-transfer / no rebasing / no receiver blacklist) —
 //     the protocol's conservation identity assumes amount sent == amount received.
 //
 // RUN (Termux / any Foundry host):
 //   export BZPX_ADDRESS=0x...           # your deployed BZPX token
 //   export TREASURY_ADDRESS=0x...       # immutable reserve destination (cannot change later)
-//   export PRIVATE_KEY=0x...            # deployer; must hold 180M BZPX and gas
+//   export PRIVATE_KEY=0x...            # deployer; must hold 90M BZPX and gas
 //   export RPC_URL=https://...          # target chain RPC
 //   forge script script/Deploy.s.sol:Deploy --rpc-url "$RPC_URL" --broadcast -vvvv
 //
@@ -48,6 +48,17 @@ interface IERC20Min {
 }
 
 contract Deploy is Script {
+    /// The amount this script funds. It is the script's own number, deliberately not read from the
+    /// contract: `pinEmission` compares it with the deployed `TOTAL_REWARDS()`, so editing either
+    /// side alone fails the run during simulation, before any transaction is broadcast.
+    uint256 public constant EMISSION = 90_000_000e18;
+
+    /// Returns `totalRewards` when it equals EMISSION; reverts otherwise.
+    function pinEmission(uint256 totalRewards) public pure returns (uint256) {
+        require(totalRewards == EMISSION, "Deploy: EMISSION != TOTAL_REWARDS()");
+        return totalRewards;
+    }
+
     function run() external {
         // ── inputs ────────────────────────────────────────────────────────────────────────────
         address bzpx      = vm.envAddress("BZPX_ADDRESS");
@@ -58,22 +69,23 @@ contract Deploy is Script {
         require(bzpx     != address(0), "BZPX_ADDRESS is zero");
         require(treasury != address(0), "TREASURY_ADDRESS is zero");
 
-        uint256 total = 180_000_000e18; // == BlazePhoenixStaking.TOTAL_REWARDS
-
         // ── preflight: deployer must actually hold the full emission ────────────────────────────
         uint256 bal = IERC20Min(bzpx).balanceOf(deployer);
         console2.log("Deployer        :", deployer);
         console2.log("BZPX token      :", bzpx);
         console2.log("Treasury        :", treasury);
         console2.log("Deployer BZPX   :", bal);
-        console2.log("Emission to fund:", total);
-        require(bal >= total, "deployer holds < 180M BZPX; fund the deployer first");
+        console2.log("Emission to fund:", EMISSION);
+        require(bal >= EMISSION, "deployer holds < 90M BZPX; fund the deployer first");
 
         // ── broadcast ───────────────────────────────────────────────────────────────────────────
         vm.startBroadcast(deployerPk);
 
         BlazePhoenixStaking staking = new BlazePhoenixStaking(bzpx, treasury);
         console2.log("Staking deployed:", address(staking));
+
+        // the script's amount must be the contract's cap, or nothing is funded
+        uint256 total = pinEmission(staking.TOTAL_REWARDS());
 
         // approve exactly the emission, then fund it in one call
         require(IERC20Min(bzpx).approve(address(staking), total), "approve failed");
@@ -82,8 +94,8 @@ contract Deploy is Script {
         vm.stopBroadcast();
 
         // ── post-conditions (revert the run if anything is off) ─────────────────────────────────
-        require(staking.rewardReserve()       == total, "rewardReserve != 180M after fund");
-        require(staking.totalEmissionFunded() == total, "totalEmissionFunded != 180M");
+        require(staking.rewardReserve()       == total, "rewardReserve != 90M after fund");
+        require(staking.totalEmissionFunded() == total, "totalEmissionFunded != 90M");
         require(staking.isSolvent(),                     "not solvent after fund");
         require(staking.bzpx()     == bzpx,              "bzpx immutable mismatch");
         require(staking.treasury() == treasury,          "treasury immutable mismatch");
@@ -91,7 +103,7 @@ contract Deploy is Script {
         console2.log("rewardReserve   :", staking.rewardReserve());
         console2.log("isSolvent       :", staking.isSolvent());
         console2.log("VERSION         :", staking.VERSION());
-        console2.log("=== DEPLOY + 180M EMISSION FUNDING COMPLETE ===");
+        console2.log("=== DEPLOY + 90M EMISSION FUNDING COMPLETE ===");
         console2.log("Grant GUARDIAN_ROLE before using pause()/declareEmergency():");
         console2.log("  cast send", address(staking));
         console2.log("  \"grantRole(bytes32,address)\" <GUARDIAN_ROLE> <guardian>");

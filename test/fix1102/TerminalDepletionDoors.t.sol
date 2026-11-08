@@ -10,9 +10,10 @@ import {Base} from "../BlazePhoenixStaking.t.sol";
 ///         next slice reads the utilisation, and an empty stake with debt outstanding reads as
 ///         unbounded (`_utilization`), never as a division by zero. Green on 82febb5 (the fixture reaches
 ///         the state through interest alone, which a direct report of it did not). Red with the zero guard of
-///         `_utilization` deleted: both doors revert (the mutants registered in mutants.py). The
-///         views read the same state as maximum distress: utilisation `type(uint256).max` and the
-///         ceiling rate of the curve, never the idle floor (red with the guard returning 0).
+///         `_utilization` deleted: both doors revert, and each low-level call fails its assert (the
+///         mutants registered in mutants.py). The views read the same state as maximum distress:
+///         utilisation `type(uint256).max` and the ceiling rate of the curve, never the idle floor
+///         (red with the guard returning 0).
 contract TerminalDepletionDoorsTest is Base {
     uint256 internal constant S = 1_000_000e18;
     uint256 internal constant DUST = 1e10;      // CONSERVATION_DUST
@@ -49,7 +50,10 @@ contract TerminalDepletionDoorsTest is Base {
     function test_RepayClosesTheDebtOfABookWithNoStakeLeft() public {
         _depleted();
         uint256 a0 = token.balanceOf(alice);
-        vm.prank(alice); staking.repay(type(uint256).max);
+        // A low-level call, so a door that closes fails on the assert below, not as a bare revert.
+        vm.prank(alice);
+        (bool ok,) = address(staking).call(abi.encodeCall(staking.repay, (type(uint256).max)));
+        assertTrue(ok, "repay stays open on a book with debt and no stake left");
         assertEq(a0 - token.balanceOf(alice), S / 2, "the debt came back whole");
         assertEq(staking.totalDebt(), 0, "repay closed the book's debt");
         assertFalse(staking.isTrackedBorrower(alice), "the borrower left the registry");
@@ -76,7 +80,9 @@ contract TerminalDepletionDoorsTest is Base {
         _depleted();
         uint256 pr0 = staking.protocolReserve();
         uint256 k0 = token.balanceOf(keeper);
-        vm.prank(keeper); staking.liquidate(alice);
+        vm.prank(keeper);
+        (bool ok,) = address(staking).call(abi.encodeCall(staking.liquidate, (alice)));
+        assertTrue(ok, "liquidate stays open on a book with debt and no stake left");
         assertEq(staking.totalDebt(), 0, "the seizure closed the book's debt");
         assertEq(token.balanceOf(keeper), k0, "nothing was seized, so no bonus was paid");
         assertEq(staking.protocolReserve(), pr0 - S / 2, "the reserve covered the loss first");

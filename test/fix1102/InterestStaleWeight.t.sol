@@ -17,7 +17,7 @@ contract SweepResyncsIdleBorrowerTest is Base {
         token.mint(b, 20_000_000e18);
         vm.prank(h); token.approve(address(staking), type(uint256).max);
         vm.prank(b); token.approve(address(staking), type(uint256).max);
-        vm.prank(admin); staking.fundEmission(180_000_000e18);
+        vm.prank(admin); staking.fundEmission(90_000_000e18);
         vm.prank(h); staking.deposit(1_000_000e18, 2555);
         vm.prank(b); staking.deposit(20_000_000e18, 2555);
         vm.roll(block.number + 20);
@@ -36,10 +36,10 @@ contract SweepResyncsIdleBorrowerTest is Base {
 ///         A debt-free 1M position and an idle 20M borrower at 9.9M of debt, both on 2555-day locks,
 ///         over one year: settled once at the end ("idle") or by a daily claim of the debt-free
 ///         position ("daily"), whose transactions carry the sweep that resyncs the borrower.
-///         Measured on 82febb5 and here (same values): the idle book charges 331,650.00 BZPX of
-///         interest against 333,730.36 BZPX daily, and pays the debt-free position 4,054,054.05 BZPX
-///         of emission against 4,115,954.85 daily (61,900.79 less); the borrower's own settle
-///         returns 1,344,527.03 BZPX of the window to the reserve.
+///         Measured on the 90M schedule: the idle book charges 331,650.00 BZPX of interest against
+///         333,730.36 BZPX daily (the same as on 82febb5), and pays the debt-free position
+///         1,081,081.08 BZPX of emission against 1,097,587.96 daily (16,506.88 less); the
+///         borrower's own settle returns 358,540.54 BZPX of the window to the reserve.
 contract InterestStaleWeightTest is Base {
     address internal honest = address(0xA0);
     address internal borrower = address(0xB0);
@@ -61,7 +61,7 @@ contract InterestStaleWeightTest is Base {
 
     /// `gap` = the debt-free position's claim cadence (0 = only at the end).
     function _run(uint256 gap) internal returns (R memory r) {
-        vm.prank(admin); staking.fundEmission(180_000_000e18);
+        vm.prank(admin); staking.fundEmission(90_000_000e18);
         _mk(honest, 1_000_000e18);
         _mk(borrower, B_STAKE);
         vm.roll(block.number + 20);

@@ -97,15 +97,17 @@ contract TerminalDistressOrderingTest is Base {
 
     /// The withdraw site of `_debitStaked`. A pure staker's exit in the clamped regime: carol's
     /// interest has outgrown her stake and is not attributed yet, so `totalStaked` sits below
-    /// alice's stake while the emission residue left after `emissionEnd` (the 2^-8 tail) keeps
+    /// alice's stake while the emission residue left after `emissionEnd` keeps
     /// `totalStaked + rewardReserve + protocolReserve >= totalDebt`, i.e. the book reads solvent and
     /// the withdraw door is open. The debit crosses zero and the excess is carried in
     /// `stakedOverdraw`. Paused, so the maintenance window does not attribute carol in the same tx
     /// and the carried overdraw is observable. A saturating debit there drops the excess from the
-    /// identity and `conserves` reverts the exit.
+    /// identity and `conserves` reverts the exit. The schedule closes at exactly the budget and
+    /// leaves no tail, so the residue is an empty first year's emission, 12M − 1 632 000 wei.
     function test_TERMDISTRESS_pureStakerWithdrawPastTotalStakedCarriesTheOverdraw() public {
         vm.prank(admin);
-        staking.fundEmission(180_000_000e18);
+        staking.fundEmission(90_000_000e18);
+        vm.warp(vm.getBlockTimestamp() + 365 days);   // the empty first year: its emission is the residue
         vm.prank(alice);
         staking.deposit(10_000e18, 90);
         vm.prank(carol);
@@ -115,7 +117,7 @@ contract TerminalDistressOrderingTest is Base {
         vm.prank(carol);
         staking.borrow(maxC);
         vm.roll(block.number + 11);
-        vm.warp(block.timestamp + 58 * 365 days);
+        vm.warp(vm.getBlockTimestamp() + 58 * 365 days);
         vm.startPrank(admin);
         staking.grantRole(keccak256("GUARDIAN_ROLE"), admin);
         staking.pause();

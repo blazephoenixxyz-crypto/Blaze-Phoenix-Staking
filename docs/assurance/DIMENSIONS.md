@@ -31,7 +31,7 @@ Every row is tagged `[conferido]`: the expression was read at that line.
 | 138 | HALVING_PERIOD | s |
 | 139 | EMISSION_PERIODS | n |
 | 140 | EMISSION_LENGTH = PERIODS · PERIOD | s |
-| 141 | INITIAL_REWARD_PER_SEC = (TOTAL/2) / PERIOD | wei/s |
+| 141 | INITIAL_REWARD_PER_SEC = (SERIES/2) / PERIOD | wei/s |
 | 143 | MAX_STAKE_PER_WALLET | wei |
 | 153 | MIN_EMISSION_WEIGHT | W |
 | 155 | MAX_LTV | pct |
@@ -125,9 +125,9 @@ Every row is tagged `[conferido]`: the expression was read at that line.
 | 27 | 1294, 1889 | `mulDiv(reward, tbe, MIN_EMISSION_WEIGHT)` | `wei · W / W` → wei | consistent [conferido] |
 | 28 | 1295, 1890 | `min(reward, rewardReserve)` | wei | consistent [conferido] |
 | 29 | 1297, 1891 | `acc += mulDiv(reward, WAD, tbe)` | `wei · WAD / W` → WAD/W | consistent [conferido] |
-| 30 | 1313 | `TOTAL − (TOTAL >> 8)` | wei | consistent [conferido] |
+| 30 | 1313 | `SERIES − (SERIES >> EMISSION_PERIODS)` | wei | consistent [conferido] |
 | 31 | 1316 | `p = dt / HALVING_PERIOD` | s / s → n | consistent [conferido] |
-| 32 | 1317-1318 | `(TOTAL − TOTAL>>p) + (R0 >> p) · (dt − p · PERIOD)` | `wei + (wei/s) · (s − n · s)` → wei | consistent [conferido] |
+| 32 | 1317-1318 | `(SERIES − SERIES>>p) + (R0 >> p) · (dt − p · PERIOD)` | `wei + (wei/s) · (s − n · s)` → wei | consistent [conferido] |
 | 33 | 1333 | `R0 >> ((now − start) / PERIOD)` | wei/s shifted by n | consistent [conferido] |
 | 34 | 1340, 1352, 1566-1567 | `mulDiv(tracked, acc, WAD)` | `W · (WAD/W) / WAD` → wei, compared with rewardDebt / pureYieldDebt (wei) | consistent [conferido] |
 | 35 | 1391 | `elapsed = now − lastInterestTime` | s | consistent [conferido] |

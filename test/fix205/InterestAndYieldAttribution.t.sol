@@ -46,7 +46,7 @@ contract InterestAndYieldAttributionTest is Base {
 
     function test_LOCKSTALE_anUntouchedExpiredLockEarnsNoMoreThanOneTouchedAtUnlock() public {
         vm.prank(admin);
-        staking.fundEmission(180_000_000e18);
+        staking.fundEmission(90_000_000e18);
         vm.prank(alice);
         staking.deposit(STAKE, 365);
         vm.prank(bob);
@@ -139,7 +139,7 @@ contract InterestAndYieldAttributionTest is Base {
 
     function test_EMISINT_borrowerWindowIsPaid_atLiveWeight() public {
         vm.prank(admin);
-        staking.fundEmission(180_000_000e18);
+        staking.fundEmission(90_000_000e18);
         vm.prank(alice);
         staking.deposit(STAKE, 2555);
         vm.prank(bob);

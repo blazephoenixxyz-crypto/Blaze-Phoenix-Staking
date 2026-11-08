@@ -15,7 +15,8 @@ unwatched and the run fails. Adding a guard to the contract means adding its lin
 
 The verdict is void, and reported as a failure, when
   - the paired test is already red at baseline (every mutant on it would score killed for free);
-  - the paired test does not exist (`No tests match`);
+  - the paired test does not exist (`No tests match`) or the mutated tree did not compile; this is
+    checked first: a failed build leaves out/ as it was, so the INERT test below would read it;
   - the deployed bytecode is byte-identical to pristine (INERT: the source moved, the artefact did
     not, so the test's verdict is about nothing).
 
@@ -25,9 +26,10 @@ Usage:
   MUTANTS_ONLY=3,7 python3 ...                       # 1-based indices, for a local re-run
 Run it on a GREEN suite, alone: it rewrites src/ in place (and restores it) one mutant at a time.
 """
-import re, subprocess, sys, os, json, hashlib
+import re, subprocess, sys, os, json, hashlib, signal, tempfile
 
 F = "src/BlazePhoenixStaking.sol"
+D = "script/Deploy.s.sol"
 
 M = [
  # ── exact boundaries (test/BoundaryEquality.t.sol) ────────────────────────────────────────────
@@ -91,8 +93,8 @@ M = [
       teste="test_LockExpiryViewAndPokeAgreeOnTheBoundary"),
  dict(nome="lockInfoOf: the view calls a lock expired one second late (>= becomes >)",
       f=F,
-      old="        expired = (u.lockDays > 0 && block.timestamp >= u.unlockTime);",
-      new="        expired = (u.lockDays > 0 && block.timestamp > u.unlockTime); // MUTANT",
+      old="        return u.lockDays > 0 && block.timestamp >= u.unlockTime;",
+      new="        return u.lockDays > 0 && block.timestamp > u.unlockTime; // MUTANT",
       teste="test_LockExpiryViewAndPokeAgreeOnTheBoundary"),
  dict(nome="currentRewardPerSec: the rate is still live AT emissionEnd (>= becomes >)",
       f=F,
@@ -160,27 +162,35 @@ M = [
       old="        reward = _min(reward, rewardReserve);",
       new="        // MUTANT",
       teste="test_UnderfundedWindowIsClampedToTheReserve"),
- dict(nome="emission: the 2^-8 tail is emitted at the close (withholding dropped)",
+ # The close is the closed form at p = EMISSION_PERIODS, S − (S >> 2) = 90M, which equals the budget:
+ # `return TOTAL_REWARDS` there would be an equivalent mutant. Two non-equivalent ones instead. The
+ # whole series (120M) is masked at a full pool by the 90M reserve clamp, so the anchor test reads it.
+ dict(nome="emission: the close returns the whole series (HALVING_SERIES), not the closed form at p = EMISSION_PERIODS",
       f=F,
-      old="        if (x >= emissionEnd)   return TOTAL_REWARDS - (TOTAL_REWARDS >> EMISSION_PERIODS);",
-      new="        if (x >= emissionEnd)   return TOTAL_REWARDS; // MUTANT",
-      teste="test_FullPoolReceivesTheScheduleLessTheTail"),
+      old="        if (x >= emissionEnd)   return HALVING_SERIES - (HALVING_SERIES >> EMISSION_PERIODS);",
+      new="        if (x >= emissionEnd)   return HALVING_SERIES; // MUTANT",
+      teste="test_EmissionAtEveryPeriodAnchorIsTheGeometricSeries"),
+ dict(nome="emission: the close is the closed form one period short (S − (S >> 1) = 60M)",
+      f=F,
+      old="        if (x >= emissionEnd)   return HALVING_SERIES - (HALVING_SERIES >> EMISSION_PERIODS);",
+      new="        if (x >= emissionEnd)   return HALVING_SERIES - (HALVING_SERIES >> (EMISSION_PERIODS - 1)); // MUTANT",
+      teste="test_FullPoolReceivesTheWholeSchedule"),
  # ── delivery index, one level up: the schedule's parameters ──────────────────────────────────
  dict(nome="emission: MIN_EMISSION_WEIGHT doubles (the throttle scale moves)",
       f=F,
       old="    uint256 public  constant MIN_EMISSION_WEIGHT  = 1_000e18;",
       new="    uint256 public  constant MIN_EMISSION_WEIGHT  = 2_000e18; // MUTANT",
       teste="test_OneWeiCannotCaptureTheSchedule"),
- dict(nome="emission: the halving period is one day short (2*365d becomes 2*364d)",
+ dict(nome="emission: the halving period is one day short (5*365d becomes 5*364d)",
       f=F,
-      old="    uint256 public  constant HALVING_PERIOD         = 2 * 365 days;",
-      new="    uint256 public  constant HALVING_PERIOD         = 2 * 364 days; // MUTANT",
+      old="    uint256 public  constant HALVING_PERIOD         = 5 * 365 days;",
+      new="    uint256 public  constant HALVING_PERIOD         = 5 * 364 days; // MUTANT",
       teste="test_EmptyFirstYearStaysInTheReserve"),
- dict(nome="emission: the programme closes a period early (EMISSION_PERIODS 8 becomes 7)",
+ dict(nome="emission: the programme closes a period early (EMISSION_PERIODS 2 becomes 1)",
       f=F,
-      old="    uint256 public  constant EMISSION_PERIODS       = 8;",
-      new="    uint256 public  constant EMISSION_PERIODS       = 7; // MUTANT",
-      teste="test_FullPoolReceivesTheScheduleLessTheTail"),
+      old="    uint256 public  constant EMISSION_PERIODS       = 2;",
+      new="    uint256 public  constant EMISSION_PERIODS       = 1; // MUTANT",
+      teste="test_FullPoolReceivesTheWholeSchedule"),
  # ── constant oracles (test/assurance/ConstantOracles.t.sol) ──────────────────────────────────
  # A test that reads a constant back from the contract moves with a mutant of that constant.
  # These pairs name tests that pin the published literals (300 bps, 9 700 bps, 30 000 000e18).
@@ -211,19 +221,32 @@ M = [
       old="    uint256 public  constant MAX_LTV              = 50;",
       new="    uint256 public  constant MAX_LTV              = 51; // MUTANT",
       teste="test_BorrowLTV"),
- # ── the programme budget, in both directions ─────────────────────────────────────────────────
- # Shrinking TOTAL_REWARDS makes a 180M funding literal exceed the cap; growing it leaves that
- # funding valid but moves the schedule literals. Each direction names the test that sees it.
- dict(nome="emission: the programme budget shrinks (TOTAL_REWARDS 180M becomes 179M)",
+ # ── the programme budget and the series, in both directions ──────────────────────────────────
+ # TOTAL_REWARDS caps funding; the curve is shaped by HALVING_SERIES. Shrinking the cap makes a 90M
+ # funding literal exceed it; growing it moves nothing on the curve, so only the published budget
+ # literal sees it (90M settles, 1 wei more is refused). HALVING_SERIES is private: only literals
+ # see it. 119M closes the programme at 89.25M (the full pool sees it); 121M closes at 90.75M, which
+ # the 90M reserve clamps away at a full pool, so the 60M anchor of period 1 sees it.
+ dict(nome="emission: the programme budget shrinks (TOTAL_REWARDS 90M becomes 89M)",
       f=F,
-      old="    uint256 public  constant TOTAL_REWARDS          = 180_000_000e18;",
-      new="    uint256 public  constant TOTAL_REWARDS          = 179_000_000e18; // MUTANT",
+      old="    uint256 public  constant TOTAL_REWARDS          = 90_000_000e18;",
+      new="    uint256 public  constant TOTAL_REWARDS          = 89_000_000e18; // MUTANT",
       teste="test_EmptyProgrammeSweepsTheWholeBudgetToTreasury"),
- dict(nome="emission: the programme budget grows (TOTAL_REWARDS 180M becomes 181M)",
+ dict(nome="emission: the programme budget grows (TOTAL_REWARDS 90M becomes 91M)",
       f=F,
-      old="    uint256 public  constant TOTAL_REWARDS          = 180_000_000e18;",
-      new="    uint256 public  constant TOTAL_REWARDS          = 181_000_000e18; // MUTANT",
-      teste="test_FullPoolReceivesTheScheduleLessTheTail"),
+      old="    uint256 public  constant TOTAL_REWARDS          = 90_000_000e18;",
+      new="    uint256 public  constant TOTAL_REWARDS          = 91_000_000e18; // MUTANT",
+      teste="test_EmissionBudgetIsNinetyMillionTokens"),
+ dict(nome="emission: the halving series shrinks (HALVING_SERIES 120M becomes 119M, the close falls to 89.25M)",
+      f=F,
+      old="    uint256 private constant HALVING_SERIES         = 120_000_000e18;",
+      new="    uint256 private constant HALVING_SERIES         = 119_000_000e18; // MUTANT",
+      teste="test_FullPoolReceivesTheWholeSchedule"),
+ dict(nome="emission: the halving series grows (HALVING_SERIES 120M becomes 121M, period 0 emits 60.5M)",
+      f=F,
+      old="    uint256 private constant HALVING_SERIES         = 120_000_000e18;",
+      new="    uint256 private constant HALVING_SERIES         = 121_000_000e18; // MUTANT",
+      teste="test_Dim13_EmissionCurveHalvingAnchors"),
  # ── value constants, one deterministic killer each (never a fuzz case) ───────────────────────
  # CONSERVATION_DUST is deliberately left unpaired: no deterministic test is known to fail when it
  # moves, and a pair whose killer does not exist would certify nothing.
@@ -304,19 +327,19 @@ M = [
       teste="test_PUREUNCOLL_firstMoverBelowTheClampIsCreditedByItsOwnSweep"),
  dict(nome="getLockers: the page end overflows again for limit = max",
       f=F,
-      old="        if (offset >= total || limit == 0) return (new address[](0), total);\n        uint256 end = offset + _min(limit, total - offset);",
-      new="        if (offset >= total || limit == 0) return (new address[](0), total);\n        uint256 end = _min(offset + limit, total);",
+      old="        end = offset < total ? offset + _min(limit, total - offset) : offset;",
+      new="        end = offset < total ? _min(offset + limit, total) : offset; // MUTANT",
       teste="test_B92_getLockersAcceptsMaxLimit"),
  dict(nome="expiredLockScan: the page end overflows again for limit = max",
       f=F,
-      old="        if (offset >= total || limit == 0) return (new address[](0), 0, 0, total);\n        uint256 end = offset + _min(limit, total - offset);",
-      new="        if (offset >= total || limit == 0) return (new address[](0), 0, 0, total);\n        uint256 end = _min(offset + limit, total);",
+      old="        end = offset < total ? offset + _min(limit, total - offset) : offset;",
+      new="        end = offset < total ? _min(offset + limit, total) : offset; // MUTANT",
       teste="test_B92_expiredLockScanAcceptsMaxLimit"),
  # ── EMIS-DEFER: no emission at par under a hard breach (test/hardening/EmissionDeferredUnderBreach.t.sol)
  dict(nome="emission settle: the breach deferral is deleted (emission paid at par from a short pot)",
       f=F,
-      old="        if (ML.rawBalanceOf(bzpx, address(this)) + CONSERVATION_DUST\n            < _owed() + _sub0(_sub0(u.debt, u.staked), protocolReserve)) {\n            _rewardDeferred[user_] = due; return;\n        }\n",
-      new="        // MUTANT\n",
+      old="        if (msg.sig == this.maintStep.selector || ML.rawBalanceOf(bzpx, address(this)) + CONSERVATION_DUST\n            < _owed() + _sub0(_sub0(u.debt, u.staked), protocolReserve)) {\n            _rewardDeferred[user_] = due; return;\n        }\n",
+      new="        if (msg.sig == this.maintStep.selector) { // MUTANT\n            _rewardDeferred[user_] = due; return;\n        }\n",
       teste="test_EMISDEFER_repayUnderBreachPaysNoEmissionAndKeepsTheCredit"),
  dict(nome="emission settle: a paid deferred credit is not cleared (paid twice)",
       f=F,
@@ -746,8 +769,537 @@ dict(nome='deposit: a shorter top-up keeps the stored duration (no re-key)',
       old='            u.lockDays = uint16(remainingDays);',
       new='            // MUTANT',
       teste='test_AMultiplierPaysTheCommitmentMadeAndATopUpRekeysToWhatRemains'),
+# ── MORPH-1103: one reading per question, each pinned by a parity test (test/hardening/MorphismParity.t.sol)
+dict(nome='MORPH page: expiredLockScan re-grows its own page rule and reads limit 0 as the whole registry',
+      f=F,
+      old='        (end, total) = _lockerPage(offset, limit);\n        address[] memory buf',
+      new='        (end, total) = _lockerPage(offset, limit == 0 ? type(uint256).max : limit); // MUTANT\n        address[] memory buf',
+      teste='test_MORPH_bothLockerReadersWalkTheSamePage'),
+dict(nome='MORPH elapsed: hasStaleBoost re-grows its own expiry test, one second late',
+      f=F,
+      old='        if (!_lockElapsed(u)) return false;',
+      new='        if (u.lockDays == 0 || block.timestamp <= u.unlockTime) return false; // MUTANT',
+      teste='test_MORPH_theLockViewsReadTheClassTheProcessorClears'),
+dict(nome='MORPH elapsed: the processor clears a lapsed lock one second after the views call it elapsed',
+      f=F,
+      old='        if (u.lockDays > 0 && block.timestamp >= u.unlockTime) {\n            u.lockDays = 0; u.unlockTime = 0;',
+      new='        if (u.lockDays > 0 && block.timestamp > u.unlockTime) { // MUTANT\n            u.lockDays = 0; u.unlockTime = 0;',
+      teste='test_MORPH_theLockViewsReadTheClassTheProcessorClears'),
+dict(nome='MORPH ratio: solvency re-grows its own copy of the ratio and reads an empty book as 0',
+      f=F,
+      old='        r.collateralRatioWad  = collateralRatio();',
+      new='        r.collateralRatioWad  = o == 0 ? 0 : ML.mulDiv(bal, WAD, o); // MUTANT',
+      teste='test_MORPH_collateralRatioIsTheSolvencyReportsRatio'),
+dict(nome='MORPH ratio: solvency re-grows its own copy of the ratio from a dust-padded balance',
+      f=F,
+      old='        r.collateralRatioWad  = collateralRatio();',
+      new='        r.collateralRatioWad  = o == 0 ? type(uint256).max : ML.mulDiv(bal + CONSERVATION_DUST, WAD, o); // MUTANT',
+      teste='test_MORPH_collateralRatioIsTheSolvencyReportsRatio'),
+# ── LOSSFIRST-1103: LOSS-FIRST inside the sweep, third parties too (test/hardening/MaintenanceBeforePayment.t.sol)
+dict(nome='LOSS-FIRST sweep: the borrower window pays the positions it settles at par again',
+      f=F,
+      old='        if (msg.sig == this.maintStep.selector || ML.rawBalanceOf(bzpx, address(this)) + CONSERVATION_DUST\n',
+      new='        if (ML.rawBalanceOf(bzpx, address(this)) + CONSERVATION_DUST // MUTANT\n',
+      teste='test_LOSSFIRST_thirdPartySettledBeforeTheLossInTheSameWindowIsCreditedNotPaid'),
+dict(nome="LOSS-FIRST sweep: the caller's own interest is attributed after the sweep, by its own settle",
+      f=F,
+      old='        _attributeFirst(beneficiary);\n',
+      new='        // MUTANT\n',
+      teste='test_LOSSFIRST_theCarriersOwnLossIsBookedBeforeTheLockWindowPays'),
+dict(nome="LOSS-FIRST sweep: without the caller's attribution a borrowing carrier keeps its lapsed boost (BP-2026-008)",
+      f=F,
+      old='        _attributeFirst(beneficiary);\n',
+      new='        // MUTANT\n',
+      teste='test_TheBorrowingCarrierOfTheSweepIsNormalisedByItsOwnTraffic'),
+dict(nome='LOSS-FIRST sweep: the lock window settles a lapsed borrower nobody attributed in this transaction',
+      f=F,
+      old='            } else if (block.timestamp >= w.unlockTime && (w.debt == 0 || w.interestIndex == accInterestPerDebt)) {',
+      new='            } else if (block.timestamp >= w.unlockTime) { // MUTANT',
+      teste='test_LOSSFIRST_theLockWindowBooksNoLossAfterItPays'),
+dict(nome='LOSS-FIRST sweep: the lock window never normalises a borrower, attributed or not',
+      f=F,
+      old='            } else if (block.timestamp >= w.unlockTime && (w.debt == 0 || w.interestIndex == accInterestPerDebt)) {',
+      new='            } else if (block.timestamp >= w.unlockTime && w.debt == 0) { // MUTANT',
+      teste='test_TheBorrowingCarrierOfTheSweepIsNormalisedByItsOwnTraffic'),
+dict(nome='LOSS-FIRST sweep: the lock window skips a debt-free position this transaction did not touch',
+      f=F,
+      old='            } else if (block.timestamp >= w.unlockTime && (w.debt == 0 || w.interestIndex == accInterestPerDebt)) {',
+      new='            } else if (block.timestamp >= w.unlockTime && w.interestIndex == accInterestPerDebt) { // MUTANT',
+      teste='test_LOSSFIRST_theLockWindowBooksNoLossAfterItPays'),
+dict(nome='LOSS-FIRST poke: the named position is attributed after the sweep has paid',
+      f=F,
+      old='        _attributeFirst(user_);      // LOSS-FIRST: its own loss precedes what the sweep pays\n',
+      new='        // MUTANT\n',
+      teste='test_LOSSFIRST_thePokedPositionsLossIsBookedBeforeTheSweepPays'),
+dict(nome='LOSS-FIRST batch: each named position is attributed by its own settle, after the earlier ones were paid',
+      f=F,
+      old='        for (uint256 i = 0; i < users_.length; ) { _attributeFirst(users_[i]); unchecked { ++i; } }\n',
+      new='        // MUTANT\n',
+      teste='test_LOSSFIRST_theBatchBooksEveryNamedLossBeforeItPays'),
+dict(nome='LOSS-FIRST sweep: a seizure pays its own settle at par, only the poked positions are credited',
+      f=F,
+      old='        if (msg.sig == this.maintStep.selector || ML.rawBalanceOf(bzpx, address(this)) + CONSERVATION_DUST\n',
+      new='        if ((msg.sig == this.maintStep.selector && !_isLiquidatable(u)) || ML.rawBalanceOf(bzpx, address(this)) + CONSERVATION_DUST // MUTANT\n',
+      teste='test_LOSSFIRST_seizedBeforeTheLossInTheSameWindowIsCreditedNotPaid'),
+dict(nome="LOSS-FIRST sweep: the caller's own interest is attributed between the windows, after the seizures' bonuses",
+      f=F,
+      old='        _attributeFirst(beneficiary);\n        _sweepBorrowers(beneficiary, bBudget);\n',
+      new='        _sweepBorrowers(beneficiary, bBudget);\n        _attributeFirst(beneficiary); // MUTANT\n',
+      teste='test_LOSSFIRST_theCarriersOwnLossIsBookedBeforeTheSeizureBonus'),
+dict(nome='LOSS-FIRST batch: only the last named position is attributed before the batch pays',
+      f=F,
+      old='        for (uint256 i = 0; i < users_.length; ) { _attributeFirst(users_[i]); unchecked { ++i; } }\n',
+      new='        for (uint256 i = 0; i < users_.length; ) { _attributeFirst(users_[users_.length - 1]); unchecked { ++i; } } // MUTANT\n',
+      teste='test_LOSSFIRST_theBatchBooksEveryNamedLossBeforeItPays'),
+dict(nome='LOSS-FIRST batch, every order: each named loss is booked in the paying loop, by its own settle',
+      f=F,
+      old='        for (uint256 i = 0; i < users_.length; ) { _attributeFirst(users_[i]); unchecked { ++i; } }\n',
+      new='        // MUTANT\n',
+      teste='test_LOSSFIRST_everyOrderOfTheBatchPaysEachUserTheSame'),
+dict(nome='LOSS-FIRST sweep, every order: the borrower window books and pays in one loop again',
+      f=F,
+      old='        if (msg.sig == this.maintStep.selector || ML.rawBalanceOf(bzpx, address(this)) + CONSERVATION_DUST\n',
+      new='        if (ML.rawBalanceOf(bzpx, address(this)) + CONSERVATION_DUST // MUTANT\n',
+      teste='test_LOSSFIRST_everyOrderOfTheRegistryPaysEachUserTheSame'),
+dict(nome='seizure: the keeper bonus is no longer capped at the seized stake',
+      f=F,
+      old='        seized = _min(seized, stake);\n',
+      new='        // MUTANT\n',
+      teste='test_LOSSFIRST_documents_theSeizureBonusIsPaidAtParAheadOfTheWindowsLoss'),
+dict(nome='maintStep: the borrower window no longer seizes an underwater position',
+      f=F,
+      old='        if (_isLiquidatable(_users[who])) {\n            uint256 bonus = _executeLiquidation(who, beneficiary);',
+      new='        if (false) { // MUTANT\n            uint256 bonus = _executeLiquidation(who, beneficiary);',
+      teste='test_OWEDREAD_documents_anUnbookedLossReadsSolventUntilTheSweepBooksIt'),
+dict(nome='owed: past the stakes, the read also nets up to the protocol reserve (OWED-READ boundary)',
+      f=F,
+      old='        owed_ = ledgerNet + _sub0(totalRewardDistributed, totalRewardsPaid);\n',
+      new='        owed_ = ledgerNet + _sub0(_sub0(totalRewardDistributed, totalRewardsPaid), ledgerSum < totalDebt ? _min(totalDebt - ledgerSum, protocolReserve) : 0); // MUTANT\n',
+      teste='test_OWEDREAD_unbookedLossReadsAsABreachBoundedByTheRealDeficit'),
+dict(nome='isSolvent: always reads true, even once the loss is booked',
+      f=F,
+      old='    function isSolvent() external view returns (bool) { return !_hardBreach(); }',
+      new='    function isSolvent() external view returns (bool) { return true; } // MUTANT',
+      teste='test_OWEDREAD_documents_anUnbookedLossReadsSolventUntilTheSweepBooksIt'),
+dict(nome="claimPureYield: the sweep runs after the caller's settles, so an unbooked loss pays her at par (OWED-READ)",
+      f=F,
+      old='        _autoMaintain(msg.sender);   // LOSS-FIRST\n        _settlePendingRewards(msg.sender);\n        _settlePendingPureYield(msg.sender);\n        _resync(msg.sender);',
+      new='        _settlePendingRewards(msg.sender);\n        _settlePendingPureYield(msg.sender);\n        _autoMaintain(msg.sender); // MUTANT\n        _resync(msg.sender);',
+      teste='test_OWEDREAD_documents_anUnbookedLossReadsSolventUntilTheSweepBooksIt'),
+dict(nome='isSolvent: always reads false, even on a book the read nets in full',
+      f=F,
+      old='    function isSolvent() external view returns (bool) { return !_hardBreach(); }',
+      new='    function isSolvent() external view returns (bool) { return false; } // MUTANT',
+      teste='test_OWEDREAD_documents_anUnbookedLossReadsSolventUntilTheSweepBooksIt'),
+dict(nome='pure-yield settle: the breach credit is dropped, neither paid nor deferred (OWED-READ)',
+      f=F,
+      old='        if (_hardBreach()) { _rewardDeferred[user_] += due; return; }\n',
+      new='        if (_hardBreach()) { return; } // MUTANT\n',
+      teste='test_OWEDREAD_documents_anUnbookedLossReadsSolventUntilTheSweepBooksIt'),
+dict(nome='isSolvent: reads only the recorded loss, not the floored read (OWED-READ)',
+      f=F,
+      old='    function isSolvent() external view returns (bool) { return !_hardBreach(); }',
+      new='    function isSolvent() external view returns (bool) { return totalBadDebt == 0; } // MUTANT',
+      teste='test_OWEDREAD_unbookedLossReadsAsABreachBoundedByTheRealDeficit'),
+# ── OWED-READ with the emission reserve live (R > 0 at the breach; test/hardening/UnbookedLossReadIsALowerBound.t.sol)
+dict(nome='_owed: the emission reserve left out of the ledger (OWED-READ, R > 0)',
+     f=F,
+     old='        uint256 ledgerSum = totalStaked + rewardReserve + protocolReserve;\n',
+     new='        uint256 ledgerSum = totalStaked + protocolReserve; // MUTANT\n',
+     teste='test_OWEDREAD_liveEmissionReserve_theBreachNetsItWithTheOtherReserves'),
+dict(nome="claimPureYield: the sweep runs between the emission and the pure-yield settles, so an unbooked loss pays her emission at par (OWED-READ, R > 0)",
+     f=F,
+     old='        _autoMaintain(msg.sender);   // LOSS-FIRST\n        _settlePendingRewards(msg.sender);\n        _settlePendingPureYield(msg.sender);\n        _resync(msg.sender);',
+     new='        _settlePendingRewards(msg.sender);\n        _autoMaintain(msg.sender); // MUTANT\n        _settlePendingPureYield(msg.sender);\n        _resync(msg.sender);',
+     teste='test_OWEDREAD_documents_liveEmissionReserve_herEmissionIsDeferredToo'),
+ dict(nome="_emittedAt: the before-start guard is removed (an earlier time wraps to the whole series)",
+      f=F,
+      old="        if (x <= emissionStart) return 0;",
+      new="        // MUTANT",
+      teste="test_EmittedAtIsZeroAtTheStartAndAtEveryEarlierTime"),
+ dict(nome="INITIAL_REWARD_PER_SEC: the floored rate is one wei too high",
+      f=F,
+      old="    uint256 public  constant INITIAL_REWARD_PER_SEC = (HALVING_SERIES / 2) / HALVING_PERIOD;",
+      new="    uint256 public  constant INITIAL_REWARD_PER_SEC = (HALVING_SERIES / 2) / HALVING_PERIOD + 1; // MUTANT",
+      teste="test_EmittedAtOneSecondInIsExactlyTheInitialRate"),
+ dict(nome="HALVING_PERIOD: five calendar years with a leap day (1826 days) instead of 5 * 365 days",
+      f=F,
+      old="    uint256 public  constant HALVING_PERIOD         = 5 * 365 days;",
+      new="    uint256 public  constant HALVING_PERIOD         = 1826 days; // MUTANT",
+      teste="test_EmittedAtEachYearReleasesItsExactScheduledDelta"),
+ dict(nome="_emittedAt: the period index lags one second (the rollover second is billed at R0, no remainder)",
+      f=F,
+      old="            uint256 p  = dt / HALVING_PERIOD;                     // 0..1 here, 2 is the clamp above",
+      new="            uint256 p  = (dt - 1) / HALVING_PERIOD; // MUTANT",
+      teste="test_EmittedAtTheFiveYearRolloverJumpsByTheRatePlusTheFloorRemainder"),
+ dict(nome="_emittedAt: the close clamp fires one second early",
+      f=F,
+      old="        if (x >= emissionEnd)   return HALVING_SERIES - (HALVING_SERIES >> EMISSION_PERIODS);",
+      new="        if (x >= emissionEnd - 1) return HALVING_SERIES - (HALVING_SERIES >> EMISSION_PERIODS); // MUTANT",
+      teste="test_EmittedAtTheTenYearCloseReadsExactlyTotalRewards"),
+ dict(nome="_emittedAt: the close clamp holds only at the close second (>= becomes ==)",
+      f=F,
+      old="        if (x >= emissionEnd)   return HALVING_SERIES - (HALVING_SERIES >> EMISSION_PERIODS);",
+      new="        if (x == emissionEnd)   return HALVING_SERIES - (HALVING_SERIES >> EMISSION_PERIODS); // MUTANT",
+      teste="test_EmittedAtStaysAtTotalRewardsForeverAfterTheClose"),
+ dict(nome="currentRewardPerSec: the period index divides by PERIOD + 1 (the rollover second keeps R0)",
+      f=F,
+      old="        return INITIAL_REWARD_PER_SEC >> ((block.timestamp - emissionStart) / HALVING_PERIOD);",
+      new="        return INITIAL_REWARD_PER_SEC >> ((block.timestamp - emissionStart) / (HALVING_PERIOD + 1)); // MUTANT",
+      teste="test_CurrentRewardPerSecHalvesAtFiveYearsAndStopsAtTen"),
+ dict(nome="fundEmission: the cumulative cap lets one wei above TOTAL_REWARDS through",
+      f=F,
+      old="        if (totalEmissionFunded + amount_ > TOTAL_REWARDS) revert Staking__CapExceeded();",
+      new="        if (totalEmissionFunded + amount_ > TOTAL_REWARDS + 1) revert Staking__CapExceeded(); // MUTANT",
+      teste="test_FundEmissionAcceptsTotalMinusOneThenTheLastWei_OneWeiMoreIsRefused"),
+ dict(nome="TOTAL_REWARDS: the cap is one wei short of the budget",
+      f=F,
+      old="    uint256 public  constant TOTAL_REWARDS          = 90_000_000e18;",
+      new="    uint256 public  constant TOTAL_REWARDS          = 90_000_000e18 - 1; // MUTANT",
+      teste="test_FundEmissionAcceptsExactlyTotalRewardsInOneCall"),
+ dict(nome="TOTAL_REWARDS: the cap is one wei above the budget",
+      f=F,
+      old="    uint256 public  constant TOTAL_REWARDS          = 90_000_000e18;",
+      new="    uint256 public  constant TOTAL_REWARDS          = 90_000_000e18 + 1; // MUTANT",
+      teste="test_FundEmissionRefusesTotalRewardsPlusOneWei"),
+ dict(nome="fundEmission: each tranche overwrites the funded counter (+= becomes =)",
+      f=F,
+      old="        totalEmissionFunded += amount_;",
+      new="        totalEmissionFunded = amount_; // MUTANT",
+      teste="test_SplitFundingReachesTotalRewards_OneWeiMoreIsRefused"),
+ dict(nome="fundEmission: the zero-amount guard is removed",
+      f=F,
+      old="    function fundEmission(uint256 amount_) external nonReentrant onlyRole(ROLE_ADMIN) conserves {\n        if (amount_ == 0) revert Staking__ZeroAmount();",
+      new="    function fundEmission(uint256 amount_) external nonReentrant onlyRole(ROLE_ADMIN) conserves {\n        // MUTANT",
+      teste="test_FundEmissionRefusesZero"),
+ dict(nome="fundEmission: the cap is checked per call, not on the cumulative total",
+      f=F,
+      old="        if (totalEmissionFunded + amount_ > TOTAL_REWARDS) revert Staking__CapExceeded();",
+      new="        if (amount_ > TOTAL_REWARDS) revert Staking__CapExceeded(); // MUTANT",
+      teste="testFuzz_AnyTwoTranchesThatReachTotalRewardsAreAccepted_OneWeiMoreIsRefused"),
+ dict(nome="_updateGlobal: an empty pool keeps its clock (the empty window becomes backlog)",
+      f=F,
+      old="        if (tbe == 0 || emergencyMode) { lastRewardTime = block.timestamp; return; }   // no backlog capture",
+      new="        if (tbe == 0 || emergencyMode) { return; } // MUTANT",
+      teste="test_AnEmptyFirstYearStaysInTheReserve_TheRestIsDeliveredExactly"),
+ dict(nome="sweepUndistributedEmission: the residue is read one wei short",
+      f=F,
+      old="        uint256 residue = rewardReserve;",
+      new="        uint256 residue = rewardReserve - 1; // MUTANT",
+      teste="test_AnEmptyFirstPeriodLeavesExactlySixtyMillionForTheSweep"),
+ dict(nome="sweepUndistributedEmission: the residue goes to the caller, not the treasury",
+      f=F,
+      old="        if (!ML.rawTransfer(bzpx, treasury, residue)) revert Staking__TransferFailed();",
+      new="        if (!ML.rawTransfer(bzpx, msg.sender, residue)) revert Staking__TransferFailed(); // MUTANT",
+      teste="test_AnEmptyProgrammeSweepsTheWholeTotalRewardsToTheTreasury"),
+ dict(nome="_windowReward: the throttle scales by weight + 1",
+      f=F,
+      old="        if (tbe < MIN_EMISSION_WEIGHT) reward = ML.mulDiv(reward, tbe, MIN_EMISSION_WEIGHT);",
+      new="        if (tbe < MIN_EMISSION_WEIGHT) reward = ML.mulDiv(reward, tbe + 1, MIN_EMISSION_WEIGHT); // MUTANT",
+      teste="test_OneWeiOfWeightIsPaidTheScheduleScaledByOneOverMinWeight"),
+ dict(nome="_windowReward: the throttle stops one wei below the mark",
+      f=F,
+      old="        if (tbe < MIN_EMISSION_WEIGHT) reward = ML.mulDiv(reward, tbe, MIN_EMISSION_WEIGHT);",
+      new="        if (tbe < MIN_EMISSION_WEIGHT - 1) reward = ML.mulDiv(reward, tbe, MIN_EMISSION_WEIGHT); // MUTANT",
+      teste="test_OneWeiBelowMinWeightIsStillThrottled"),
+ dict(nome="MIN_EMISSION_WEIGHT: the mark moves one wei up (the mark itself is throttled)",
+      f=F,
+      old="    uint256 public  constant MIN_EMISSION_WEIGHT  = 1_000e18;",
+      new="    uint256 public  constant MIN_EMISSION_WEIGHT  = 1_000e18 + 1; // MUTANT",
+      teste="test_ExactlyMinWeightIsPaidTheFullSchedule"),
+ dict(nome="MIN_EMISSION_WEIGHT: the mark moves two wei up (one wei above it is throttled)",
+      f=F,
+      old="    uint256 public  constant MIN_EMISSION_WEIGHT  = 1_000e18;",
+      new="    uint256 public  constant MIN_EMISSION_WEIGHT  = 1_000e18 + 2; // MUTANT",
+      teste="test_OneWeiAboveMinWeightIsPaidTheFullSchedule"),
+ dict(nome="fundEmission: the dry window is not settled before the new tranche lands",
+      f=F,
+      old="        // the reserve up later retroactively pays out a window the protocol could not have paid.\n        _updateGlobal();",
+      new="        // the reserve up later retroactively pays out a window the protocol could not have paid.\n        // MUTANT",
+      teste="test_AnUnderfundedWindowPaysWhatTheReserveHeld_LaterFundingIsNeverRetroactive"),
+ dict(nome="sweepUndistributedEmission: the end gate opens one second early",
+      f=F,
+      old="        if (block.timestamp < emissionEnd) revert Staking__EmissionNotEnded();",
+      new="        if (block.timestamp < emissionEnd - 1) revert Staking__EmissionNotEnded(); // MUTANT",
+      teste="test_SweepIsRefusedOneSecondBeforeTheClose"),
+ dict(nome="sweepUndistributedEmission: the end gate refuses the close second (< becomes <=)",
+      f=F,
+      old="        if (block.timestamp < emissionEnd) revert Staking__EmissionNotEnded();",
+      new="        if (block.timestamp <= emissionEnd) revert Staking__EmissionNotEnded(); // MUTANT",
+      teste="test_SweepIsAllowedAtTheCloseSecond"),
+ dict(nome="sweepUndistributedEmission: the zero-residue guard is removed",
+      f=F,
+      old="        if (residue == 0) revert Staking__ZeroAmount();",
+      new="        // MUTANT",
+      teste="test_AFullPoolFromStartToCloseLeavesNoResidue_TheSweepRefusesZeroAmount"),
+ dict(nome="_emittedAt: the period anchor drops the S minus (period 0 opens at the whole 120M series, above TOTAL_REWARDS, and steps down at the rollover)",
+      f=F,
+      old="            return (HALVING_SERIES - (HALVING_SERIES >> p))",
+      new="            return (HALVING_SERIES >> p) // MUTANT",
+      teste="testFuzz_EmittedAtNeverDecreasesAndNeverExceedsTotalRewards"),
+ dict(nome="_emittedAt: the period-1 rate is one wei above R0 >> 1",
+      f=F,
+      old="                 + (INITIAL_REWARD_PER_SEC >> p) * (dt - p * HALVING_PERIOD);",
+      new="                 + ((INITIAL_REWARD_PER_SEC >> p) + p) * (dt - p * HALVING_PERIOD); // MUTANT",
+      teste="testFuzz_EmittedAtGrowsLinearlyAtThePeriodRateInsideEachPeriod"),
+ dict(nome="_emittedAt: the period anchor is the sum of floored rates (the remainder is never folded in)",
+      f=F,
+      old="            return (HALVING_SERIES - (HALVING_SERIES >> p))",
+      new="            return (p * INITIAL_REWARD_PER_SEC * HALVING_PERIOD) // MUTANT",
+      teste="testFuzz_AWindowAcrossTheRolloverPaysBothRatesAndTheFloorRemainder"),
+ dict(nome="_emittedAt: the close clamp is the sum of floored rates (12,240,000 wei short of TOTAL_REWARDS)",
+      f=F,
+      old="        if (x >= emissionEnd)   return HALVING_SERIES - (HALVING_SERIES >> EMISSION_PERIODS);",
+      new="        if (x >= emissionEnd)   return INITIAL_REWARD_PER_SEC * HALVING_PERIOD + (INITIAL_REWARD_PER_SEC >> 1) * HALVING_PERIOD; // MUTANT",
+      teste="testFuzz_TheLastWindowClosesAtExactlyTotalRewards"),
+ dict(nome="currentRewardPerSec: the rate halves every two periods",
+      f=F,
+      old="        return INITIAL_REWARD_PER_SEC >> ((block.timestamp - emissionStart) / HALVING_PERIOD);",
+      new="        return INITIAL_REWARD_PER_SEC >> ((block.timestamp - emissionStart) / HALVING_PERIOD / 2); // MUTANT",
+      teste="testFuzz_TheRateInForceIsTheOneSecondStepOfTheCurve"),
+ dict(nome="_updateGlobal: the clock is left one second behind (every window pays its last second twice)",
+      f=F,
+      old="        lastRewardTime          = block.timestamp;",
+      new="        lastRewardTime          = block.timestamp - 1; // MUTANT",
+      teste="testFuzz_AFullPoolReceivesExactlyTheCurveDeltaOfAnyWindow"),
+ dict(nome="_windowReward: a window pays the cumulative curve, not its delta",
+      f=F,
+      old="        reward = _emittedAt(t) - _emittedAt(lastRewardTime);",
+      new="        reward = _emittedAt(t); // MUTANT",
+      teste="invariant_DistributedNeverExceedsTheScheduleWhichNeverExceedsTotalRewards"),
+ dict(nome="_updateGlobal: the reserve is debited one wei less than the window distributes (inside the conservation dust)",
+      f=F,
+      old="        rewardReserve          -= reward;",
+      new="        rewardReserve          -= reward - 1; // MUTANT",
+      teste="invariant_ReservePlusDistributedIsAlwaysWhatWasFunded"),
+ dict(nome="_emittedAt: the period index is found by a loop over periods (same value, O(p) gas)",
+      f=F,
+      old="            uint256 p  = dt / HALVING_PERIOD;                     // 0..1 here, 2 is the clamp above",
+      new="            uint256 p; for (uint256 q = HALVING_PERIOD; q <= dt; q += HALVING_PERIOD) ++p; // MUTANT",
+      teste="test_EmittedAtCostsTheSameGasAnywhereInEitherPeriod"),
+# ── EMISSION-90M: the tests rewritten for the 90M halving programme, each paired with a mutant
+# that turns it red. The comment over each entry names the assert the run must fail on: a red
+# from any other failure (a revert, a setup assert) is not this proof. X5 (lockStep repricing
+# without its settles) is left out: two of its three pairs pass mutated; its guard is the
+# lockStep settle entry above.
+# X1 - assert "RewardClaimed param mismatch at amount" (expectEmit RewardClaimed: the due moves with R0)
+ dict(nome="emission: the halving series grows (HALVING_SERIES 120M becomes 121M): a claim pays period 0 at the wrong rate",
+      f=F,
+      old="    uint256 private constant HALVING_SERIES         = 120_000_000e18;",
+      new="    uint256 private constant HALVING_SERIES         = 121_000_000e18; // MUTANT",
+      teste="test_E_RewardClaimed_payload"),
+# X1 - assert "UndistributedEmissionSwept param mismatch at amount" (expectEmit UndistributedEmissionSwept: the residue is no longer E(start + 365 days))
+ dict(nome="emission: the halving series grows (HALVING_SERIES 120M becomes 121M): the empty first year's residue moves",
+      f=F,
+      old="    uint256 private constant HALVING_SERIES         = 120_000_000e18;",
+      new="    uint256 private constant HALVING_SERIES         = 121_000_000e18; // MUTANT",
+      teste="test_E_UndistributedEmissionSwept_empty_first_year"),
+# X1 - assert "the residue reached the treasury"
+ dict(nome="emission: the halving series grows (HALVING_SERIES 120M becomes 121M): the residue the treasury receives moves",
+      f=F,
+      old="    uint256 private constant HALVING_SERIES         = 120_000_000e18;",
+      new="    uint256 private constant HALVING_SERIES         = 121_000_000e18; // MUTANT",
+      teste="test_SWEEP_residueLeavesFromAHealthyBook"),
+# X2 - assert "ACHADO: a varredura reduziu o que a utilizadora ja tinha acumulado"
+ dict(nome="sweepUndistributedEmission: the residue is read before _updateGlobal settles the window already earned",
+      f=F,
+      old="        _updateGlobal();\n        uint256 residue = rewardReserve;\n",
+      new="        uint256 residue = rewardReserve; // MUTANT\n",
+      teste="test_Sweep_DoesNotStealAccruedUserRewards"),
+# X3 - assert "next call did not revert as expected" (expectRevert Staking__ZeroAmount on the second sweep)
+ dict(nome="sweepUndistributedEmission: an empty reserve is swept again instead of refused with ZeroAmount",
+      f=F,
+      old="        if (residue == 0) revert Staking__ZeroAmount();\n        rewardReserve = 0;\n",
+      new="        rewardReserve = 0; // MUTANT\n",
+      teste="test_Sweep_IsIdempotent"),
+# X4 - assert "expired: un-boosted emission denominator"
+ dict(nome="_autoMaintain: a transaction no longer carries the expired-lock sweep (an idle position keeps its boost)",
+      f=F,
+      old="        _sweepExpiredLocks(beneficiary, lBudget);",
+      new="        // MUTANT",
+      teste="test_StaleBoost_IdlePureStakerIsNormalisedAutonomously"),
+# X4 - assert "1.00x idle + 1.25x committed"
+ dict(nome="_autoMaintain: a transaction no longer carries the expired-lock sweep (the idle position is not repriced)",
+      f=F,
+      old="        _sweepExpiredLocks(beneficiary, lBudget);",
+      new="        // MUTANT",
+      teste="test_StaleBoost_RelockingStrictlyBeatsIdling"),
+# X4 - assert "paid in full, to the wei"
+ dict(nome="_autoMaintain: a transaction no longer carries the expired-lock sweep (the boosted backlog is not paid)",
+      f=F,
+      old="        _sweepExpiredLocks(beneficiary, lBudget);",
+      new="        // MUTANT",
+      teste="test_StaleBoost_SweepPaysBeforeItReprices"),
+# X6 - revert Staking__InvariantBreached(), not the RT assert: the unpaid half moves the balance and
+# not the books, so `conserves` reverts the withdraw first. X6b below is the RT assert's own mutant.
+ dict(nome="withdraw: the debt-free exit pays half the principal",
+      f=F,
+      old="        if (!ML.rawTransfer(bzpx, msg.sender, amount_)) revert Staking__TransferFailed();\n        emit Withdrawn(msg.sender, amount_, 0, 0, amount_);",
+      new="        if (!ML.rawTransfer(bzpx, msg.sender, amount_ / 2)) revert Staking__TransferFailed(); // MUTANT\n        emit Withdrawn(msg.sender, amount_, 0, 0, amount_);",
+      teste="testFuzz_DebtFreeRoundTripNeverLosesPrincipal"),
+# X7 - assert "UndistributedEmissionSwept param mismatch at amount" (expectEmit UndistributedEmissionSwept: the amount reads 0, got=0)
+ dict(nome="sweepUndistributedEmission: the event reports the zeroed reserve, not the residue",
+      f=F,
+      old="        emit UndistributedEmissionSwept(treasury, residue);",
+      new="        emit UndistributedEmissionSwept(treasury, rewardReserve); // MUTANT",
+      teste="test_E_UndistributedEmissionSwept_empty_first_year"),
+# X8 - assert "MR-D1: the reward channel is not linear in the stake"
+ dict(nome="_atLiveWeight: the live weight reads the book's total stake, not the position's",
+      f=F,
+      old="        uint256 eq = _sub0(s, u.debt);\n",
+      new="        uint256 eq = _sub0(totalStaked, u.debt); // MUTANT\n",
+      teste="testFuzz_TwiceTheStakeEarnsTwiceTheReward"),
+# X9 - assert "MR-D2: splitting a deposit changed the reward"
+ dict(nome="deposit: a top-up overwrites the stake instead of adding to it",
+      f=F,
+      old="        u.staked      += amount_;\n        u.depositBlock = uint64(block.number);\n",
+      new="        u.staked       = amount_; // MUTANT\n        u.depositBlock = uint64(block.number);\n",
+      teste="testFuzz_SplitDepositEarnsWhatOneDepositEarns"),
+ # ── deploy script: its funding amount is pinned to TOTAL_REWARDS() (test/DeployEmissionPin.t.sol) ──
+ dict(nome="Deploy: pinEmission accepts any value (the equality check is gone)",
+      f=D,
+      old='        require(totalRewards == EMISSION, "Deploy: EMISSION != TOTAL_REWARDS()");',
+      new='        require(true, "Deploy: EMISSION != TOTAL_REWARDS()"); // MUTANT',
+      teste="test_PinEmissionRefusesOneWeiEitherSide"),
+ dict(nome="Deploy: run() funds the deployed cap without pinning it to EMISSION",
+      f=D,
+      old="        uint256 total = pinEmission(staking.TOTAL_REWARDS());",
+      new="        uint256 total = staking.TOTAL_REWARDS(); // MUTANT",
+      teste="test_DeployRunRefusesWhenTheDeployedCapDiffers"),
+ dict(nome="Deploy: run() funds EMISSION without reading the deployed cap",
+      f=D,
+      old="        uint256 total = pinEmission(staking.TOTAL_REWARDS());",
+      new="        uint256 total = EMISSION; // MUTANT",
+      teste="test_DeployRunRefusesWhenTheDeployedCapDiffers"),
+ dict(nome="Deploy: EMISSION drifts one wei above TOTAL_REWARDS",
+      f=D,
+      old="    uint256 public constant EMISSION = 90_000_000e18;",
+      new="    uint256 public constant EMISSION = 90_000_000e18 + 1; // MUTANT",
+      teste="test_DeployEmissionEqualsTotalRewards"),
+ # ── G-1109: tests of main..staking-integ-1109 that had no mutant, and the tightened pins ──
+# X6b - assert "RT: a debt-free round trip lost principal" (the skim lands in protocolReserve: the books still balance)
+ dict(nome='withdraw: the debt-free exit pays half the principal and books the other half as protocol revenue',
+      f=F,
+      old='        if (!ML.rawTransfer(bzpx, msg.sender, amount_)) revert Staking__TransferFailed();\n        emit Withdrawn(msg.sender, amount_, 0, 0, amount_);',
+      new='        if (!ML.rawTransfer(bzpx, msg.sender, amount_ / 2)) revert Staking__TransferFailed(); // MUTANT\n        protocolReserve += amount_ - amount_ / 2;\n        emit Withdrawn(msg.sender, amount_, 0, 0, amount_);',
+      teste='testFuzz_DebtFreeRoundTripNeverLosesPrincipal'),
+# G-1109 - assert "a third party was paid at par before the sweep's last attribution" (all 8 thirdPartyOrder tests)
+ dict(nome='LOSS-FIRST sweep: the borrower window pays the positions it settles at par again (third-party order, every entry point)',
+      f=F,
+      old='        if (msg.sig == this.maintStep.selector || ML.rawBalanceOf(bzpx, address(this)) + CONSERVATION_DUST\n',
+      new='        if (ML.rawBalanceOf(bzpx, address(this)) + CONSERVATION_DUST // MUTANT\n',
+      teste='test_LOSSFIRST_thirdPartyOrder_'),
+# G-1109 - assert "the last day: the health is at or above the threshold" (the estimate is one day late: at its day the clamp reads zero and the health is already below)
+ dict(nome='daysToLiquidation: the estimate reads one day more than the slack buys',
+      f=F,
+      old='        d = daily == 0 ? type(uint256).max : (s - stakeAtLiq) / daily;',
+      new='        d = daily == 0 ? type(uint256).max : (s - stakeAtLiq) / daily + 1; // MUTANT',
+      teste='testFuzz_DaysToLiquidationIsWhenLiquidateStartsToAccept'),
+# G-1109 - assert "one day later: the health is at or below the threshold" (the estimate is one day early; floored at zero so the view cannot underflow first)
+ dict(nome='daysToLiquidation: the estimate reads one day less than the slack buys',
+      f=F,
+      old='        d = daily == 0 ? type(uint256).max : (s - stakeAtLiq) / daily;',
+      new='        d = daily == 0 ? type(uint256).max : _sub0((s - stakeAtLiq) / daily, 1); // MUTANT',
+      teste='testFuzz_DaysToLiquidationIsWhenLiquidateStartsToAccept'),
+# G-1109 - assert "one day more would outlast the close"
+ dict(nome='maxLockDaysAvailable: the countdown is one day short of the emission close',
+      f=F,
+      old='        uint256 d = (emissionEnd - block.timestamp) / 1 days;',
+      new='        uint256 d = (emissionEnd - block.timestamp) / 1 days - 1; // MUTANT',
+      teste='testFuzz_MaxLockDaysIsTheLongestLockInsideTheProgramme'),
+# G-1109 - expectRevert Staking__EmergencyNotActive not met: "next call did not revert as expected"
+ dict(nome='syncEquity: the emergency-only door opens outside an emergency',
+      f=F,
+      old='    function syncEquity(address user_) external {\n        if (!emergencyMode) revert Staking__EmergencyNotActive();\n',
+      new='    function syncEquity(address user_) external {\n        // MUTANT\n',
+      teste='test_P1_SYNC_reverts_outside_an_emergency'),
+# G-1109 - assert "alice trackedEquity" (the sync re-reads equity without the frozen interest)
+ dict(nome='syncEquity: refreshes the tracked equity without attributing the frozen interest',
+      f=F,
+      old='        _accrueInterestFor(user_);\n        UserInfo storage u = _users[user_];\n        _applyBoost(u, u.trackedBoostedEffective, u.trackedBoostedPure);',
+      new='        UserInfo storage u = _users[user_]; // MUTANT\n        _applyBoost(u, u.trackedBoostedEffective, u.trackedBoostedPure);',
+      teste='test_P1_SYNC_refreshes_equity_and_leaves_the_weights'),
+# G-1109 - Staking__StaleEquity() instead of the full payout (the solvent exit reads the stale-book guard)
+ dict(nome='emergencyWithdraw: the stale-equity branch runs on a solvent pot too',
+      f=F,
+      old='            if (pot < eCorr) {',
+      new='            if (true) { // MUTANT',
+      teste='test_P1_EMG_solvent_exit_needs_no_sync'),
+# G-1109 - expectRevert InvariantBreached not met on claimPureYield ("Error != expected error" or "next call did not revert")
+ dict(nome='claimPureYield: the hard-breach refusal is removed (P6)',
+      f=F,
+      old='        if (block.number <= u.depositBlock + MIN_DEPOSIT_BLOCKS) revert Staking__FlashLoanProtection();\n        if (_hardBreach()) revert Staking__InvariantBreached();',
+      new='        if (block.number <= u.depositBlock + MIN_DEPOSIT_BLOCKS) revert Staking__FlashLoanProtection();\n        // MUTANT',
+      teste='test_P6_claims_stay_closed_under_breach'),
+# G-1109 - expectRevert Staking__StaleEquity not met on the stale book: "next call did not revert as expected"
+ dict(nome='emergencyWithdraw: the breached haircut scales against a stale book (STALE-EQUITY guard removed)',
+      f=F,
+      old='                if (g > a + CONSERVATION_DUST || a > g + CONSERVATION_DUST) revert Staking__StaleEquity();',
+      new='                // MUTANT',
+      teste='test_EMG_HAIRCUT_payout_does_not_depend_on_exit_order'),
+# G-1109 - expectRevert "Deploy: EMISSION != TOTAL_REWARDS()" not met for an x above EMISSION
+ dict(nome='Deploy: pinEmission accepts any value at or above EMISSION (one-sided pin)',
+      f=D,
+      old='        require(totalRewards == EMISSION, "Deploy: EMISSION != TOTAL_REWARDS()");',
+      new='        require(totalRewards >= EMISSION, "Deploy: EMISSION != TOTAL_REWARDS()"); // MUTANT',
+      teste='testFuzz_PinEmissionRefusesAnyOtherValue'),
+# G-1109 - assert "deployer kept a remainder" (fundEmission pulls one wei less than it books; the script requires read the books)
+ dict(nome='fundEmission: books amount_ but pulls one wei less',
+      f=F,
+      old='        _updateGlobal();\n        if (!ML.rawTransferFrom(bzpx, msg.sender, address(this), amount_)) revert Staking__TransferFailed();\n        totalEmissionFunded += amount_;',
+      new='        _updateGlobal();\n        if (!ML.rawTransferFrom(bzpx, msg.sender, address(this), amount_ - 1)) revert Staking__TransferFailed(); // MUTANT\n        totalEmissionFunded += amount_;',
+      teste='test_DeployRunFundsTheFullEmission'),
+# J-1109 - assert "a third party was paid at par before the sweep's last attribution" (the lock window pays dave ahead of the borrower window)
+ dict(nome='_autoMaintain: the lock window runs before the borrower window',
+      f=F,
+      old='        _sweepBorrowers(beneficiary, bBudget);\n        _sweepExpiredLocks(beneficiary, lBudget);',
+      new='        _sweepExpiredLocks(beneficiary, lBudget); // MUTANT\n        _sweepBorrowers(beneficiary, bBudget);',
+      teste='test_LOSSFIRST_thirdPartyOrder_'),
+# J-1109 - assert "the stale-weight excess of a borrower is the residue" / "a lock normalised after its unlock returns the boost it drew there"
+ dict(nome='_settlePendingRewards: pays the window at the tracked weight (no P1-C, no LOCK-STALE)',
+      f=F,
+      old='            uint256 paid   = _atLiveWeight(u, u.staked, earned);',
+      new='            uint256 paid   = earned; // MUTANT',
+      teste='test_RESIDUE_'),
+# J-1109 - assert "the treasury received the whole residue" / "with no positions, everything goes to the treasury"
+ dict(nome='sweepUndistributedEmission: sends half the residue and keeps the rest booked',
+      f=F,
+      old='        rewardReserve = 0;\n        if (!ML.rawTransfer(bzpx, treasury, residue)) revert Staking__TransferFailed();',
+      new='        rewardReserve = residue - residue / 2; // MUTANT\n        if (!ML.rawTransfer(bzpx, treasury, residue / 2)) revert Staking__TransferFailed();',
+      teste='test_RESIDUE_theAdminSweepsItWholeToTheTreasury|test_EmptyProgrammeSweepsTheWholeBudgetToTreasury'),
+# I-fix 1109 - assert "I7: paid above distributed" (both debts floored: the shrunk sequence pays one wei above the emission)
+ dict(nome='_wadUp: floors both debts (no round-up at the checkpoint)',
+      f=F,
+      old='        return ML.mulDiv(a, b, WAD) + (mulmod(a, b, WAD) == 0 ? 0 : 1);',
+      new='        return ML.mulDiv(a, b, WAD); // MUTANT',
+      teste='test_I7_rewardDebt_shrunkSequencePaysNoMoreThanDistributed'),
+# I-fix 1109 - assert "I7 emission grind: paid above distributed" (only rewardDebt floored; the last exit also reverts TransferFailed on the short balance)
+ dict(nome='_checkpoint: floors rewardDebt only',
+      f=F,
+      old='        u.rewardDebt     = _wadUp(u.trackedBoostedEffective, accRewardPerShare);',
+      new='        u.rewardDebt     = ML.mulDiv(u.trackedBoostedEffective, accRewardPerShare, WAD); // MUTANT',
+      teste='test_I7_lastExit_claimSweepWithdraw_everyPrincipalLeavesWhole|test_I7_rewardDebt_grindingSybilsCannotPayAboveDistributed'),
+# I-fix 1109 - assert "I7 pure grind: paid above distributed" (only pureYieldDebt floored: grinding sybils overdraw the pure channel)
+ dict(nome='_checkpoint: floors pureYieldDebt only',
+      f=F,
+      old='        u.pureYieldDebt  = _wadUp(u.trackedBoostedPure,      accPureYieldPerShare);',
+      new='        u.pureYieldDebt  = ML.mulDiv(u.trackedBoostedPure, accPureYieldPerShare, WAD); // MUTANT',
+      teste='test_I7_pureYieldDebt_grindingSybilsCannotPayAboveDistributed'),
+# I-fix 1109 - assert "I7: rewardDebt rounded an exact product up" (a flat +1 instead of the ceiling)
+ dict(nome='_wadUp: adds one wei even on an exact product',
+      f=F,
+      old='        return ML.mulDiv(a, b, WAD) + (mulmod(a, b, WAD) == 0 ? 0 : 1);',
+      new='        return ML.mulDiv(a, b, WAD) + 1; // MUTANT',
+      teste='test_I7_anExactProductAddsNothing'),
+# K-1109 - assert "the caller is paid the seized equity, LIQ_BONUS_BPS of the debt capped, and nothing else" (the bonus passes the equity, the reserve pays the excess, the books still balance: conserves stays silent)
+ dict(nome='seizure: the keeper bonus is paid uncapped, the reserve topping it up past the seized equity',
+      f=F,
+      old='        keeperBonus      = _sub0(seized, debt);   // surplus -> keeper (conservation-consistent)',
+      new='        keeperBonus      = bonus; protocolReserve -= bonus - _sub0(seized, debt); // MUTANT',
+      teste='test_LOSSFIRST_documents_theSeizureBonusIsPaidAtParAheadOfTheWindowsLoss'),
 ]
-CONTRACTS = ("BlazePhoenixStaking",)
+# (source file under out/, contract): a mutant in script/ moves Deploy, not the staking contract
+CONTRACTS = (("BlazePhoenixStaking.sol", "BlazePhoenixStaking"), ("Deploy.s.sol", "Deploy"))
 
 
 def run(t):
@@ -757,15 +1309,20 @@ def run(t):
 
 def artefact_fingerprint():
     """sha256 of creation + runtime bytecode of each shipped contract (bp-dex: a mutant is a claim
-    about the artefact, not about the source; byte-identical means INERT)."""
+    about the artefact, not about the source; byte-identical means INERT). The CBOR metadata is
+    dropped first: it carries a hash of the source, so with it every edit, a comment included,
+    moved the fingerprint and the INERT gate could never fire. The runtime ends with it (its
+    length is the last two bytes) and the creation code embeds the same bytes, not at its end."""
     out = {}
-    for c in CONTRACTS:
-        f = os.path.join("out", f"{c}.sol", f"{c}.json")
+    for sol, c in CONTRACTS:
+        f = os.path.join("out", sol, f"{c}.json")
         if not os.path.exists(f):
             return {}
         art = json.load(open(f))
-        obj = art.get("bytecode", {}).get("object", "") + "|" + art.get("deployedBytecode", {}).get("object", "")
-        out[c] = hashlib.sha256(obj.encode()).hexdigest()[:16]
+        run_ = art.get("deployedBytecode", {}).get("object", "")
+        meta = run_[-(2 * int(run_[-4:], 16) + 4):] if len(run_) > 6 else ""
+        obj = art.get("bytecode", {}).get("object", "") + "|" + run_
+        out[c] = hashlib.sha256((obj.replace(meta, "") if meta else obj).encode()).hexdigest()[:16]
     return out
 
 
@@ -777,6 +1334,42 @@ def baseline():
     green = set(re.findall(r"\[PASS\]\s+(\w+)", out))
     red = set(re.findall(r"\[FAIL[^\]]*\]\s+(\w+)", out))
     return green, red, out
+
+
+def rebuild(files):
+    """Restoring a source does not rebuild it: out/ kept the last mutant's artefact for whatever
+    read it next without building (a size check, a fingerprint). The failure is returned for
+    main() to count: printed only, it left the run green over a stale out/."""
+    if not files:
+        return None
+    r = subprocess.run(["forge", "build", *sorted(files)], capture_output=True, text=True)
+    if r.returncode:
+        print(f"  REBUILD FAILED (exit {r.returncode}): out/ may still hold the last mutant's artefact")
+        return f"REBUILD FAILED (exit {r.returncode}): out/ may still hold the last mutant's artefact."
+    return None
+
+
+def write_whole(path, text):
+    """Replace a source in one step: open(path, "w") truncates it before the write, so a signal or
+    an error in between leaves it empty or cut short. The text goes to a sibling temporary file
+    (same filesystem, same mode) and os.replace swaps it in: the source is either the old or the
+    new text, never a prefix."""
+    fd, tmp = tempfile.mkstemp(dir=os.path.dirname(os.path.abspath(path)), prefix=".mutant-")
+    try:
+        with os.fdopen(fd, "w") as fh:
+            fh.write(text)
+        os.chmod(tmp, os.stat(path).st_mode & 0o7777)
+        os.replace(tmp, path)
+    except BaseException:
+        if os.path.exists(tmp):
+            os.unlink(tmp)
+        raise
+
+
+def unwind(signum, _frame):
+    """By default SIGTERM and SIGHUP (a timeout, a closed terminal) end the process without
+    unwinding: no finally runs, so src/ stays mutated and out/ is not rebuilt. Raising unwinds."""
+    raise SystemExit(128 + signum)
 
 
 def selection():
@@ -792,6 +1385,8 @@ def selection():
 
 
 def main():
+    for s in (signal.SIGTERM, signal.SIGHUP):
+        signal.signal(s, unwind)
     fails = []
     mine, k, n = selection()
     paired = {m["teste"] for _, m in mine}
@@ -804,29 +1399,34 @@ def main():
     for t in sorted(paired - green - red):
         fails.append(f"BASELINE MISSING: '{t}' was neither PASS nor FAIL in the baseline run.")
         print(f"  BASELINE ?    {t}")
-    for i, m in mine:
-        src = open(m["f"]).read()
-        if src.count(m["old"]) != 1:
-            fails.append(f"[{i}] {m['nome']}: target not found exactly once in {m['f']}.")
-            print(f"  [{i}] TARGET LOST  {m['nome']}"); continue
-        bak = src
-        try:
-            open(m["f"], "w").write(src.replace(m["old"], m["new"]))
-            ok, out = run(m["teste"])
-            fp = artefact_fingerprint()
-            if pristine and fp and fp == pristine:
-                inert.append(f"[{i}] {m['nome']}: INERT - bytecode identical to pristine.")
-                print(f"  [{i}] INERT        {m['nome']}")
-            elif ok:
-                fails.append(f"[{i}] {m['nome']}: '{m['teste']}' PASSED with the guard mutated - decorative.")
-                print(f"  [{i}] SURVIVED     {m['nome']}  ({m['teste']} passed mutated)")
-            elif "No tests match" in out or "Compiler run failed" in out:
-                fails.append(f"[{i}] {m['nome']}: '{m['teste']}' does not exist or did not compile.")
-                print(f"  [{i}] NO TEST      {m['nome']}")
-            else:
-                print(f"  [{i}] killed       {m['nome']}")
-        finally:
-            open(m["f"], "w").write(bak)
+    try:
+        for i, m in mine:
+            src = open(m["f"]).read()
+            if src.count(m["old"]) != 1:
+                fails.append(f"[{i}] {m['nome']}: target not found exactly once in {m['f']}.")
+                print(f"  [{i}] TARGET LOST  {m['nome']}"); continue
+            bak = src
+            try:
+                open(m["f"], "w").write(src.replace(m["old"], m["new"]))
+                ok, out = run(m["teste"])
+                fp = artefact_fingerprint()
+                if "No tests match" in out or "Compiler run failed" in out:
+                    fails.append(f"[{i}] {m['nome']}: '{m['teste']}' does not exist or did not compile.")
+                    print(f"  [{i}] NO TEST      {m['nome']}")
+                elif pristine and fp and fp == pristine:
+                    inert.append(f"[{i}] {m['nome']}: INERT - bytecode identical to pristine.")
+                    print(f"  [{i}] INERT        {m['nome']}")
+                elif ok:
+                    fails.append(f"[{i}] {m['nome']}: '{m['teste']}' PASSED with the guard mutated - decorative.")
+                    print(f"  [{i}] SURVIVED     {m['nome']}  ({m['teste']} passed mutated)")
+                else:
+                    print(f"  [{i}] killed       {m['nome']}")
+            finally:
+                write_whole(m["f"], bak)
+    finally:
+        failed = rebuild({m["f"] for _, m in mine})
+    if failed:
+        fails.append(failed)
     print()
     fails.extend(inert)
     if fails:

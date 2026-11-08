@@ -8,7 +8,7 @@ proves on every transaction instead of claiming after the fact.**
 ![licence](https://img.shields.io/badge/licence-BUSL--1.1-444?style=flat-square)
 ![oracle](https://img.shields.io/badge/price%20oracle-none%20by%20construction-1B6B52?style=flat-square)
 ![keepers](https://img.shields.io/badge/keepers%20required-zero-1B6B52?style=flat-square)
-![emission](https://img.shields.io/badge/emission-180M%20biennial%20halving-C2521B?style=flat-square)
+![emission](https://img.shields.io/badge/emission-90M%20five--year%20halving-C2521B?style=flat-square)
 ![stage](https://img.shields.io/badge/stage-pre--launch%20preview-C9A227?style=flat-square)
 
 Collateral, borrowed asset, and reward token are **all the same token (BZPX)**. Because there is
@@ -22,7 +22,7 @@ Three properties the protocol is designed around:
    least everything it owes. No indexer, no trust, no off-chain watcher.
 2. **100% autonomous maintenance.** The book cleans itself from ordinary user traffic — no keeper
    bot, no admin button, gas bounded unconditionally.
-3. **Deterministic emission.** 180,000,000 BZPX on a biennial-halving curve evaluated in closed
+3. **Deterministic emission.** 90,000,000 BZPX on a five-year-halving curve evaluated in closed
    form: a pure function of time with no loop, no oracle, and no admin knob.
 
 ```mermaid
@@ -81,7 +81,7 @@ the site's [/solvency](https://blazephoenix.xyz/solvency) page). The BZPX token 
 independent external audit has not happened yet and is planned before launch.
 
 What already runs on every push: the Foundry suite (build, tests, EIP-170 size
-gate) plus a **real-EVM Node harness of 9 suites**. The shared 40M BZPX bounty
+gate) plus a **real-EVM Node harness of 9 suites**. The bounty programme shared with the DEX
 has triaged **21 external reports — every confirmed finding fixed with
 regression tests, zero Critical**. Details: [`SECURITY.md`](./SECURITY.md).
 
@@ -166,8 +166,10 @@ boost weight.
 
 **Window 2 — the locker registry (yield fairness).** `_borrowers` is, by construction, blind to a
 **pure staker** (`debt == 0`), so a second registry is needed. `_lockers` tracks every position holding a live commitment, and this window normalises
-any that has elapsed: rewards settled at the boost up to `unlockTime` and at 1.00× after it, *then*
-the boost released and the entry de-registered. No keeper, no user action, no off-chain indexer.
+any that has elapsed (a borrower once the transaction has booked its interest; window 1 or its own
+transaction normalises the others): rewards settled at the boost up to `unlockTime` and at 1.00×
+after it, *then* the boost released and the entry de-registered. No keeper, no user action, no
+off-chain indexer.
 
 Both windows **self-size** with backlog pressure via `_windowBudget()` — a *pure function of
 on-chain state*, no admin input:
@@ -209,8 +211,8 @@ There is no liquid staking — **every deposit is a locked commitment** measured
 
 - `deposit(uint256 amount, uint256 lockDays)` — `lockDays` is **min 90, max 2555 (7 years)**.
 - A **decreasing countdown** caps every lock at the days remaining until the emission programme
-  closes (`maxLockDaysAvailable()`, 16 years after the emission start), so **no lock can ever
-  outlast emission**. For most of the programme the cap is the full 7 years; with, say, 2 years
+  closes (`maxLockDaysAvailable()`, 10 years after the emission start), so **no lock can ever
+  outlast emission**. The cap is the full 7 years until 2555 days remain (year 3); with, say, 2 years
   left, the max is ~730 days; in the final 90 days new deposits/locks are unavailable (the
   90-day floor would cross the end).
 - **Top-ups can only extend, never shorten.** If the chosen duration would land *before* your
@@ -272,7 +274,7 @@ any fork against a different asset.
 
 | Parameter | Value |
 |---|---|
-| Total emission | 180,000,000 BZPX — biennial halving, `90M >> p` per 2-year period (see below) |
+| Total emission | 90,000,000 BZPX — five-year halving, `60M >> p` per 5-year period, 2 periods (see below) |
 | Max stake / wallet | 30,000,000 BZPX |
 | Max LTV (on effective stake) | 50% |
 | Max protocol utilisation (`totalDebt / totalStaked`, checked at borrow) | 75% |
@@ -286,25 +288,25 @@ any fork against a different asset.
 
 ---
 
-## Emission — 180M BZPX, halving every two years
+## Emission — 90M BZPX, halving every five years
 
-Period `p` (0-indexed, two years each) emits `90M >> p`. The total is exact by construction, not
-by calibration: `Σ 90M/2^p = 180M`.
+Period `p` (0-indexed, five years each) emits `60M >> p`, and the programme runs 2 periods
+(10 years). The total is exact by construction, not by calibration: `60M + 30M = 90M`.
 
-| Years | Emitted in period | Cumulative | % of budget |
-|---|--:|--:|--:|
-| 1–2 | 90,000,000 | 90,000,000 | 50% |
-| 3–4 | 45,000,000 | 135,000,000 | 75% |
-| 5–6 | 22,500,000 | 157,500,000 | 87.5% |
-| 7–8 | 11,250,000 | 168,750,000 | 93.75% |
-| 9–16 | geometric tail | 179,296,875 | 99.61% |
+| Years | Emitted in period | Per year | Cumulative | % of budget |
+|---|--:|--:|--:|--:|
+| 1–5 | 60,000,000 | 12,000,000 | 60,000,000 | 66.7% |
+| 6–10 | 30,000,000 | 6,000,000 | 90,000,000 | 100% |
 
 Cumulative emission is a **closed form** — one division, two shifts, one multiplication; no loop,
 no oracle, no `exp`/`log`:
 
 ```
-emitted(t) = (TOTAL − (TOTAL >> p)) + (R0 >> p)·(t − start − p·PERIOD),   p = ⌊(t − start)/PERIOD⌋
+emitted(t) = (S − (S >> p)) + (R0 >> p)·(t − start − p·PERIOD),   p = ⌊(t − start)/PERIOD⌋
 ```
+
+with series `S = 120M`, `R0 = (S/2)/PERIOD`, and the curve clamped at `S − (S >> 2) = 90M` from the
+end of period 2 on.
 
 Three things about how it is used matter more than the formula itself:
 
@@ -319,15 +321,17 @@ Three things about how it is used matter more than the formula itself:
 - **Anyone can read the whole curve.** `emittedAt(timestamp)` is public, so the schedule is
   independently verifiable rather than merely documented.
 
-The programme closes after 8 periods (16 years) with 255/256 of the budget emitted and the
-running rate below 0.8% of the opening one — a fade into real yield (borrow interest, plus the
-DEX fee-share routed to the reserve), not a cliff. The exact `180M >> 8 = 703,125 BZPX` tail,
-along with anything stranded by empty windows, is recoverable **only** to the immutable treasury
+The programme closes after 2 periods (10 years) at exactly `TOTAL_REWARDS` = 90M, with no tail:
+the rate steps from 12M/year to 6M/year at year 5 and from 6M/year to zero at year 10, and from
+there real yield (borrow interest, plus the DEX fee-share routed to the reserve) carries on.
+Anything stranded by empty or throttled windows is recoverable **only** to the immutable treasury
 and only after the close.
 
-Why halving rather than the linear schedule it replaces: a flat curve ends on a date, and the
-capital that came for emission leaves on that date, all at once. Choosing the two-year halving
-over the one-year one halves peak sell pressure while doubling the incentive horizon.
+Why halving rather than the linear schedule it replaces: a flat curve ends on a date at its full
+rate, and the capital that came for emission leaves on that date, all at once. Over the same ten
+years a flat schedule would close on a 9M/year step; the two five-year periods close on 6M/year,
+two thirds of it, and they are the least front-loaded halving that fits 90M in ten years (five
+two-year periods would open at 23.2M/year).
 
 ---
 

@@ -40,7 +40,7 @@ crawlers, and language models reading this repository. Human-facing docs are in
   the Foundry suite (build, tests, and an EIP-170 size gate) plus a
   **real-EVM Node harness of 9 suites**. Solvency is not a report — every
   value-moving transaction proves the conservation identity or reverts.
-- **Adversarial track record:** the shared 40,000,000 BZPX bounty pool has
+- **Adversarial track record:** the bounty programme shared with the DEX has
   triaged **21 external reports (8 public — 7 of them against this repo — and
   13 private)**; every confirmed finding is fixed with regression tests, and
   **zero were Critical**. Credits: the Security Hall of Fame in
@@ -129,17 +129,18 @@ unreachable, not merely observable.
   reversible once it clears. Recorded bad debt counts in `owed` (never netted):
   anyone may recapitalise it with `absorbBadDebt(amount)`, reserve first.
 
-## Emission — 180M BZPX on a biennial-halving curve (v4)
+## Emission — 90M BZPX on a five-year-halving curve (v4)
 
-Period `p` (0-indexed, two years each) emits `90M >> p`: 90M in years 1–2, 45M in
-years 3–4, 22.5M in years 5–6, and so on. The total is exact by construction, not
-by calibration: Σ 90M/2^p = 180M.
+Period `p` (0-indexed, five years each) emits `60M >> p`, for 2 periods: 12M/year
+in years 1–5 (60M), 6M/year in years 6–10 (30M). The total is exact by
+construction, not by calibration: 60M + 30M = 90M.
 
 Cumulative emission is a **closed form** — one division, two shifts, one
 multiplication; no loop, no oracle, no exp/log:
 
-    emitted(t) = (TOTAL − (TOTAL >> p)) + (R0 >> p)·(t − start − p·PERIOD),
+    emitted(t) = (S − (S >> p)) + (R0 >> p)·(t − start − p·PERIOD),
     p = ⌊(t − start) / PERIOD⌋
+    (series S = 120M, clamped at S − (S >> 2) = 90M from year 10 on)
 
 - The accumulator distributes the **delta of that curve**, never `rate × elapsed`.
   With a time-varying rate the rectangle approximation would let a window
@@ -148,9 +149,9 @@ multiplication; no loop, no oracle, no exp/log:
   the exact integral, independent of who touches the contract and when.
 - The same expression backs the pending-rewards view, so **a quote read in a
   block equals what a claim in that block pays**.
-- The programme closes after 8 periods (16 years) with 255/256 of the budget
-  emitted; the exact `180M >> 8 = 703,125 BZPX` tail, plus anything stranded by
-  empty windows, is recoverable to the treasury and to nobody else.
+- The programme closes after 2 periods (10 years) at exactly TOTAL_REWARDS = 90M,
+  with no tail; anything stranded by empty windows is recoverable to the
+  treasury and to nobody else.
 - `emittedAt(timestamp)` exposes the entire curve on-chain, so the schedule is
   independently verifiable rather than merely documented.
 

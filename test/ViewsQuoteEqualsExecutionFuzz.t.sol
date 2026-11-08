@@ -35,7 +35,9 @@ contract ViewsQuoteEqualsExecutionFuzzTest is Base {
     function _book(Book memory k) internal {
         uint256 t0 = this.clockTs();
         uint256 n0 = this.clockBlock();
-        vm.prank(admin); staking.fundEmission(100_000_000e18);
+        // 30M, below the 36M the curve emits in three years: from year 2.5 on the reserve runs dry,
+        // so the fuzzed window also crosses the reserve clamp the quote has to follow
+        vm.prank(admin); staking.fundEmission(30_000_000e18);
         vm.prank(alice); staking.deposit(k.a, k.lockA);
         vm.prank(carol); staking.deposit(k.c, 90);
         uint256 debt = (k.c * 50 / 100) * k.borrowBps / 10_000;

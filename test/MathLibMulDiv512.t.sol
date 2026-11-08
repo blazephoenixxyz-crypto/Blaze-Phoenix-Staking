@@ -31,9 +31,9 @@ pragma solidity 0.8.28;
 //  symmetric copies gets the fix. Here the two copies live in different repos,
 //  which is why no per-repo review had ever put them side by side.
 //
-//  Reachability, stated honestly: with BZPX's 180M supply at 18 decimals, the
-//  largest realistic operand is ~1.8e26, so a*b tops out near 3.2e52 — far below
-//  2^256 (~1.16e77). No caller in this contract is believed to reach the broken
+//  Reachability, stated honestly: with BZPX's fixed 1,000,000,000 supply at 18
+//  decimals, the largest realistic operand is 1e27, so a*b tops out near 1e54 —
+//  far below 2^256 (~1.16e77). No caller in this contract is believed to reach the broken
 //  branch today. This is a latent defect in a primitive, fixed because a math
 //  helper that silently returns 0 for a well-formed input is a landmine for
 //  every future caller, not because an exploit is known.

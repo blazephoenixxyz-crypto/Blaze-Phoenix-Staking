@@ -6,11 +6,13 @@ pragma solidity 0.8.28;
 //
 //  A test that reads `staking.RESERVE_FACTOR_BPS()` or `staking.MAX_STAKE_PER_WALLET()` moves
 //  with a mutant of that constant and cannot catch it. The literals here come from the published
-//  specification (a 3 % reserve factor; a 30 000 000e18 per-wallet cap), not from the contract:
+//  specification (a 3 % reserve factor; a 30 000 000e18 per-wallet cap; a 90 000 000e18
+//  emission budget), not from the contract:
 //
 //    execution: ΔprotocolReserve == Δ(totalInterestAccruedGlobal) · 300 / 10 000   (_updateInterestIndex)
 //    view:      the published APR nets 9 700 / 10 000                            (pureStakerApr)
 //    cap:       a deposit of exactly 30 000 000e18 settles; 1 wei more is refused (deposit)
+//    budget:    funding of exactly 90 000 000e18 settles; 1 wei more is refused (fundEmission)
 //
 //  Book for the first two: alice is a LARGE pure position (totalBoostedPure ≥ MIN_EMISSION_WEIGHT,
 //  so `_dampPure` does not bite and the reserve keeps exactly its cut), carol is a healthy
@@ -24,6 +26,7 @@ contract ConstantOraclesTest is Base {
     uint256 internal constant RESERVE_BPS_LITERAL = 300;      // 3 %, published
     uint256 internal constant NET_BPS_LITERAL     = 9_700;    // 10 000 − 300
     uint256 internal constant CAP_LITERAL         = 30_000_000e18;
+    uint256 internal constant BUDGET_LITERAL      = 90_000_000e18;   // 60M in years 1-5 + 30M in years 6-10
 
     /// A healthy book with a full pure-weight denominator (the damper does not bite).
     function _book() internal {
@@ -83,5 +86,18 @@ contract ConstantOraclesTest is Base {
         vm.prank(alice);
         vm.expectRevert(BlazePhoenixStaking.Staking__CapExceeded.selector);
         staking.deposit(1, 90);
+    }
+
+    /// Emission budget, as a literal (`fundEmission`: `totalEmissionFunded + amount_ > TOTAL_REWARDS`).
+    /// The boundary test in BoundaryEquality reads the constant back, and the curve closes on its
+    /// own series rather than on TOTAL_REWARDS, so neither moves with a mutant of the budget; this
+    /// one pins the published value and its unit.
+    function test_EmissionBudgetIsNinetyMillionTokens() public {
+        vm.prank(admin); staking.fundEmission(BUDGET_LITERAL);
+        assertEq(staking.totalEmissionFunded(), BUDGET_LITERAL, "funding of exactly the published budget settled");
+
+        vm.prank(admin);
+        vm.expectRevert(BlazePhoenixStaking.Staking__CapExceeded.selector);
+        staking.fundEmission(1);
     }
 }
