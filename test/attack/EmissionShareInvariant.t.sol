@@ -114,16 +114,16 @@ contract EmissionShareInvariantTest is Base {
     }
 
     /// Σ paid ≤ distributed ≤ literal curve(now) ≤ TOTAL_REWARDS, and backing covers owed.
-    /// Paid may sit above distributed by < 1 wei per settle (≤ 4 per call): `rewardDebt` is
-    /// floored at each resync, and with dust weights the accumulator floor leaves no cushion
-    /// (the I7 class, out of scope here; the strict form is red at fdc9a3f, kept out of the suite).
+    /// Strict, no per-settle slack: `_checkpoint` rounds the debts up (I7), so no resync hands a
+    /// dust position the dropped fraction. Red at fdc9a3f, where the debts were floored (the
+    /// shrunk sequence is test/attack/DebtRoundsUp.t.sol).
     /// forge-config: default.invariant.runs = 48
     /// forge-config: default.invariant.depth = 40
     function invariant_ATK_INV_paidLeDistributedLeCurveLeCap() public view {
         uint256 paid = staking.totalRewardsPaid();
         uint256 dist = staking.totalRewardDistributed();
         uint256 c = h.curve(h.clock());
-        assertLe(paid, dist + 4 * h.calls(), "ATK-INV: paid above distributed beyond the per-settle floor");
+        assertLe(paid, dist, "ATK-INV: paid above distributed");
         assertLe(dist, c, "ATK-INV: distributed above the literal curve");
         assertLe(c, staking.TOTAL_REWARDS(), "ATK-INV: curve above the cap");
         assertGe(token.balanceOf(address(staking)) + 1e10, staking.owed(), "ATK-INV: backing below owed");

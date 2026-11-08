@@ -1961,10 +1961,19 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
         u.trackedEquity           = newEq;
     }
 
+    /// @dev I7: the debts round UP, in the protocol's favour. A floored debt hands the position the
+    ///      dropped fraction (< 1 wei) at every resync, and with a dust denominator the accumulator's
+    ///      own floor leaves no cushion to absorb it, so the sum paid could pass the sum distributed
+    ///      and the last exit came up short. Rounded up, each constant-weight segment pays
+    ///      floor(w·A1) − ceil(w·A0) <= w·(A1 − A0), so Σ paid <= Σ distributed per window.
     function _checkpoint(UserInfo storage u) internal {
-        u.rewardDebt     = ML.mulDiv(u.trackedBoostedEffective, accRewardPerShare,   WAD);
-        u.pureYieldDebt  = ML.mulDiv(u.trackedBoostedPure,      accPureYieldPerShare, WAD);
+        u.rewardDebt     = _wadUp(u.trackedBoostedEffective, accRewardPerShare);
+        u.pureYieldDebt  = _wadUp(u.trackedBoostedPure,      accPureYieldPerShare);
         u.checkpointTime = block.timestamp;
+    }
+
+    function _wadUp(uint256 a, uint256 b) internal pure returns (uint256) {
+        return ML.mulDiv(a, b, WAD) + (mulmod(a, b, WAD) == 0 ? 0 : 1);
     }
 
     /// @dev Normalise an expired lock in storage, recompute boost from current state, apply via the
