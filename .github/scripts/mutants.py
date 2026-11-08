@@ -1291,6 +1291,12 @@ dict(nome="claimPureYield: the sweep runs between the emission and the pure-yiel
       old='        return ML.mulDiv(a, b, WAD) + (mulmod(a, b, WAD) == 0 ? 0 : 1);',
       new='        return ML.mulDiv(a, b, WAD) + 1; // MUTANT',
       teste='test_I7_anExactProductAddsNothing'),
+# K-1109 - assert "the caller is paid the seized equity, LIQ_BONUS_BPS of the debt capped, and nothing else" (the bonus passes the equity, the reserve pays the excess, the books still balance: conserves stays silent)
+ dict(nome='seizure: the keeper bonus is paid uncapped, the reserve topping it up past the seized equity',
+      f=F,
+      old='        keeperBonus      = _sub0(seized, debt);   // surplus -> keeper (conservation-consistent)',
+      new='        keeperBonus      = bonus; protocolReserve -= bonus - _sub0(seized, debt); // MUTANT',
+      teste='test_LOSSFIRST_documents_theSeizureBonusIsPaidAtParAheadOfTheWindowsLoss'),
 ]
 # (source file under out/, contract): a mutant in script/ moves Deploy, not the staking contract
 CONTRACTS = (("BlazePhoenixStaking.sol", "BlazePhoenixStaking"), ("Deploy.s.sol", "Deploy"))
