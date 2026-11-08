@@ -190,6 +190,11 @@ auditInvariants()    // uint8: 5-bit health mask for monitors
 `solvency()` returns every term of the Master Conservation Identity so any
 caller can re-derive the equation independently without trusting the protocol.
 
+`owed()`, `isSolvent()` and `solvency()` are lower bounds of the real position: a
+loss not yet recorded (a borrower whose accrued debt has passed her stake) is read
+only in part until the borrower window's next sweep of that position, a keeper's
+liquidation or her emergency exit records it (`docs/KNOWN_ISSUES.md`).
+
 ### 2.4 The permissionless circuit-breaker
 
 `tripBreaker()` lets any address halt the protocol — but **only** when the chain
@@ -570,7 +575,7 @@ exposed on-chain as `emittedAt(timestamp)` so anyone can verify it for free.
 
 The programme hard-closes after 2 full periods at exactly `TOTAL_REWARDS`, with no tail: the
 rate steps from 12M to 6M per year at year 5 and from 6M per year to zero at year 10, and from
-there real yield (borrow interest + DEX fee-share) carries on. What the schedule could not
+there real yield (borrow interest) carries on. What the schedule could not
 distribute (windows with an empty or throttled pool, or frozen by an emergency) is recoverable to
 the treasury via `sweepUndistributedEmission`, pro-protocol, never pro-user, and only
 while the contract still reads solvent after the sweep: a residue the pot needs to cover what it
@@ -596,13 +601,15 @@ When `totalBoostedEffective == 0` (no stakers), the accumulator is not updated
 but `lastRewardTime` **is** advanced:
 
 ```solidity
-if (tbe == 0) { lastRewardTime = block.timestamp; return; }
+if (tbe == 0 || emergencyMode) { lastRewardTime = block.timestamp; return; }
 ```
 
 A latecomer who stakes after an empty period receives zero rewards for that
 period. The emission that passed during the empty window stays in `rewardReserve`
-and continues to be distributed going forward to active stakers. This prevents
-the incentive to wait for backlog accumulation.
+and is not paid later: each window releases exactly the curve's own delta
+(`_windowReward`), never the reserve itself. What stays is recoverable to the
+immutable treasury after the close through `sweepUndistributedEmission`. This
+prevents the incentive to wait for backlog accumulation.
 
 ---
 
@@ -623,7 +630,9 @@ now, not of the last transaction that touched it.
 
 ### 7.3 Reentrancy
 
-All public state-changing functions carry OpenZeppelin's `ReentrancyGuard`.
+Every function that transfers tokens carries OpenZeppelin's `nonReentrant`;
+`maintStep` and `lockStep` accept only the contract itself, so they run only
+inside a guarded entry point.
 All token settlements follow CEI (Checks-Effects-Interactions): the debt/credit
 is written to storage before the token transfer.
 

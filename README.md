@@ -246,13 +246,18 @@ with `lockInfoOf(user)` (its `unlockTime` gives the time left), `maxLockDaysAvai
 - **Single-writer boost accounting** (`_applyBoost`): the *only* writer of the boosted-total
   denominators. Plain checked subtraction means any desync reverts instead of corrupting state.
   Even the emergency hatch funnels through it — no ghost shares.
-- **Zero backdoor:** no admin sweep of principal; reserve withdrawals go *only* to an **immutable
-  treasury**, with no caller-chosen destination.
+- **Zero backdoor:** no admin sweep of principal; reserve withdrawals (`withdrawReserve`, bounded
+  by `protocolReserve`) and the post-close emission residue (`sweepUndistributedEmission`) go
+  *only* to an **immutable treasury**, with no caller-chosen destination.
 - **Pull-only emergency:** `emergencyWithdraw()` returns your net equity (`staked − debt`) and
   closes the position; unpaid emission and pure yield are forfeited, and in a breached emergency the
   payout is scaled pro rata to what the contract holds. It is *not* conservation-guarded, so it
   works even in a breached state.
 - **CEI settlement:** reward/yield debt is written **before** the token transfer.
+- **Debts round up (I7):** at every checkpoint `rewardDebt` and `pureYieldDebt` are written as the
+  ceiling of `weight × accumulator / 1e18` (an exact product adds nothing), so each constant-weight
+  segment pays `floor(w·A1) − ceil(w·A0) ≤ w·(A1 − A0)` and the sum paid never passes the sum
+  distributed, dust weights included.
 - **Deterministic emission:** empty-pool intervals advance the clock (emission stays in reserve),
   so a latecomer can never capture an accumulated backlog.
 - **Flash-loan guard:** `MIN_DEPOSIT_BLOCKS` between deposit and withdraw/claim/lock.
@@ -264,8 +269,8 @@ with `lockInfoOf(user)` (its `unlockTime` gives the time left), `maxLockDaysAvai
 
 BZPX is assumed to be a **standard, well-behaved ERC-20**: no receiver blacklist/freeze, no
 fee-on-transfer or rebasing (the conservation identity needs `amount sent == amount received`),
-and no transfer pause that can trap the protocol. Transfer hooks are tolerated (every entry-point
-is `nonReentrant`). These hold by construction for BZPX; they are listed as explicit invariants for
+and no transfer pause that can trap the protocol. Transfer hooks are tolerated (every entry point that
+transfers tokens is `nonReentrant`, and `maintStep` / `lockStep` accept only the contract itself). These hold by construction for BZPX; they are listed as explicit invariants for
 any fork against a different asset.
 
 ---
@@ -323,9 +328,9 @@ Three things about how it is used matter more than the formula itself:
 
 The programme closes after 2 periods (10 years) at exactly `TOTAL_REWARDS` = 90M, with no tail:
 the rate steps from 12M/year to 6M/year at year 5 and from 6M/year to zero at year 10, and from
-there real yield (borrow interest, plus the DEX fee-share routed to the reserve) carries on.
-Anything stranded by empty or throttled windows is recoverable **only** to the immutable treasury
-and only after the close.
+there real yield (borrow interest) carries on. Anything stranded by empty or throttled windows is
+recoverable **only** to the immutable treasury, only after the close, and only through the admin's
+`sweepUndistributedEmission()`, which is refused when the book would read a hard breach after it.
 
 Why halving rather than the linear schedule it replaces: a flat curve ends on a date at its full
 rate, and the capital that came for emission leaves on that date, all at once. Over the same ten
