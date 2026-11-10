@@ -30,15 +30,16 @@ pragma solidity 0.8.28;
 //     ghost lets this assert equality-within-dust instead of the much weaker
 //     inequality, so silent value leakage in either direction is visible.
 //
-//  Emergency mode is kept OUT of the first campaign. `declareEmergency` gates
+//  Emergency mode is kept OUT of `FullSurfaceHandler`. `declareEmergency` gates
 //  every `conserves` entry point behind `whenNotEmergency`, so including it would
 //  collapse the reachable state space for the rest of the run, and INV-20 needs a
-//  book the breaker never trips on. The handler's three emergency doors
-//  (`enterEmergency`, `syncEquity`, `emergencyWithdraw`) are therefore excluded
-//  there and driven by a second campaign, `InvariantsEmergencyExitsTest`, which
-//  lets a book form and then walks it out: EQUITY-FRESH is checked after every
-//  sync and every exit. The haircut's payouts have their own suites
-//  (HardeningH05_EmergencyHaircut.t.sol, hardening/AttributionRefreshesEquity.t.sol).
+//  book the breaker never trips on. The three emergency doors (`enterEmergency`,
+//  `syncEquity`, `emergencyWithdraw`) are in `EmergencyExitsHandler`, which adds
+//  them on top of the full surface and is targeted only by the second campaign,
+//  `InvariantsEmergencyExitsTest`: it lets a book form and then walks it out, and
+//  EQUITY-FRESH is checked after every sync and every exit. The haircut's payouts
+//  have their own suites (HardeningH05_EmergencyHaircut.t.sol,
+//  hardening/AttributionRefreshesEquity.t.sol).
 //
 //  Run: forge test --match-contract InvariantsFullSurface -vv
 // =============================================================================
@@ -98,7 +99,7 @@ contract FullSurfaceHandler is Test {
     function _actor(uint256 seed) internal view returns (address) {
         return actors[seed % actors.length];
     }
-    function _hit(bytes32 k) internal { calls[k] += 1; settled += 1; }
+    function _hit(bytes32 k) internal virtual { calls[k] += 1; }
 
     // ── the surface the previous handler already covered ─────────────────────
     /// The lock ceiling is a DECREASING countdown to the end of the 10-year
@@ -234,45 +235,6 @@ contract FullSurfaceHandler is Test {
         try staking.tripBreaker() { breakerTrips += 1; } catch {}
     }
 
-    // ── the emergency doors (second campaign only) ───────────────────────────
-    //
-    // An emergency closes every `conserves` entry point, so the first campaign
-    // excludes these three selectors and `InvariantsEmergencyExitsTest` targets
-    // them. Entry is guided for the same reason the pokes are: a random sequence
-    // that halts on its first calls would exit an empty book.
-
-    /// Handler actions that settled so far. The emergency opens only once a book
-    /// has formed (positions, loans, interest), not on the first calls of a run.
-    uint256 public settled;
-    uint256 internal constant EMERGENCY_AFTER = 40;
-
-    /// Even seed: the guardian's discretionary halt on a sound book, where every
-    /// exit pays in full. Odd seed: a real shortfall and then the permissionless
-    /// trip, where exits go through the pro-rata haircut and its stale-book guard.
-    /// The handler holds the guardian role in the campaign that targets this.
-    function enterEmergency(uint256 seed, uint256 lossBps) public {
-        if (staking.emergencyMode() || settled < EMERGENCY_AFTER) return;
-        if (seed % 2 == 0) {
-            try staking.declareEmergency() { _hit("declareEmergency"); } catch {}
-        } else {
-            uint256 pot = token.balanceOf(address(staking));
-            deal(address(token), address(staking), pot - pot * bound(lossBps, 500, 6000) / 10_000);
-            vm.prank(_actor(seed));
-            try staking.tripBreaker() { _hit("tripBreaker"); } catch {}
-        }
-    }
-    /// Permissionless and emergency-only: attributes the frozen interest of one
-    /// position and refreshes its equity summand.
-    function syncEquity(uint256 seed) public {
-        try staking.syncEquity(_actor(seed)) { _hit("syncEquity"); } catch {}
-    }
-    /// The emergency exit. In a breached emergency it waits (`Staking__StaleEquity`)
-    /// until `syncEquity` has reached every borrower.
-    function emergencyWithdraw(uint256 seed) public {
-        vm.prank(_actor(seed));
-        try staking.emergencyWithdraw() { _hit("emergencyWithdraw"); } catch {}
-    }
-
     // ── time ─────────────────────────────────────────────────────────────────
     function passTime(uint256 s) public {
         _advanceBy(bound(s, 1 hours, 60 days));
@@ -302,12 +264,6 @@ contract InvariantsFullSurfaceTest is StdInvariant, Base {
 
         handler = new FullSurfaceHandler(staking, token, a);
         targetContract(address(handler));
-        // The emergency doors belong to the second campaign (see the file header).
-        bytes4[] memory emg = new bytes4[](3);
-        emg[0] = handler.enterEmergency.selector;
-        emg[1] = handler.syncEquity.selector;
-        emg[2] = handler.emergencyWithdraw.selector;
-        excludeSelector(FuzzSelector({addr: address(handler), selectors: emg}));
     }
 
     // ── INV-16 — the Master Conservation Identity, recomputed independently ──
@@ -483,9 +439,57 @@ contract InvariantsFullSurfaceTest is StdInvariant, Base {
 }
 
 // =============================================================================
+//  The emergency doors.
+//
+//  They live in a handler of their own, on top of the full surface, so that
+//  every other campaign that targets `FullSurfaceHandler` keeps the surface it
+//  was written for: an emergency closes every `conserves` entry point, and the
+//  breached entry below removes tokens from the pot on purpose. Entry is guided
+//  for the same reason the pokes are: a random sequence that halts on its first
+//  calls would exit an empty book.
+// =============================================================================
+contract EmergencyExitsHandler is FullSurfaceHandler {
+    constructor(BlazePhoenixStaking s, MockERC20 t, address[] memory a) FullSurfaceHandler(s, t, a) {}
+
+    /// Handler actions that settled so far. The emergency opens only once a book
+    /// has formed (positions, loans, interest), not on the first calls of a run.
+    uint256 public settled;
+    uint256 internal constant EMERGENCY_AFTER = 40;
+
+    function _hit(bytes32 k) internal override { super._hit(k); settled += 1; }
+
+    /// Even seed: the guardian's discretionary halt on a sound book, where every
+    /// exit pays in full. Odd seed: a real shortfall and then the permissionless
+    /// trip, where exits go through the pro-rata haircut and its stale-book guard.
+    /// The handler holds the guardian role in the campaign that targets this.
+    function enterEmergency(uint256 seed, uint256 lossBps) public {
+        if (staking.emergencyMode() || settled < EMERGENCY_AFTER) return;
+        if (seed % 2 == 0) {
+            try staking.declareEmergency() { _hit("declareEmergency"); } catch {}
+        } else {
+            uint256 pot = token.balanceOf(address(staking));
+            deal(address(token), address(staking), pot - pot * bound(lossBps, 500, 6000) / 10_000);
+            vm.prank(_actor(seed));
+            try staking.tripBreaker() { _hit("tripBreaker"); } catch {}
+        }
+    }
+    /// Permissionless and emergency-only: attributes the frozen interest of one
+    /// position and refreshes its equity summand.
+    function syncEquity(uint256 seed) public {
+        try staking.syncEquity(_actor(seed)) { _hit("syncEquity"); } catch {}
+    }
+    /// The emergency exit. In a breached emergency it waits (`Staking__StaleEquity`)
+    /// until `syncEquity` has reached every borrower.
+    function emergencyWithdraw(uint256 seed) public {
+        vm.prank(_actor(seed));
+        try staking.emergencyWithdraw() { _hit("emergencyWithdraw"); } catch {}
+    }
+}
+
+// =============================================================================
 //  EQUITY-FRESH through the emergency exits.
 //
-//  The same handler with its emergency doors open. A book forms under ordinary
+//  The full surface with the emergency doors added. A book forms under ordinary
 //  traffic (deposits, loans, pokes, time), then the guardian halts it or a loss
 //  trips the breaker, and positions are synced and exited in whatever order the
 //  sequence picks. After every one of those calls the haircut's denominator has
@@ -496,7 +500,7 @@ contract InvariantsFullSurfaceTest is StdInvariant, Base {
 //  test/hardening/AttributionRefreshesEquity.t.sol.
 // =============================================================================
 contract InvariantsEmergencyExitsTest is StdInvariant, Base {
-    FullSurfaceHandler handler;
+    EmergencyExitsHandler handler;
     address[] internal who;
 
     function setUp() public override {
@@ -508,7 +512,7 @@ contract InvariantsEmergencyExitsTest is StdInvariant, Base {
         a[0] = alice; a[1] = bob; a[2] = carol; a[3] = keeper;
         who = a;
 
-        handler = new FullSurfaceHandler(staking, token, a);
+        handler = new EmergencyExitsHandler(staking, token, a);
         vm.prank(admin);
         staking.grantRole(keccak256("GUARDIAN_ROLE"), address(handler));
         targetContract(address(handler));
