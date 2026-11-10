@@ -13,7 +13,7 @@ empty and live), and after the reward debts were made to round up at the checkpo
 `test/attack/DebtRoundsUp.t.sol`) and the attack suite was added (`test/attack/`, with
 `test/hardening/EmissionResidueOrigin.t.sol`), and after an attribution that no settle follows was
 made to refresh the position's equity summand (`test/hardening/AttributionRefreshesEquity.t.sol`,
-with the campaign invariant in `test/InvariantsFullSurface.t.sol`): **460 tests in 60 `.t.sol`
+with the campaign invariants in `test/InvariantsFullSurface.t.sol`): **468 tests in 60 `.t.sol`
 files** by the counting rule below, which also counts the report-only `check_*` specs.
 Regenerate with:
 
@@ -90,18 +90,18 @@ zero is a fact about the suite and the place to look first.
 
 | area | P | A | D | V | Q | S | G | T | E | Y | M | I | H | R | Z | K | W | O | X | C | N | U | L | J |
 |---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
-| deposit / top-up / lock | - | 46 | 69 | 54 | 40 | 10 | 53 | 221 | 48 | 56 | 42 | 22 | 3 | - | - | 26 | 25 | 40 | **0** | 115 | 68 | **0** | - | - |
+| deposit / top-up / lock | - | 53 | 69 | 55 | 40 | 10 | 54 | 228 | 48 | 60 | 42 | 24 | 3 | - | - | 26 | 26 | 40 | **0** | 116 | 69 | **0** | - | - |
 | withdraw | - | 1 | 4 | 7 | 5 | 3 | 14 | 26 | 4 | 9 | 12 | 1 | **0** | - | - | 6 | 4 | **0** | **0** | 14 | 4 | **0** | - | - |
-| borrow / repay | - | 25 | 46 | 44 | 21 | 8 | 29 | 159 | 31 | 50 | 18 | 13 | 3 | - | - | 11 | 23 | 18 | **0** | 73 | 52 | **0** | - | - |
-| interest | - | 2 | 4 | 6 | 6 | **0** | 3 | 23 | 4 | 10 | **0** | **0** | **0** | - | - | 2 | 2 | 6 | **0** | 5 | 15 | **0** | - | - |
-| emission / rewards | - | 21 | 57 | 39 | 39 | 9 | 36 | 155 | 29 | 32 | 30 | 15 | 1 | - | - | 43 | 17 | 28 | **0** | 129 | 53 | **0** | - | - |
+| borrow / repay | - | 32 | 46 | 45 | 21 | 8 | 30 | 166 | 31 | 54 | 18 | 15 | 3 | - | - | 11 | 24 | 18 | **0** | 74 | 53 | **0** | - | - |
+| interest | - | 3 | 4 | 7 | 6 | **0** | 3 | 24 | 4 | 11 | **0** | **0** | **0** | - | - | 2 | 3 | 6 | **0** | 6 | 15 | **0** | - | - |
+| emission / rewards | - | 26 | 57 | 39 | 39 | 9 | 36 | 160 | 29 | 34 | 30 | 17 | 1 | - | - | 43 | 17 | 28 | **0** | 129 | 53 | **0** | - | - |
 | pure yield | - | 7 | 9 | 9 | 7 | 2 | 7 | 32 | 6 | 11 | 4 | 5 | 1 | - | - | 3 | 4 | 6 | **0** | 15 | 23 | **0** | - | - |
 | liquidation | - | 1 | 7 | 4 | 3 | **0** | 8 | 24 | 5 | 11 | 4 | 2 | **0** | - | - | **0** | 3 | **0** | **0** | 10 | 10 | **0** | - | - |
 | maintenance windows | - | 3 | 8 | 3 | 3 | 2 | 6 | 20 | **0** | 5 | 6 | **0** | **0** | - | - | 1 | 1 | 4 | **0** | 4 | 6 | **0** | - | - |
-| lock sweep / poke | - | 47 | 29 | 15 | 6 | 2 | 16 | 67 | 10 | 23 | 13 | 10 | 1 | - | - | 9 | 7 | 15 | **0** | 35 | 17 | **0** | - | - |
-| emergency / breaker | - | 16 | 11 | 36 | 2 | 7 | 46 | 60 | 10 | 120 | 18 | 9 | 2 | - | - | 3 | 35 | 10 | **0** | 57 | 20 | **0** | - | - |
-| admin / reserves | - | 15 | 39 | 54 | 30 | 7 | 37 | 144 | 27 | 47 | 32 | 11 | 2 | - | - | 27 | 37 | 26 | **0** | 155 | 43 | **0** | - | - |
-| views / solvency | - | 14 | 32 | 39 | 22 | 11 | 29 | 123 | 15 | 40 | 26 | 9 | 1 | - | - | 14 | 25 | 23 | **0** | 74 | 43 | **0** | - | - |
+| lock sweep / poke | - | 52 | 29 | 15 | 6 | 2 | 16 | 72 | 10 | 25 | 13 | 12 | 1 | - | - | 9 | 7 | 15 | **0** | 35 | 17 | **0** | - | - |
+| emergency / breaker | - | 20 | 11 | 37 | 2 | 7 | 47 | 64 | 10 | 124 | 18 | 11 | 2 | - | - | 3 | 36 | 10 | **0** | 58 | 21 | **0** | - | - |
+| admin / reserves | - | 16 | 39 | 55 | 30 | 7 | 37 | 145 | 27 | 48 | 32 | 11 | 2 | - | - | 27 | 38 | 26 | **0** | 156 | 43 | **0** | - | - |
+| views / solvency | - | 19 | 32 | 39 | 22 | 11 | 29 | 128 | 15 | 42 | 26 | 11 | 1 | - | - | 14 | 25 | 23 | **0** | 74 | 43 | **0** | - | - |
 
 288 cells: 60 without object, 228 measured, **37 empty**.
 
@@ -133,8 +133,8 @@ except in the maintenance-windows area.
 
 - **1** (9): A·withdraw, I·withdraw, H·emission / rewards, H·pure yield, A·liquidation,
   K·maintenance windows, W·maintenance windows, H·lock sweep / poke, H·views / solvency
-- **2** (10): A·interest, K·interest, W·interest, S·pure yield, I·liquidation, S·maintenance
-  windows, S·lock sweep / poke, Q·emergency / breaker, H·emergency / breaker, H·admin / reserves
+- **2** (8): K·interest, S·pure yield, I·liquidation, S·maintenance windows, S·lock sweep / poke,
+  Q·emergency / breaker, H·emergency / breaker, H·admin / reserves
 
 The full ordering (every count) is printed by the script.
 
