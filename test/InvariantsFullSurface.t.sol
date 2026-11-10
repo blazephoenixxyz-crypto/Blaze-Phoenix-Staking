@@ -393,6 +393,22 @@ contract InvariantsFullSurfaceTest is StdInvariant, Base {
         }
     }
 
+    // ── EQUITY-FRESH — the haircut denominator is the stored positive equity ─
+    //
+    // totalPositiveEquity == Σ max(staked_i − debt_i, 0) over stored state, after every call in
+    // the sequence. An interest attribution lowers `staked`, so each one refreshes its summand
+    // in the same transaction. Red at 9731e05: the two pokes attributed the positions they name
+    // (the caller, every batch entry) and left the summand behind, which the STALE-EQUITY guard
+    // of `emergencyWithdraw` cannot see because it measures the interest still unattributed.
+    function invariant_EQUITYFRESH_accumulatorIsTheSumOfStoredPositiveEquity() public view {
+        uint256 sum;
+        for (uint256 i = 0; i < who.length; i++) {
+            (uint256 staked, uint256 debt,,,,,,,,,,,,) = staking.getUserInfo(who[i]);
+            if (staked > debt) sum += staked - debt;
+        }
+        assertEq(staking.totalPositiveEquity(), sum, "EQUITY-FRESH: accumulator is not the stored sum");
+    }
+
     // ── anti-vacuity ─────────────────────────────────────────────────────────
     //
     // The first version of this demanded that EVERY entry point be reached in

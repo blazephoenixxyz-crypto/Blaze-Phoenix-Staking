@@ -708,9 +708,7 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
     /// @param user_ the position to sync
     function syncEquity(address user_) external {
         if (!emergencyMode) revert Staking__EmergencyNotActive();
-        _accrueInterestFor(user_);
-        UserInfo storage u = _users[user_];
-        _applyBoost(u, u.trackedBoostedEffective, u.trackedBoostedPure);
+        _attribute(user_);
     }
 
     /// @notice During emergency, pull your OWN net equity (staked - debt). Debt is netted
@@ -750,9 +748,10 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
         // (possibly stale-high, since interest freezes at the trip and the accrual above has already
         // debited its stake but not its trackedEquity) with its exact post-accrual `payout`, so the
         // denominator is exact w.r.t. this exit. EXACTNESS (3236): in an emergency interest is
-        // frozen and every attribution refreshes trackedEquity in the same transaction, so the only
-        // stale part of E is U = global − attributed interest. The haircut runs only with U within
-        // dust (else `Staking__StaleEquity`, cleared by `syncEquity`); then E is the true Σ of
+        // frozen and every attribution, before the trip as after it, refreshes trackedEquity in the
+        // same transaction (EQUITY-FRESH, `_attribute`), so the only stale part of E is U = global −
+        // attributed interest. The haircut runs only with U within dust (else
+        // `Staking__StaleEquity`, cleared by `syncEquity`); then E is the true Σ of
         // positive equity, pot/E is constant across exits up to the floor, and no payout depends
         // on the exit order. Σ payouts ≤ pot in every order.
         // When solvent (pot ≥ eCorr) the branch never engages and full net equity is paid, as before.
@@ -1275,7 +1274,19 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
     ///      own uncollectible interest is booked before the sweep or the batch pays anyone at par.
     ///      A debt-free position books none and is not touched.
     function _attributeFirst(address who) internal {
-        if (_users[who].debt != 0) _accrueInterestFor(who);
+        if (_users[who].debt != 0) _attribute(who);
+    }
+
+    /// @dev EQUITY-FRESH. An attribution lowers `staked`, so it refreshes the position's
+    ///      positive-equity summand in the same step: weights unchanged, no checkpoint, nothing
+    ///      unsettled repriced (a `_resync` here would rebase the reward debts). The one body behind
+    ///      `syncEquity` and `_attributeFirst`, whose position no later step of the transaction is
+    ///      bound to reach: the borrower window skips the caller, a batch skips a lock still
+    ///      running, a pause carries no window, a refused `lockStep` rolls its own resync back.
+    function _attribute(address user_) internal {
+        _accrueInterestFor(user_);
+        UserInfo storage u = _users[user_];
+        _applyBoost(u, u.trackedBoostedEffective, u.trackedBoostedPure);
     }
 
     /// @dev Window 1 — solvency. Rotating scan of the borrower registry: liquidate anything
