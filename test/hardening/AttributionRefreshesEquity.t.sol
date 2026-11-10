@@ -391,6 +391,144 @@ contract AttributionRefreshesEquityTest is Base {
         assertLe(paid, pot, "over-drain");
     }
 
+    // ══════════════════════════════════════════════════════════════════════════════════════
+    //  A borrower with no lock of its own (uid 4086): the single poke and the batch
+    // ══════════════════════════════════════════════════════════════════════════════════════
+
+    /// @dev alice: 2M, debt-free, 730 days. bob: 10M, borrows `pct` % of his limit and then clears
+    ///      his own lapsed lock, so no lock window holds him either. carol: 100k under a fresh
+    ///      90-day lock, the lapsed lock a poke needs. Then `idle` with nobody touching the book.
+    function _locklessBorrowerBook(uint256 pct, uint256 idle) internal {
+        vm.prank(alice); staking.deposit(2_000_000e18, 730);
+        vm.prank(bob);   staking.deposit(S, 90);
+        vm.prank(carol); staking.deposit(100_000e18, 90);
+        vm.roll(block.number + 11);
+        uint256 b = staking.maxBorrowOf(bob) * pct / 100;
+        vm.prank(bob); staking.borrow(b);
+        vm.warp(block.timestamp + 91 days);
+        vm.prank(bob);   staking.claimRewards();
+        vm.prank(carol); staking.lock(90);
+        (,,,,,,,,, uint256 lockDays,,,,) = staking.getUserInfo(bob);
+        assertEq(lockDays, 0, "fixture: bob holds no lock");
+        vm.warp(block.timestamp + idle);
+    }
+
+    /// @dev The two doors bob opens: he pokes carol's lapsed lock, or names himself beside her.
+    function _locklessDoor(bool batch) internal {
+        uint256 before = _storedEq(bob);
+        if (batch) {
+            address[] memory l = new address[](2);
+            l[0] = bob; l[1] = carol;
+            vm.prank(bob); staking.pokeExpiredLocks(l);
+        } else {
+            vm.prank(bob); staking.pokeExpiredLock(carol);
+        }
+        assertLt(_storedEq(bob), before, "fixture: the poke attributed bob's interest");
+    }
+
+    /// RED at 9731e05 (uid 4086). `pokeExpiredLock`: the caller is attributed, the borrower window
+    /// skips it as the beneficiary and it holds no lock for the lock window to normalise.
+    function test_EQUITYFRESH_pokeExpiredLock_aLocklessBorrowerPokingAnotherPositionIsRefreshed() public {
+        _locklessBorrowerBook(100, 20 * 365 days);
+        _locklessDoor(false);
+        _assertFresh(_three(), "pokeExpiredLock, lockless caller");
+    }
+
+    /// RED at 9731e05 (uid 4086). `pokeExpiredLocks`: the same borrower names itself; the batch
+    /// has no lock of his to normalise and its window skips him.
+    function test_EQUITYFRESH_pokeExpiredLocks_aLocklessBorrowerNamingItselfIsRefreshed() public {
+        _locklessBorrowerBook(100, 20 * 365 days);
+        _locklessDoor(true);
+        _assertFresh(_three(), "pokeExpiredLocks, lockless self-named");
+    }
+
+    /// RED at 9731e05 (uid 4086). The single poke, the trip at the same timestamp, every exit order.
+    function test_EQUITYFRESH_EMG_aLocklessBorrowersPokeThenASameTimestampTrip_noPayoutDependsOnTheExitOrder() public {
+        _locklessBorrowerBook(100, 20 * 365 days);
+        _lose(4_000_000e18);
+        _locklessDoor(false);
+        vm.prank(dave); staking.tripBreaker();
+        _assertOrderFree(false);
+    }
+
+    /// RED at 9731e05 (uid 4086). The self-naming batch, the trip at the same timestamp, every exit order.
+    function test_EQUITYFRESH_EMG_aLocklessBorrowersBatchThenASameTimestampTrip_noPayoutDependsOnTheExitOrder() public {
+        _locklessBorrowerBook(100, 20 * 365 days);
+        _lose(4_000_000e18);
+        _locklessDoor(true);
+        vm.prank(dave); staking.tripBreaker();
+        _assertOrderFree(false);
+    }
+
+    /// Either door, any loan size, any idle time from the second carol's lock lapses to forty years.
+    function testFuzz_EQUITYFRESH_aLocklessBorrowersPokeLeavesTheAccumulatorAtTheStoredSum(
+        uint256 idle, uint256 pct, bool batch
+    ) public {
+        idle = bound(idle, 90 days, 40 * 365 days);
+        pct = bound(pct, 1, 100);
+        _locklessBorrowerBook(pct, idle);
+        _locklessDoor(batch);
+        _assertFresh(_three(), "fuzz, lockless caller");
+    }
+
+    // ══════════════════════════════════════════════════════════════════════════════════════
+    //  The emergency exits themselves: every sync and every exit moves one summand
+    // ══════════════════════════════════════════════════════════════════════════════════════
+
+    /// Nobody pokes, so the trip leaves both borrowers' interest unattributed. Each `syncEquity` and
+    /// each `emergencyWithdraw` then moves one position, and after each of them the accumulator is
+    /// the stored sum, down to zero with the last exit. (The stateful form of this walk is
+    /// `InvariantsEmergencyExitsTest` in test/InvariantsFullSurface.t.sol.)
+    function test_EQUITYFRESH_EMG_everySyncAndEveryExitLeavesTheAccumulatorAtTheStoredSum() public {
+        _book(2555, 100, 60);
+        vm.warp(block.timestamp + 3 * 365 days);
+        _lose(5_000_000e18);
+        vm.prank(dave); staking.tripBreaker();
+        _assertFresh(_three(), "after the trip");
+
+        uint256 before = _storedEq(alice);
+        staking.syncEquity(alice);
+        assertLt(_storedEq(alice), before, "fixture: the sync attributed alice's frozen interest");
+        _assertFresh(_three(), "syncEquity(alice)");
+
+        vm.prank(bob);
+        vm.expectRevert(STALE);        // carol is still unsynced
+        staking.emergencyWithdraw();
+
+        staking.syncEquity(carol);
+        _assertFresh(_three(), "syncEquity(carol)");
+
+        uint256 total = staking.totalPositiveEquity();
+        uint256 eqBob = _storedEq(bob);
+        assertGt(_exitNow(bob), 0, "fixture: bob is paid");
+        assertEq(staking.totalPositiveEquity(), total - eqBob, "bob's exit did not release exactly his summand");
+        _assertFresh(_three(), "emergencyWithdraw(bob)");
+        _exitNow(alice);
+        _assertFresh(_three(), "emergencyWithdraw(alice)");
+        _exitNow(carol);
+        _assertFresh(_three(), "emergencyWithdraw(carol)");
+        assertEq(staking.totalPositiveEquity(), 0, "an empty book carries no equity");
+    }
+
+    /// A declared emergency on a sound book: nothing waits. A borrower nobody synced exits as she
+    /// stands, and her exit releases her whole summand, the interest it attributes on the way included.
+    function test_EQUITYFRESH_EMG_anUnsyncedBorrowersExitFromADeclaredEmergencyReleasesItsSummand() public {
+        _book(2555, 100, 60);
+        vm.warp(block.timestamp + 3 * 365 days);
+        vm.prank(admin);
+        staking.grantRole(keccak256("GUARDIAN_ROLE"), keeper);
+        vm.prank(keeper);
+        staking.declareEmergency();
+
+        uint256 total = staking.totalPositiveEquity();
+        uint256 tracked = _ld(alice, 8);
+        uint256 due = _trueEq(alice);
+        assertGt(tracked, due, "fixture: alice's summand is stale-high, her interest unattributed");
+        assertEq(_exitNow(alice), due, "a sound book pays the exit in full");
+        assertEq(staking.totalPositiveEquity(), total - tracked, "alice's exit did not release her whole summand");
+        _assertFresh(_three(), "declared emergency, emergencyWithdraw(alice)");
+    }
+
     /// Control, green before and after: the guard still measures what it measured. One second
     /// between the poke and the trip leaves interest unattributed, and the exit waits, by selector.
     function test_EQUITYFRESH_control_aTripOneSecondAfterThePokeStillWaitsForTheSync() public {
