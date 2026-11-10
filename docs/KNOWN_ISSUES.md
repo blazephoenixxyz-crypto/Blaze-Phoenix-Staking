@@ -30,6 +30,20 @@ rules, scope and awards are in [`SECURITY.md`](../SECURITY.md) and at
   so the identity holds and `owed()` reads high by the forfeits, never low. Documented in `README.md`
   (sections 1 and 4), `src/BlazePhoenixStaking.sol` (NatSpec of `emergencyWithdraw`) and
   `test/fix1102/EmergencyForfeitStaysOwed.t.sol`.
+- **A breached emergency exit waits until the book is fresh.** In an emergency whose pot is short
+  of the positive equity, `emergencyWithdraw` pays `equity · pot / Σ equity` and refuses
+  (`Staking__StaleEquity`) while interest already debited from the book has not reached its
+  positions. `syncEquity(user)`, permissionless and callable only in an emergency, attributes one
+  position; the exit attributes the exiter's own. Once every borrower is attributed the exits go
+  through, and what each is paid does not depend on the order of the exits. On a sound book the
+  exit pays net equity in full and does not wait. Documented in `src/BlazePhoenixStaking.sol`
+  (`emergencyWithdraw`, `syncEquity`, `_attribute`) and
+  `test/hardening/AttributionRefreshesEquity.t.sol`
+  (`test_EQUITYFRESH_EMG_everySyncAndEveryExitLeavesTheAccumulatorAtTheStoredSum`: sync, refused
+  exit, sync, three exits;
+  `test_EQUITYFRESH_control_aTripOneSecondAfterThePokeStillWaitsForTheSync`;
+  `testFuzz_EQUITYFRESH_EMG_aPokeBeforeTheTripNeverMakesAPayoutDependOnTheExitOrder`: the exit
+  orders).
 - **The borrower sweep credits what it settles.** The borrower window of the maintenance sweep
   settles every position it reaches, a seized one included, and credits the emission to the
   position instead of paying it: a later step of the same window can still book a loss, and

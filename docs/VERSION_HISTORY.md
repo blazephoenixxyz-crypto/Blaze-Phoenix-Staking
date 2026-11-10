@@ -19,6 +19,38 @@ from v1 re-added.
 
 ---
 
+## An attribution refreshes the position's equity (November 2026)
+
+No ABI change. `totalPositiveEquity`, the denominator of the pro-rata emergency haircut, is the sum
+of every position's `trackedEquity`, and `_applyBoost` is the one writer of both. A settle reaches
+it through `_resync`. An attribution that no settle follows now reaches it too: `_attribute`
+charges the position's interest (`_accrueInterestFor`) and refreshes its summand at unchanged
+weights, and it is the body of `syncEquity` and what `_attributeFirst` runs for the caller of
+`pokeExpiredLock` and for every position `pokeExpiredLocks` names. The property, EQUITY-FRESH:
+when a transaction ends, the accumulator is the sum of the stored `max(staked − debt, 0)`, before
+an emergency and after every `syncEquity` and every exit inside one, so a breached haircut pays
+each exit `equity · pot / Σ equity` in every exit order. The refresh moves no weight, no reward
+debt and no checkpoint, and adds no revert. The refresh sits at the caller of the attribution and
+not in `_accrueInterestFor`, whose other callers already reach `_applyBoost` in the same
+transaction (`SHARED_QUANTITIES.md`, `trackedEquity`).
+
+Pinned by `test/hardening/AttributionRefreshesEquity.t.sol` (twenty-one tests; seventeen are red at
+`9731e05`, the other four are the controls and the walks through the two emergency doors, green
+there by design): `trackedEquity` and the accumulator are read against raw storage after each poke
+door (the caller, a self-named batch, a batch under a guardian pause, twelve borrowers past the
+window, a refused `lockStep`, the second either side of the unlock, a borrower with no lock of its
+own by each door), and every exit order is paid the oracle after a trip at the same timestamp.
+Two stateful campaigns in `test/InvariantsFullSurface.t.sol` check the accumulator against the
+stored sum after every call, one over ordinary traffic and one that enters an emergency and exits
+through it (256 runs of 500 calls each by default). Seven entries in the mutant register pair
+these readings.
+
+Measured: a borrower's own `deposit`, `borrow`, `repay`, `claimRewards` and `lock` cost 2,238 gas
+more; `pokeExpiredLock` called by a borrower, 13,838 more; `pokeExpiredLocks` over thirteen named
+positions, twelve of them borrowers, 44,456 more. `withdraw`, `claimPureYield` and `liquidate`,
+and every call by a debt-free caller with the borrower sweep it carries, cost the same as before.
+Runtime: 24,543 bytes, 33 under the EIP-170 limit (24,538 before).
+
 ## Reward debts round up; attack suite (November 2026)
 
 No ABI change. `_checkpoint` now rounds `rewardDebt` and `pureYieldDebt` up (`_wadUp`), in the
