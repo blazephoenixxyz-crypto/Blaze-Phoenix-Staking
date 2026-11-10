@@ -1321,6 +1321,24 @@ dict(nome="claimPureYield: the sweep runs between the emission and the pure-yiel
       old='        UserInfo storage u = _users[user_];\n        _applyBoost(u, u.trackedBoostedEffective, u.trackedBoostedPure);\n',
       new='        _resync(user_); // MUTANT\n',
       teste='test_EQUITYFRESH_theRefreshLeavesWeightsAndRewardDebtsUntouched'),
+# fin-1111 C01 - expectRevert Staking__StaleEquity not met: "next call did not revert as expected" (the mutation of the 3236 guard above, read by a second watcher: after a poke, one second of unattributed interest and the exit must still wait)
+ dict(nome='STALE-EQUITY after a poke: the guard no longer reads the interest left unattributed (g > a arm dropped)',
+      f=F,
+      old="                if (g > a + CONSERVATION_DUST || a > g + CONSERVATION_DUST) revert Staking__StaleEquity();",
+      new="                if (a > g + CONSERVATION_DUST) revert Staking__StaleEquity(); // MUTANT",
+      teste='test_EQUITYFRESH_control_aTripOneSecondAfterThePokeStillWaitsForTheSync'),
+# fin-1111 C01 - assert "syncEquity(alice): trackedEquity is not max(staked - debt, 0)" (the door alone: the shared body is intact, the door stops calling it)
+ dict(nome='syncEquity: the door attributes the frozen interest and leaves the equity summand behind',
+      f=F,
+      old='        if (!emergencyMode) revert Staking__EmergencyNotActive();\n        _attribute(user_);\n',
+      new='        if (!emergencyMode) revert Staking__EmergencyNotActive();\n        _accrueInterestFor(user_); // MUTANT\n',
+      teste='test_EQUITYFRESH_EMG_everySyncAndEveryExitLeavesTheAccumulatorAtTheStoredSum'),
+# fin-1111 C01 - assert "alice's exit did not release her whole summand" (an exit that leaves its summand in the accumulator)
+ dict(nome="emergencyWithdraw: the exiter's summand stays in totalPositiveEquity (position not zeroed before the single writer)",
+      f=F,
+      old='        u.staked = 0; u.debt = 0;\n        _applyBoost(u, 0, 0);              // single-writer cleanup',
+      new='        // MUTANT\n        _applyBoost(u, 0, 0);              // single-writer cleanup',
+      teste='test_EQUITYFRESH_EMG_anUnsyncedBorrowersExitFromADeclaredEmergencyReleasesItsSummand'),
 ]
 # (source file under out/, contract): a mutant in script/ moves Deploy, not the staking contract
 CONTRACTS = (("BlazePhoenixStaking.sol", "BlazePhoenixStaking"), ("Deploy.s.sol", "Deploy"))
