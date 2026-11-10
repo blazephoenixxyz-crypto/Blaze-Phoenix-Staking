@@ -1297,6 +1297,30 @@ dict(nome="claimPureYield: the sweep runs between the emission and the pure-yiel
       old='        keeperBonus      = _sub0(seized, debt);   // surplus -> keeper (conservation-consistent)',
       new='        keeperBonus      = bonus; protocolReserve -= bonus - _sub0(seized, debt); // MUTANT',
       teste='test_LOSSFIRST_documents_theSeizureBonusIsPaidAtParAheadOfTheWindowsLoss'),
+# fin-1111 C01 - assert "pokeExpiredLock, caller: trackedEquity is not max(staked - debt, 0)" (the tree before the fix: the caller is attributed and its summand stays behind)
+ dict(nome='_attributeFirst: attributes the named position without refreshing its equity summand (EQUITY-FRESH)',
+      f=F,
+      old='        if (_users[who].debt != 0) _attribute(who);\n',
+      new='        if (_users[who].debt != 0) _accrueInterestFor(who); // MUTANT\n',
+      teste='test_EQUITYFRESH_pokeExpiredLock_theCallersAttributionRefreshesItsEquity'),
+# fin-1111 C01 - assert "a payout depends on the exit order" (same mutation, seen by the money: a poke, then a trip at the same timestamp)
+ dict(nome='_attributeFirst: no equity refresh, the breached haircut divides by a stale-high accumulator',
+      f=F,
+      old='        if (_users[who].debt != 0) _attribute(who);\n',
+      new='        if (_users[who].debt != 0) _accrueInterestFor(who); // MUTANT\n',
+      teste='testFuzz_EQUITYFRESH_EMG_aPokeBeforeTheTripNeverMakesAPayoutDependOnTheExitOrder'),
+# fin-1111 C01 - assert "EQUITY-FRESH: accumulator is not the stored sum" (same mutation, found by the stateful campaign)
+ dict(nome='_attributeFirst: no equity refresh, the campaign reaches an accumulator above the stored sum',
+      f=F,
+      old='        if (_users[who].debt != 0) _attribute(who);\n',
+      new='        if (_users[who].debt != 0) _accrueInterestFor(who); // MUTANT\n',
+      teste='invariant_EQUITYFRESH_accumulatorIsTheSumOfStoredPositiveEquity'),
+# fin-1111 C01 - assert "trackedBoostedEffective moved" (a resync rebases the reward debts of a position nobody settled)
+ dict(nome='_attribute: resyncs the position instead of refreshing its equity alone (unsettled rewards repriced)',
+      f=F,
+      old='        UserInfo storage u = _users[user_];\n        _applyBoost(u, u.trackedBoostedEffective, u.trackedBoostedPure);\n',
+      new='        _resync(user_); // MUTANT\n',
+      teste='test_EQUITYFRESH_theRefreshLeavesWeightsAndRewardDebtsUntouched'),
 ]
 # (source file under out/, contract): a mutant in script/ moves Deploy, not the staking contract
 CONTRACTS = (("BlazePhoenixStaking.sol", "BlazePhoenixStaking"), ("Deploy.s.sol", "Deploy"))
