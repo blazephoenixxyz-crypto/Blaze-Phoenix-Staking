@@ -1345,6 +1345,12 @@ dict(nome="claimPureYield: the sweep runs between the emission and the pure-yiel
       old="                _attributeFirst(msg.sender);   // LOSS-FIRST: the caller's own loss precedes the bonus it is paid\n                _sweepBorrowers(msg.sender, b);",
       new="                // MUTANT\n                _sweepBorrowers(msg.sender, b);",
       teste='test_LOSSFIRST_theCarriersOwnLossIsBookedBeforeTheBatchPokesSeizureBonus'),
+# fin2-1111 4076 - assert "the carrier's own loss was never booked in the transaction" (liquidate accrues only the seized position and pays its caller the bonus before the caller's own loss is booked)
+ dict(nome="liquidate: the keeper is paid the seizure bonus before its own loss is booked (LOSS-FIRST)",
+      f=F,
+      old="        _attributeFirst(msg.sender);   // LOSS-FIRST: the caller's own loss precedes the bonus it is paid\n        _accrueInterestFor(user_);",
+      new="        // MUTANT\n        _accrueInterestFor(user_);",
+      teste='test_LOSSFIRST_theCarriersOwnLossIsBookedBeforeItsOwnLiquidationsBonus'),
 ]
 # (source file under out/, contract): a mutant in script/ moves Deploy, not the staking contract
 CONTRACTS = (("BlazePhoenixStaking.sol", "BlazePhoenixStaking"), ("Deploy.s.sol", "Deploy"))

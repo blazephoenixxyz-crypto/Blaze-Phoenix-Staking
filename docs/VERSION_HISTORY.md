@@ -29,20 +29,26 @@ its next transaction, left short. `pokeExpiredLocks` now runs `_attributeFirst(m
 before `_sweepBorrowers`, the order `_autoMaintain` already keeps for every other entry
 (LOSS-FIRST): the caller's own loss is booked first, the window's seizures read it, and the bonus
 stays in `protocolReserve`. A caller without debt is not touched; the lock window is still not
-re-run (the batch normalises by name).
+re-run (the batch normalises by name). `liquidate`, the direct seizure, books its caller's own
+loss the same way before it seizes: `_attributeFirst(msg.sender)` right after `_updateGlobal`,
+so the `_hardBreach()` the bonus is read against includes it.
 
 Pinned by `test/hardening/MaintenanceBeforePayment.t.sol`
 (`test_LOSSFIRST_theCarriersOwnLossIsBookedBeforeTheBatchPokesSeizureBonus`, red at `df0b092`;
 `testFuzz_LOSSFIRST_everyBatchShapeBooksTheCarriersLossBeforeTheSeizureBonus` over every shape of
 the batch, names, order and duplicates, read from the event order and the seizure's
 `keeperBonus`; and the control `test_LOSSFIRST_documents_aDebtFreeCarriersBatchPokeIsStillPaidTheSeizureBonus`,
-green before and after). One entry in the mutant register pairs the attribution; the two entries
-that pin the order and the clock of the batch were re-targeted to the new text.
+green before and after; `test_LOSSFIRST_theCarriersOwnLossIsBookedBeforeItsOwnLiquidationsBonus`,
+red at `2ad030d`, with its control `test_LOSSFIRST_documents_aDebtFreeKeepersLiquidationIsStillPaidTheBonus`).
+Two entries in the mutant register pair the attributions; the two entries that pin the order and
+the clock of the batch were re-targeted to the new text.
 
 Measured: a debt-free caller's batch costs 188 gas more when it names the caller and 2,236 more
 when it does not (one cold read of the caller's debt); a batch that carries no borrower window
 costs the same; a borrower's batch books the attribution its next transaction would have booked.
-Runtime: 24,552 bytes, 24 under the EIP-170 limit (24,543 before).
+A debt-free keeper's `liquidate` costs 2,236 gas more (the same cold read of the keeper's debt).
+Runtime: 24,561 bytes, 15 under the EIP-170 limit (24,543 before: 9 bytes for the batch, 9 for
+`liquidate`).
 
 ---
 

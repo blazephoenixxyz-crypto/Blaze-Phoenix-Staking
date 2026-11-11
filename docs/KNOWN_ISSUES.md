@@ -141,17 +141,19 @@ rules, scope and awards are in [`SECURITY.md`](../SECURITY.md) and at
   and a later step of the same window can still book a loss. No bonus is paid into a pot that
   already reads as breached (`_hardBreach()`), by the caller's own loss too: every entry that
   carries the borrower window, the batch `pokeExpiredLocks` included, books its caller's own
-  loss before the window starts, and the bonus then stays in `protocolReserve`. Deferring it
-  would need value held in flight across the window, outside every owed quantity the contract
-  keeps. Documented in `docs/WHITEPAPER.md` (section 3.1), `src/BlazePhoenixStaking.sol`
-  (`_autoMaintain`, `pokeExpiredLocks`, `_executeLiquidation`) and
+  loss before the window starts, and `liquidate` books its caller's own loss before the
+  seizure it makes; the bonus then stays in `protocolReserve`. Deferring it would need value
+  held in flight across the window, outside every owed quantity the contract keeps. Documented
+  in `docs/WHITEPAPER.md` (section 3.1), `src/BlazePhoenixStaking.sol`
+  (`_autoMaintain`, `pokeExpiredLocks`, `liquidate`, `_executeLiquidation`) and
   `test/hardening/MaintenanceBeforePayment.t.sol`
   (`test_LOSSFIRST_documents_theSeizureBonusIsPaidAtParAheadOfTheWindowsLoss`: the caller is
   paid the seized position's equity, never more than its own collateral, and the window then
-  books a loss that leaves the pot short; `test_LOSSFIRST_theCarriersOwnLossIsBookedBeforeTheSeizureBonus`
-  and `test_LOSSFIRST_theCarriersOwnLossIsBookedBeforeTheBatchPokesSeizureBonus`: a caller whose
-  own loss leaves the pot short is paid no bonus by the window its transaction or its batch
-  carries).
+  books a loss that leaves the pot short; `test_LOSSFIRST_theCarriersOwnLossIsBookedBeforeTheSeizureBonus`,
+  `test_LOSSFIRST_theCarriersOwnLossIsBookedBeforeTheBatchPokesSeizureBonus` and
+  `test_LOSSFIRST_theCarriersOwnLossIsBookedBeforeItsOwnLiquidationsBonus`: a caller whose own
+  loss leaves the pot short is paid no bonus by the window its transaction or its batch carries,
+  nor by the seizure it makes itself).
 - **A loss not yet recorded is read only in part.** `owed()` and the `owed` and `deficit` of
   `solvency()` are lower bounds (its `surplus` and `collateralRatio()` upper bounds), and
   `isSolvent()` reads through them: a borrower whose accrued debt has passed her stake carries a

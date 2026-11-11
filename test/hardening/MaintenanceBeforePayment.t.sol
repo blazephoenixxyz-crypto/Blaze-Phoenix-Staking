@@ -360,6 +360,38 @@ contract MaintenanceBeforePaymentTest is Base {
         assertFalse(staking.isSolvent(), "setup: the booked loss leaves the pot short");
     }
 
+    /// The direct seizure keeps the same order. Bob, carrying an unbooked loss, liquidates erin
+    /// himself: his own interest is attributed before her seizure, so the pot already reads as
+    /// breached and the bonus stays in the reserve. Red at 2ad030d: `liquidate` accrued only the
+    /// seized position and paid its caller the bonus at par ahead of the caller's own loss.
+    function test_LOSSFIRST_theCarriersOwnLossIsBookedBeforeItsOwnLiquidationsBonus() public {
+        _seizableBesideALoss();
+        (uint256 b0, uint256 bad0) = (token.balanceOf(bob), staking.totalBadDebt());
+        vm.recordLogs();
+        vm.prank(bob);
+        staking.liquidate(erin);
+        uint256 bonus = _assertCarrierAttributedBeforeTheSeizure(bob, erin);
+        (uint256 st, uint256 debt,,,,,,,,,,,,) = staking.getUserInfo(erin);
+        assertEq(st + debt, 0, "setup: erin was seized");
+        assertGt(staking.totalBadDebt(), bad0 + DUST, "setup: the transaction booked bob's loss");
+        assertEq(bonus, 0, "the seizure paid a bonus into a pot the caller's own loss had left short");
+        assertEq(token.balanceOf(bob), b0, "the bonus was paid at par ahead of the caller's own loss");
+    }
+
+    /// documents, direct form. A keeper without debt books no loss: alice liquidates erin and is
+    /// paid the bonus at par; bob's loss stays unbooked, so the pot still reads whole.
+    function test_LOSSFIRST_documents_aDebtFreeKeepersLiquidationIsStillPaidTheBonus() public {
+        _seizableBesideALoss();
+        uint256 b0 = token.balanceOf(alice);
+        vm.recordLogs();
+        vm.prank(alice);
+        staking.liquidate(erin);
+        uint256 bonus = _seizureBonusOf(erin);
+        assertGt(bonus, 0, "setup: a healthy keeper is paid the bonus");
+        assertEq(token.balanceOf(alice) - b0, bonus, "the healthy keeper is paid exactly the seizure's bonus at par");
+        assertTrue(staking.isSolvent(), "setup: no loss was booked, the pot still reads whole");
+    }
+
     /// documents, batch form. A carrier without debt books no loss: alice names her own elapsed
     /// lock, the window seizes erin and pays alice the bonus there and then, and its next step
     /// books bob's loss. The caller's attribution withholds the bonus only from a caller whose own

@@ -13,7 +13,9 @@ empty and live), and after the reward debts were made to round up at the checkpo
 `test/attack/DebtRoundsUp.t.sol`) and the attack suite was added (`test/attack/`, with
 `test/hardening/EmissionResidueOrigin.t.sol`), and after an attribution that no settle follows was
 made to refresh the position's equity summand (`test/hardening/AttributionRefreshesEquity.t.sol`,
-with the campaign invariants in `test/InvariantsFullSurface.t.sol`): **471 tests in 60 `.t.sol`
+with the campaign invariants in `test/InvariantsFullSurface.t.sol`), and after the batch poke and
+the direct seizure were made to book their caller's own loss before the bonus they pay (the
+LOSS-FIRST carrier tests in `test/hardening/MaintenanceBeforePayment.t.sol`): **473 tests in 60 `.t.sol`
 files** by the counting rule below, which also counts the report-only `check_*` specs.
 Regenerate with:
 
@@ -42,18 +44,18 @@ zero is a fact about the suite and the place to look first.
 
 | area | what puts a test in it (regex summary) |
 |---|---|
-| deposit / top-up / lock | calls `deposit` or `lock` |
-| withdraw | calls `withdraw` |
-| borrow / repay | calls `borrow`, `repay`, or reads `maxBorrowOf` |
-| interest | the interest index, global accrual, live or simulated rate, utilisation |
-| emission / rewards | `claimRewards`, `pendingRewards`, `fundEmission`, the emission curve and reserve |
-| pure yield | `claimPureYield`, `pendingPureYield`, `pureStakerApr`, the pure-weight accumulators |
-| liquidation | `liquidate`, `healthFactor`, `daysToLiquidation`, the liquidation constants |
-| maintenance windows | `maintStep`, the borrower registry and its views, `maintenanceBudget` |
-| lock sweep / poke | `pokeExpiredLock(s)`, `lockStep`, the locker registry and lock-expiry views |
-| emergency / breaker | `emergencyWithdraw`, `declareEmergency`, `cancelEmergency`, `tripBreaker`, `pause` |
-| admin / reserves | `withdrawReserve`, `sweepUndistributedEmission`, `fundEmission`, roles |
-| views / solvency | `owed`, `backing`, `isSolvent`, `collateralRatio`, `solvency`, `auditInvariants`, `getUserInfo`, `getGlobalStats` |
+| deposit / top-up / lock | - | 56 | 70 | 60 | 40 | 10 | 54 | 233 | 53 | 60 | 42 | 24 | 3 | - | - | 26 | 26 | 40 | **0** | 121 | 74 | **0** | - | - |
+| withdraw | - | 1 | 4 | 7 | 5 | 3 | 14 | 26 | 4 | 9 | 12 | 1 | **0** | - | - | 6 | 4 | **0** | **0** | 14 | 4 | **0** | - | - |
+| borrow / repay | - | 35 | 47 | 50 | 21 | 8 | 30 | 171 | 36 | 54 | 18 | 15 | 3 | - | - | 11 | 24 | 18 | **0** | 79 | 58 | **0** | - | - |
+| interest | - | 3 | 4 | 7 | 6 | **0** | 3 | 24 | 4 | 11 | **0** | **0** | **0** | - | - | 2 | 3 | 6 | **0** | 6 | 15 | **0** | - | - |
+| emission / rewards | - | 29 | 58 | 44 | 39 | 9 | 36 | 165 | 34 | 34 | 30 | 17 | 1 | - | - | 43 | 17 | 28 | **0** | 134 | 58 | **0** | - | - |
+| pure yield | - | 7 | 9 | 9 | 7 | 2 | 7 | 32 | 6 | 11 | 4 | 5 | 1 | - | - | 3 | 4 | 6 | **0** | 15 | 23 | **0** | - | - |
+| liquidation | - | 1 | 7 | 6 | 3 | **0** | 8 | 26 | 7 | 11 | 4 | 2 | **0** | - | - | **0** | 3 | **0** | **0** | 12 | 12 | **0** | - | - |
+| maintenance windows | - | 3 | 8 | 3 | 3 | 2 | 6 | 20 | **0** | 5 | 6 | **0** | **0** | - | - | 1 | 1 | 4 | **0** | 4 | 6 | **0** | - | - |
+| lock sweep / poke | - | 55 | 30 | 18 | 6 | 2 | 16 | 75 | 13 | 25 | 13 | 12 | 1 | - | - | 9 | 7 | 15 | **0** | 38 | 20 | **0** | - | - |
+| emergency / breaker | - | 20 | 11 | 37 | 2 | 7 | 47 | 64 | 10 | 124 | 18 | 11 | 2 | - | - | 3 | 36 | 10 | **0** | 58 | 21 | **0** | - | - |
+| admin / reserves | - | 19 | 40 | 60 | 30 | 7 | 37 | 150 | 32 | 48 | 32 | 11 | 2 | - | - | 27 | 38 | 26 | **0** | 161 | 48 | **0** | - | - |
+| views / solvency | - | 22 | 33 | 44 | 22 | 11 | 29 | 133 | 20 | 42 | 26 | 11 | 1 | - | - | 14 | 25 | 23 | **0** | 79 | 48 | **0** | - | - |
 
 ## 3. Axes
 

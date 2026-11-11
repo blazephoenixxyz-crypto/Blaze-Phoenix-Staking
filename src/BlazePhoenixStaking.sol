@@ -1146,6 +1146,7 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
         external nonReentrant whenNotPaused whenNotEmergency conserves
     {
         _updateGlobal();
+        _attributeFirst(msg.sender);   // LOSS-FIRST: the caller's own loss precedes the bonus it is paid
         _accrueInterestFor(user_);
         if (!_isLiquidatable(_users[user_])) revert Staking__NotLiquidatable();
         uint256 bonus = _executeLiquidation(user_, msg.sender);
