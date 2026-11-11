@@ -33,7 +33,7 @@ Every draw is a mixture: 20% from a BOUNDARY set, 40% log-uniform, 40% uniform.
 | borrow / repay / withdraw amount | 0, 1, max-1, max, max+1 (max = the contract's own quote) | 1..max | 1..max |
 | loss (fraction of the pot) | 1 wei, 5%, 60%, 100%-1 wei | 0.01%..60% | 0.5%..60% |
 
-Whale-versus-dust: with probability 10% a sequence gives one staker a position near the wallet cap
+Loss, `tripBreaker`, `declareEmergency` and the emergency exits are drawn only after 40 settled actions of the sequence, the same gate the repository's `EmergencyExitsHandler` uses, so a book exists when the emergency opens. Donations stop once the emergency is open (MC-EMG reads the backing at that moment). Whale-versus-dust: with probability 10% a sequence gives one staker a position near the wallet cap
 and every other staker dust (1..1e18 wei). The action at each step is drawn uniformly from:
 deposit, borrow, repay, withdraw, claimRewards, claimPureYield, lock (the reward-debt rebase),
 pokeExpiredLock, pokeExpiredLocks, liquidate, donate, loss, tripBreaker, declareEmergency,
@@ -48,10 +48,10 @@ action of every sequence. One false assertion anywhere makes the test red and is
 
 | name | statement | tolerance |
 |---|---|---|
-| MC-CONSERVE | `backing + totalBadDebt` equals `netPrincipal + rewardReserve + protocolReserve + (distributed - paid) + donated`, the identity in the contract header | abs diff <= DUST |
+| MC-CONSERVE | `backing + totalBadDebt + lossInjected` equals `netPrincipal + rewardReserve + protocolReserve + (distributed - paid) + donated`, the identity in the contract header; `lossInjected` is the ghost of tokens the walk removed from the contract (a loss event), which the identity cannot see until the book records it | abs diff <= DUST |
 | MC-SOLVENT | `backing + totalBadDebt + lossInjected + DUST >= owed()`; with `lossInjected == 0` this is I9 as the contract states it | DUST |
 | MC-EMIT-CAL | `totalRewardDistributed <= emittedAt(now)` (the schedule's closed form) and `rewardReserve + totalRewardDistributed == totalEmissionFunded` (no sweep in the walk) and `rewardReserve <= TOTAL_REWARDS` | 0 |
-| MC-SHARE | `totalRewardsPaid + sum_i pendingRewards(i) <= totalRewardDistributed + DUST`, and each `pendingRewards(i) <= totalRewardDistributed - totalRewardsPaid + DUST` | DUST |
+| MC-SHARE | `totalRewardsPaid + sum_i pendingRewards(i) <= totalRewardDistributed + DUST` (the sum over every staker is read every 8th action and at the end of the sequence, for the time budget), and after every action `pendingRewards(actor) <= totalRewardDistributed - totalRewardsPaid + DUST` for the actor it touched | DUST |
 | MC-AUDIT | `auditInvariants() & 0b11100 == 0` always; bit 0 is 0 whenever `lossInjected == 0`; bit 1 is recorded, not asserted (the contract documents it as a soft signal) | 0 |
 | MC-MONO | `accRewardPerShare` and `accPureYieldPerShare` never decrease | 0 |
 | MC-DEBT | for every staker, `debt <= staked + DUST` (INV-19) | DUST |
