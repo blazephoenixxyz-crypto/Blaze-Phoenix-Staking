@@ -19,6 +19,33 @@ from v1 re-added.
 
 ---
 
+## The batch poke books its caller's loss before the window it carries (November 2026)
+
+No ABI change. `pokeExpiredLocks` carries the borrower window with its caller as the beneficiary
+of every seizure the window makes, and that window reads `_hardBreach()` before it pays the
+keeper bonus at par. The batch attributed the positions it names, not its caller: a caller whose
+own interest had run past its stake was paid the bonus out of a pot that its own loss, booked by
+its next transaction, left short. `pokeExpiredLocks` now runs `_attributeFirst(msg.sender)` right
+before `_sweepBorrowers`, the order `_autoMaintain` already keeps for every other entry
+(LOSS-FIRST): the caller's own loss is booked first, the window's seizures read it, and the bonus
+stays in `protocolReserve`. A caller without debt is not touched; the lock window is still not
+re-run (the batch normalises by name).
+
+Pinned by `test/hardening/MaintenanceBeforePayment.t.sol`
+(`test_LOSSFIRST_theCarriersOwnLossIsBookedBeforeTheBatchPokesSeizureBonus`, red at `df0b092`;
+`testFuzz_LOSSFIRST_everyBatchShapeBooksTheCarriersLossBeforeTheSeizureBonus` over every shape of
+the batch, names, order and duplicates, read from the event order and the seizure's
+`keeperBonus`; and the control `test_LOSSFIRST_documents_aDebtFreeCarriersBatchPokeIsStillPaidTheSeizureBonus`,
+green before and after). One entry in the mutant register pairs the attribution; the two entries
+that pin the order and the clock of the batch were re-targeted to the new text.
+
+Measured: a debt-free caller's batch costs 188 gas more when it names the caller and 2,236 more
+when it does not (one cold read of the caller's debt); a batch that carries no borrower window
+costs the same; a borrower's batch books the attribution its next transaction would have booked.
+Runtime: 24,552 bytes, 24 under the EIP-170 limit (24,543 before).
+
+---
+
 ## An attribution refreshes the position's equity (November 2026)
 
 No ABI change. `totalPositiveEquity`, the denominator of the pro-rata emergency haircut, is the sum

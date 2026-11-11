@@ -1114,7 +1114,10 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
         // path was a disincentive to the exact behaviour the protocol wants.
         if (!paused() && !emergencyMode) {
             uint256 b = _maintBudget();
-            if (b != 0) _sweepBorrowers(msg.sender, b);
+            if (b != 0) {
+                _attributeFirst(msg.sender);   // LOSS-FIRST: the caller's own loss precedes the bonus it is paid
+                _sweepBorrowers(msg.sender, b);
+            }
         }
         uint256 swept;
         for (uint256 i = 0; i < users_.length; ) {

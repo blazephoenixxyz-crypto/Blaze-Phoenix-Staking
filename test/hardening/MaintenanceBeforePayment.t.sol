@@ -321,6 +321,114 @@ contract MaintenanceBeforePaymentTest is Base {
         assertEq(token.balanceOf(bob), b0 - 1e18, "the bonus was paid at par ahead of the caller's own loss");
     }
 
+    /// The batch poke carries the same borrower window and the same order. Bob, carrying an
+    /// unbooked loss, names alice's elapsed lock: his own interest is attributed before the window
+    /// seizes erin, so the pot already reads as breached and the bonus stays in the reserve.
+    /// Red at df0b092: the batch attributed only the names it was given and swept with bob as the
+    /// beneficiary, so he was paid the bonus at par and his own loss was booked by his next
+    /// transaction.
+    function test_LOSSFIRST_theCarriersOwnLossIsBookedBeforeTheBatchPokesSeizureBonus() public {
+        _seizableBesideALoss();
+        (uint256 b0, uint256 bad0) = (token.balanceOf(bob), staking.totalBadDebt());
+        address[] memory batch = new address[](1);
+        batch[0] = alice;
+        vm.recordLogs();
+        vm.prank(bob);
+        staking.pokeExpiredLocks(batch);
+        uint256 bonus = _assertCarrierAttributedBeforeTheSeizure(bob, erin);
+        (uint256 st, uint256 debt,,,,,,,,,,,,) = staking.getUserInfo(erin);
+        assertEq(st + debt, 0, "setup: the window seized erin");
+        assertGt(staking.totalBadDebt(), bad0 + DUST, "setup: the transaction booked bob's loss");
+        assertEq(bonus, 0, "the seizure paid a bonus into a pot the caller's own loss had left short");
+        assertEq(token.balanceOf(bob), b0, "the bonus was paid at par ahead of the caller's own loss");
+    }
+
+    /// Every shape of the batch keeps that order: the names it is given (the carrier itself, the
+    /// seized position, a stranger without a lock), their order and duplicates. The carrier's
+    /// attribution precedes the seizure in the log, the seizure's bonus is 0 and nothing reaches
+    /// the carrier at par. Red at df0b092 for every batch that does not name the carrier.
+    function testFuzz_LOSSFIRST_everyBatchShapeBooksTheCarriersLossBeforeTheSeizureBonus(uint8 shape) public {
+        _seizableBesideALoss();
+        address[] memory batch = _batchShape(shape);
+        uint256 b0 = token.balanceOf(bob);
+        vm.recordLogs();
+        vm.prank(bob);
+        staking.pokeExpiredLocks(batch);
+        uint256 bonus = _assertCarrierAttributedBeforeTheSeizure(bob, erin);
+        assertEq(bonus, 0, "the seizure paid a bonus into a pot the caller's own loss had left short");
+        assertEq(token.balanceOf(bob), b0, "the carrier was paid at par ahead of its own loss");
+        assertFalse(staking.isSolvent(), "setup: the booked loss leaves the pot short");
+    }
+
+    /// documents, batch form. A carrier without debt books no loss: alice names her own elapsed
+    /// lock, the window seizes erin and pays alice the bonus there and then, and its next step
+    /// books bob's loss. The caller's attribution withholds the bonus only from a caller whose own
+    /// loss leaves the pot short; a healthy keeper is still paid.
+    function test_LOSSFIRST_documents_aDebtFreeCarriersBatchPokeIsStillPaidTheSeizureBonus() public {
+        _seizableBesideALoss();
+        (uint256 b0, uint256 bad0) = (token.balanceOf(alice), staking.totalBadDebt());
+        address[] memory batch = new address[](1);
+        batch[0] = alice;
+        vm.recordLogs();
+        vm.prank(alice);
+        staking.pokeExpiredLocks(batch);
+        uint256 bonus = _seizureBonusOf(erin);
+        assertGt(bonus, 0, "setup: a healthy caller is paid the bonus");
+        assertEq(token.balanceOf(alice) - b0, bonus, "the healthy carrier is paid exactly the seizure's bonus at par");
+        assertGt(staking.totalBadDebt(), bad0 + DUST, "the window books bob's loss after it paid the bonus");
+        assertFalse(staking.isSolvent(), "and leaves the pot short");
+    }
+
+    /// A batch from `shape`: bits 0-3 name alice, bob, erin and dave (no lock), bit 4 reverses
+    /// the order, bit 5 repeats the first name. Alice is always named, so the batch always has
+    /// one elapsed lock to normalise and is never refused as a no-op.
+    function _batchShape(uint8 shape) internal view returns (address[] memory batch) {
+        address[4] memory names = [alice, bob, erin, dave];
+        uint256 n;
+        address[] memory picked = new address[](5);
+        for (uint256 i; i < 4; ++i) {
+            if (i == 0 || (shape >> i) & 1 == 1) picked[n++] = names[i];
+        }
+        if ((shape >> 5) & 1 == 1) picked[n++] = picked[0];
+        batch = new address[](n);
+        bool reversed = (shape >> 4) & 1 == 1;
+        for (uint256 i; i < n; ++i) batch[i] = reversed ? picked[n - 1 - i] : picked[i];
+    }
+
+    /// Reads the recorded logs: `carrier`'s first `InterestAccrued` precedes `seized`'s
+    /// `Liquidated`, and returns that seizure's `keeperBonus`.
+    function _assertCarrierAttributedBeforeTheSeizure(address carrier, address seized) internal returns (uint256 bonus) {
+        Vm.Log[] memory logs = vm.getRecordedLogs();
+        bytes32 accrued = keccak256("InterestAccrued(address,uint256,uint256)");
+        bytes32 liquidated = keccak256("Liquidated(address,address,uint256,uint256,uint256,uint256,uint256)");
+        (uint256 bookedAt, uint256 seizedAt) = (0, 0);
+        for (uint256 i; i < logs.length; ++i) {
+            bytes32 t0 = logs[i].topics[0];
+            address who = address(uint160(uint256(logs[i].topics[1])));
+            if (t0 == accrued && who == carrier && bookedAt == 0) bookedAt = i + 1;
+            if (t0 == liquidated && who == seized) {
+                seizedAt = i + 1;
+                (,, bonus,,) = abi.decode(logs[i].data, (uint256, uint256, uint256, uint256, uint256));
+            }
+        }
+        assertGt(seizedAt, 0, "setup: the window seized the position");
+        assertGt(bookedAt, 0, "the carrier's own loss was never booked in the transaction");
+        assertLt(bookedAt, seizedAt, "the carrier's own loss was booked after the seizure paid its bonus");
+    }
+
+    /// Reads the recorded logs: the `keeperBonus` of `seized`'s `Liquidated`.
+    function _seizureBonusOf(address seized) internal returns (uint256 bonus) {
+        Vm.Log[] memory logs = vm.getRecordedLogs();
+        bytes32 liquidated = keccak256("Liquidated(address,address,uint256,uint256,uint256,uint256,uint256)");
+        for (uint256 i; i < logs.length; ++i) {
+            if (logs[i].topics[0] != liquidated) continue;
+            if (address(uint160(uint256(logs[i].topics[1]))) != seized) continue;
+            (,, bonus,,) = abi.decode(logs[i].data, (uint256, uint256, uint256, uint256, uint256));
+            return bonus;
+        }
+        revert("setup: the window did not seize the position");
+    }
+
     /// documents. The keeper bonus is the one payment the borrower window makes at par ahead of a
     /// loss it may still book (docs/KNOWN_ISSUES.md). Alice carries the transaction: the window
     /// seizes erin and pays alice the bonus there and then; its next step attributes bob's

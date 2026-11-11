@@ -139,14 +139,19 @@ rules, scope and awards are in [`SECURITY.md`](../SECURITY.md) and at
   maintenance sweep makes ahead of a loss it may still book: when the borrower window seizes a
   position, the caller's bonus (`LIQ_BONUS_BPS`, at most 5% of the seized debt) leaves at once,
   and a later step of the same window can still book a loss. No bonus is paid into a pot that
-  already reads as breached (`_hardBreach()`), by the caller's own loss too, which is booked
-  before the sweep starts; the bonus then stays in `protocolReserve`. Deferring it would need
-  value held in flight across the window, outside every owed quantity the contract keeps.
-  Documented in `docs/WHITEPAPER.md` (section 3.1), `src/BlazePhoenixStaking.sol`
-  (`_autoMaintain`, `_executeLiquidation`) and `test/hardening/MaintenanceBeforePayment.t.sol`
+  already reads as breached (`_hardBreach()`), by the caller's own loss too: every entry that
+  carries the borrower window, the batch `pokeExpiredLocks` included, books its caller's own
+  loss before the window starts, and the bonus then stays in `protocolReserve`. Deferring it
+  would need value held in flight across the window, outside every owed quantity the contract
+  keeps. Documented in `docs/WHITEPAPER.md` (section 3.1), `src/BlazePhoenixStaking.sol`
+  (`_autoMaintain`, `pokeExpiredLocks`, `_executeLiquidation`) and
+  `test/hardening/MaintenanceBeforePayment.t.sol`
   (`test_LOSSFIRST_documents_theSeizureBonusIsPaidAtParAheadOfTheWindowsLoss`: the caller is
   paid the seized position's equity, never more than its own collateral, and the window then
-  books a loss that leaves the pot short).
+  books a loss that leaves the pot short; `test_LOSSFIRST_theCarriersOwnLossIsBookedBeforeTheSeizureBonus`
+  and `test_LOSSFIRST_theCarriersOwnLossIsBookedBeforeTheBatchPokesSeizureBonus`: a caller whose
+  own loss leaves the pot short is paid no bonus by the window its transaction or its batch
+  carries).
 - **A loss not yet recorded is read only in part.** `owed()` and the `owed` and `deficit` of
   `solvency()` are lower bounds (its `surplus` and `collateralRatio()` upper bounds), and
   `isSolvent()` reads through them: a borrower whose accrued debt has passed her stake carries a
