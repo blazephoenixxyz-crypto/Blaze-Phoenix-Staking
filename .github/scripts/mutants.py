@@ -1782,10 +1782,10 @@ dict(nome="claimPureYield: the sweep runs between the emission and the pure-yiel
       new='        return _dampPure(slice - ML.mulDiv(slice, RESERVE_FACTOR_BPS + 1, 10_000), tbp); // MUTANT',
       teste='testFuzz_AtqInterestOneStep_SimpleOnThePrincipal_SplitBetweenPoolAndReserveToTheWei'),
  # ── montecarlo (test/montecarlo/*.t.sol; docs/MONTE_CARLO.md) ─────────────────────────────────
- dict(nome="emission: the window is booked twice on the distributed side (the walk's conservation reads it)",
+ dict(nome="emission: the damping below MIN_EMISSION_WEIGHT is skipped (the walk mirrors every window as _windowReward prices it; a doubled booking is masked by `conserves` itself, so the walk pins what the guard cannot see)",
       f=F,
-      old="        totalRewardDistributed += reward;",
-      new="        totalRewardDistributed += reward * 2; // MUTANT",
+      old="        if (tbe < MIN_EMISSION_WEIGHT) reward = ML.mulDiv(reward, tbe, MIN_EMISSION_WEIGHT);",
+      new="        if (tbe < 0) reward = ML.mulDiv(reward, tbe, MIN_EMISSION_WEIGHT); // MUTANT",
       teste="test_MC_blindWalk"),
  dict(nome="emission: the accumulator credits twice the window (the walk's share bound reads it)",
       f=F,

@@ -112,11 +112,18 @@ contract HypothesesTest is Base {
             vm.prank(who[i]);
             staking.deposit(amt, ld);
         }
-        vm.warp(T0 + dt);
+        vm.warp(T0 + dt); vm.roll(block.number + 11);          // past the flash-loan guard
         for (uint256 i = 0; i < n; i++) {
             rng = uint256(keccak256(abi.encodePacked(rng)));
             if (rng % 2 == 0) { vm.prank(who[i]); try staking.claimRewards() {} catch {} }
         }
+        // MC-SHARE is read at a settled instant (A1 in docs/MONTE_CARLO.md): a fresh depositor
+        // settles the window; its own position has nothing pending.
+        address settler = address(0x5e77);
+        token.mint(settler, 1e18);
+        vm.prank(settler); token.approve(address(staking), type(uint256).max);
+        vm.prank(settler); staking.deposit(1e18, 90);
+        assertEq(staking.lastRewardTime(), block.timestamp, "H3: the window is not settled");
         uint256 sum = 0;
         for (uint256 i = 0; i < n; i++) sum += staking.pendingRewards(who[i]);
         uint256 dist = staking.totalRewardDistributed();
@@ -142,7 +149,10 @@ contract HypothesesTest is Base {
     }
 
     // ── H5: a loss, the breaker, and every emergency exit ────────────────────
-    /// MC-EMG: no exit pays above the position, and the exits never exceed the backing at entry.
+    /// MC-EMG: in a BREACHED emergency (the pot below the positive equity it owes) every exit is
+    /// the pro-rata haircut `principal * pot / E` (H-05), never more; no exit pays above the
+    /// position, and the exits never exceed the backing at entry. The loss is sized so the
+    /// haircut engages: with the 90M emission funded, a 30% loss leaves the pot far above E.
     function test_H5_lossThenBreaker_everyEmergencyExitIsBoundedByThePositionAndTheBacking() public {
         address[10] memory who = [alice, bob, carol, keeper, address(0x51), address(0x52), address(0x53), address(0x54), address(0x55), address(0x56)];
         for (uint256 i = 4; i < 10; i++) _fund(who[i]);
@@ -151,23 +161,30 @@ contract HypothesesTest is Base {
             if (i % 3 == 0) { vm.prank(who[i]); staking.borrow(100e18 * (i + 1)); }
         }
         vm.warp(T0 + 400 days);
-        uint256 pot = token.balanceOf(address(staking));
-        deal(address(token), address(staking), pot - pot * 30 / 100);
+        for (uint256 i = 0; i < 10; i++) { vm.prank(who[i]); staking.claimRewards(); }   // attribute everyone
+        uint256 equity = staking.totalPositiveEquity();
+        deal(address(token), address(staking), equity / 4);                                 // pot = E / 4
         vm.prank(keeper);
         staking.tripBreaker();
         assertTrue(staking.emergencyMode(), "H5: breaker did not open the emergency");
         uint256 backingAtEntry = token.balanceOf(address(staking));
         for (uint256 i = 0; i < 10; i++) staking.syncEquity(who[i]);
+        assertLt(backingAtEntry, staking.totalPositiveEquity(), "H5: fixture is not breached");
         uint256 paidSum = 0;
         for (uint256 i = 0; i < 10; i++) {
-            (uint256 st,,,,,, uint256 pr, uint256 py,,,,,,) = staking.getUserInfo(who[i]);
+            (uint256 st, uint256 db,,,,, uint256 pr, uint256 py,,,,,,) = staking.getUserInfo(who[i]);
+            uint256 pot = token.balanceOf(address(staking));
+            uint256 e = staking.totalPositiveEquity();
             uint256 before = token.balanceOf(who[i]);
             vm.prank(who[i]);
-            try staking.emergencyWithdraw() {} catch {}
+            staking.emergencyWithdraw();                                                     // must not revert
             uint256 paid = token.balanceOf(who[i]) - before;
+            uint256 principal = st - db;
+            assertLe(paid, principal * pot / e + DUST, "H5: an exit paid above its pro-rata share of the pot");
             assertLe(paid, st + pr + py + DUST, "H5: an exit paid above the position");
             paidSum += paid;
         }
+        assertGt(paidSum, 0, "H5: nothing was paid, the hypothesis is vacuous");
         assertLe(paidSum, backingAtEntry, "H5: exits above the backing at entry");
     }
 

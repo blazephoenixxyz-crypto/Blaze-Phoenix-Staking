@@ -87,7 +87,7 @@ contract MonteCarloWalkTest is Test {
         if (v < lo) v = lo; if (v > hi) v = hi;
         return v;
     }
-    /// The pre-registered mixture: 20% boundary, 40% log-uniform, 40% uniform.
+    /// The pre-registered mixture: one draw in five boundary, two in five log-uniform, two in five uniform.
     function _mix(uint256[] memory boundary, uint256 lo, uint256 hi) internal returns (uint256) {
         uint256 r = _rnd() % 10;
         if (r < 2 && boundary.length > 0) return boundary[_rnd() % boundary.length];
@@ -391,7 +391,7 @@ contract MonteCarloWalkTest is Test {
 
     // ── the campaign ─────────────────────────────────────────────────────────
     function test_MC_blindWalk() public {
-        uint256 batches = vm.envOr("MC_BATCHES", uint256(4));
+        uint256 batches = vm.envOr("MC_BATCHES", uint256(1));   // in-suite default; the campaign sets 4 (local) or 16 (CI)
         uint256 first = vm.envOr("MC_FIRST_BATCH", uint256(0));
         uint256 seqs = vm.envOr("MC_SEQS", uint256(3));   // in-suite default; the campaign sets 24
         uint256 nAct = _actions();

@@ -19,6 +19,28 @@ from v1 re-added.
 
 ---
 
+## Bit 4 of `auditInvariants` reads the boost bound that holds on every clock (November 2026)
+
+No ABI change; the meaning of one public view changes. Bit 4 compared the boosted weights with
+`totalStaked x maxBoost`. The global interest debit lowers `totalStaked` at once, while a
+position's weights keep the equity of its last resync, so the bit read set on a correct idle
+book (60 max-boost borrowers, 30 and 60 years, accumulator equal to the sum of the tracked
+weights). It now reads
+`totalBoostedEffective * BOOST_BASE > (totalStaked + totalInterestAccruedGlobal) * boostByDays(MAX_LOCK_DAYS)`
+or `totalBoostedPure > totalBoostedEffective`: stored stake plus all interest ever debited covers
+the stake of every build, so the bit cannot read set on a correct book, idle, after an
+attribution that no resync follows, or in an emergency after `syncEquity`. It is an upper bound,
+not an equality, and it widens with the interest accrued (`docs/KNOWN_ISSUES.md`).
+
+Pinned by `test/hardening/AuditBit4Clock.t.sol` (11 tests: the bit stays clear when unattributed
+interest exceeds the debt at 30 and 60 years, on the carrier, emergency and fuzz books; the guard
+fires one wei above the bound with and without interest accrued).
+
+Measured: `auditInvariants` costs 1,977 gas more (one more cold read and one `boostByDays`).
+Runtime: 24,574 bytes, 2 under the EIP-170 limit (24,561 before: 13 bytes for the bound).
+
+---
+
 ## The batch poke books its caller's loss before the window it carries (November 2026)
 
 No ABI change. `pokeExpiredLocks` carries the borrower window with its caller as the beneficiary
