@@ -15,8 +15,10 @@ rules, scope and awards are in [`SECURITY.md`](../SECURITY.md) and at
   the pure yield a lapsed boost did not earn, settled by the lock sweep that runs after the
   borrower sweep) is not netted against the booked loss on its own. `absorbBadDebt` applies the
   reserve first, and anyone may call it with `amount_ = 0` to do only that.
-  Emission deferred under a breach stays owed to its position and is paid by that position's first
-  settlement after the breach clears. Documented in `README.md` (section 1),
+  Emission and pure yield deferred under a breach stay owed to their position and are paid by
+  that position's first settlement after the breach clears. The deferred credit has one quote,
+  `pendingRewards`, whichever channel it came from; `pendingPureYield` quotes the un-settled
+  share only, and the two sum to what a claim pays. Documented in `README.md` (section 1),
   `docs/WHITEPAPER.md` (section 2.1) and `src/BlazePhoenixStaking.sol` (contract header and the
   EMIS-DEFER comment in `_settlePendingRewards`).
 - **An emergency exit forfeits unpaid rewards.** `emergencyWithdraw` returns net equity, closes the
@@ -30,6 +32,20 @@ rules, scope and awards are in [`SECURITY.md`](../SECURITY.md) and at
   so the identity holds and `owed()` reads high by the forfeits, never low. Documented in `README.md`
   (sections 1 and 4), `src/BlazePhoenixStaking.sol` (NatSpec of `emergencyWithdraw`) and
   `test/fix1102/EmergencyForfeitStaysOwed.t.sol`.
+- **A breached emergency exit waits until the book is fresh.** In an emergency whose pot is short
+  of the positive equity, `emergencyWithdraw` pays `equity · pot / Σ equity` and refuses
+  (`Staking__StaleEquity`) while interest already debited from the book has not reached its
+  positions. `syncEquity(user)`, permissionless and callable only in an emergency, attributes one
+  position; the exit attributes the exiter's own. Once every borrower is attributed the exits go
+  through, and what each is paid does not depend on the order of the exits. On a sound book the
+  exit pays net equity in full and does not wait. Documented in `src/BlazePhoenixStaking.sol`
+  (`emergencyWithdraw`, `syncEquity`, `_attribute`) and
+  `test/hardening/AttributionRefreshesEquity.t.sol`
+  (`test_EQUITYFRESH_EMG_everySyncAndEveryExitLeavesTheAccumulatorAtTheStoredSum`: sync, refused
+  exit, sync, three exits;
+  `test_EQUITYFRESH_control_aTripOneSecondAfterThePokeStillWaitsForTheSync`;
+  `testFuzz_EQUITYFRESH_EMG_aPokeBeforeTheTripNeverMakesAPayoutDependOnTheExitOrder`: the exit
+  orders).
 - **The borrower sweep credits what it settles.** The borrower window of the maintenance sweep
   settles every position it reaches, a seized one included, and credits the emission to the
   position instead of paying it: a later step of the same window can still book a loss, and
@@ -121,18 +137,35 @@ rules, scope and awards are in [`SECURITY.md`](../SECURITY.md) and at
   the debt-free position collects 1,081,081.08 BZPX of emission when nothing else transacts and
   1,097,587.96 BZPX when it claims daily. Documented in `src/BlazePhoenixStaking.sol`
   (`_autoMaintain`, `_atLiveWeight`) and `test/fix1102/InterestStaleWeight.t.sol`.
+- **Bit 4 of `auditInvariants` is an upper bound, not an equality.** A position's weight keeps
+  the equity of its last resync, while interest is debited from `totalStaked` as it accrues, so
+  no stored total equals the equity the weights were built on. The bit therefore reads
+  `totalBoostedEffective × 1e4 > (totalStaked + totalInterestAccruedGlobal) × boostByDays(2555)`
+  or `totalBoostedPure > totalBoostedEffective`: stored stake plus all interest ever debited
+  covers the stake of every build, on an idle book and in an emergency alike. It cannot read set
+  on a correct book, and its first term widens as interest accrues: an excess of weight smaller
+  than `maxBoost ×` (debt plus interest accrued) passes it. `totalPositiveEquity` is not a bound
+  for the effective weight: an attribution that no resync follows lowers it while the weight
+  stays. Pinned in `test/hardening/AuditBit4Clock.t.sol`.
 - **A seizure's keeper bonus is paid at par inside the borrower sweep.** It is the one payment the
   maintenance sweep makes ahead of a loss it may still book: when the borrower window seizes a
   position, the caller's bonus (`LIQ_BONUS_BPS`, at most 5% of the seized debt) leaves at once,
   and a later step of the same window can still book a loss. No bonus is paid into a pot that
-  already reads as breached (`_hardBreach()`), by the caller's own loss too, which is booked
-  before the sweep starts; the bonus then stays in `protocolReserve`. Deferring it would need
-  value held in flight across the window, outside every owed quantity the contract keeps.
-  Documented in `docs/WHITEPAPER.md` (section 3.1), `src/BlazePhoenixStaking.sol`
-  (`_autoMaintain`, `_executeLiquidation`) and `test/hardening/MaintenanceBeforePayment.t.sol`
+  already reads as breached (`_hardBreach()`), by the caller's own loss too: every entry that
+  carries the borrower window, the batch `pokeExpiredLocks` included, books its caller's own
+  loss before the window starts, and `liquidate` books its caller's own loss before the
+  seizure it makes; the bonus then stays in `protocolReserve`. Deferring it would need value
+  held in flight across the window, outside every owed quantity the contract keeps. Documented
+  in `docs/WHITEPAPER.md` (section 3.1), `src/BlazePhoenixStaking.sol`
+  (`_autoMaintain`, `pokeExpiredLocks`, `liquidate`, `_executeLiquidation`) and
+  `test/hardening/MaintenanceBeforePayment.t.sol`
   (`test_LOSSFIRST_documents_theSeizureBonusIsPaidAtParAheadOfTheWindowsLoss`: the caller is
   paid the seized position's equity, never more than its own collateral, and the window then
-  books a loss that leaves the pot short).
+  books a loss that leaves the pot short; `test_LOSSFIRST_theCarriersOwnLossIsBookedBeforeTheSeizureBonus`,
+  `test_LOSSFIRST_theCarriersOwnLossIsBookedBeforeTheBatchPokesSeizureBonus` and
+  `test_LOSSFIRST_theCarriersOwnLossIsBookedBeforeItsOwnLiquidationsBonus`: a caller whose own
+  loss leaves the pot short is paid no bonus by the window its transaction or its batch carries,
+  nor by the seizure it makes itself).
 - **A loss not yet recorded is read only in part.** `owed()` and the `owed` and `deficit` of
   `solvency()` are lower bounds (its `surplus` and `collateralRatio()` upper bounds), and
   `isSolvent()` reads through them: a borrower whose accrued debt has passed her stake carries a

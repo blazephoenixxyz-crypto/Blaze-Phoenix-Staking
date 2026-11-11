@@ -30,10 +30,16 @@ pragma solidity 0.8.28;
 //     ghost lets this assert equality-within-dust instead of the much weaker
 //     inequality, so silent value leakage in either direction is visible.
 //
-//  Deliberately out of scope: emergency mode. `declareEmergency` gates every
-//  `conserves` entry point behind `whenNotEmergency`, so including it would
-//  collapse the reachable state space for the rest of the run. H-05 has its own
-//  suite (HardeningH05_EmergencyHaircut.t.sol).
+//  Emergency mode is kept OUT of `FullSurfaceHandler`. `declareEmergency` gates
+//  every `conserves` entry point behind `whenNotEmergency`, so including it would
+//  collapse the reachable state space for the rest of the run, and INV-20 needs a
+//  book the breaker never trips on. The three emergency doors (`enterEmergency`,
+//  `syncEquity`, `emergencyWithdraw`) are in `EmergencyExitsHandler`, which adds
+//  them on top of the full surface and is targeted only by the second campaign,
+//  `InvariantsEmergencyExitsTest`: it lets a book form and then walks it out, and
+//  EQUITY-FRESH is checked after every sync and every exit. The haircut's payouts
+//  have their own suites (HardeningH05_EmergencyHaircut.t.sol,
+//  hardening/AttributionRefreshesEquity.t.sol).
 //
 //  Run: forge test --match-contract InvariantsFullSurface -vv
 // =============================================================================
@@ -93,7 +99,7 @@ contract FullSurfaceHandler is Test {
     function _actor(uint256 seed) internal view returns (address) {
         return actors[seed % actors.length];
     }
-    function _hit(bytes32 k) internal { calls[k] += 1; }
+    function _hit(bytes32 k) internal virtual { calls[k] += 1; }
 
     // ── the surface the previous handler already covered ─────────────────────
     /// The lock ceiling is a DECREASING countdown to the end of the 10-year
@@ -393,6 +399,22 @@ contract InvariantsFullSurfaceTest is StdInvariant, Base {
         }
     }
 
+    // ── EQUITY-FRESH — the haircut denominator is the stored positive equity ─
+    //
+    // totalPositiveEquity == Σ max(staked_i − debt_i, 0) over stored state, after every call in
+    // the sequence. An interest attribution lowers `staked`, so each one refreshes its summand
+    // in the same transaction. Red at 9731e05: the two pokes attributed the positions they name
+    // (the caller, every batch entry) and left the summand behind, which the STALE-EQUITY guard
+    // of `emergencyWithdraw` cannot see because it measures the interest still unattributed.
+    function invariant_EQUITYFRESH_accumulatorIsTheSumOfStoredPositiveEquity() public view {
+        uint256 sum;
+        for (uint256 i = 0; i < who.length; i++) {
+            (uint256 staked, uint256 debt,,,,,,,,,,,,) = staking.getUserInfo(who[i]);
+            if (staked > debt) sum += staked - debt;
+        }
+        assertEq(staking.totalPositiveEquity(), sum, "EQUITY-FRESH: accumulator is not the stored sum");
+    }
+
     // ── anti-vacuity ─────────────────────────────────────────────────────────
     //
     // The first version of this demanded that EVERY entry point be reached in
@@ -407,6 +429,106 @@ contract InvariantsFullSurfaceTest is StdInvariant, Base {
     // revert, leaving the invariants green over an empty universe. So this
     // asserts the campaign did something, and the per-entry-point coverage
     // claim moved to the deterministic walk below, where it belongs.
+    function afterInvariant() public view {
+        assertGt(
+            handler.calls("deposit"),
+            0,
+            "vacuous run: not one deposit settled (entry-guard regression?)"
+        );
+    }
+}
+
+// =============================================================================
+//  The emergency doors.
+//
+//  They live in a handler of their own, on top of the full surface, so that
+//  every other campaign that targets `FullSurfaceHandler` keeps the surface it
+//  was written for: an emergency closes every `conserves` entry point, and the
+//  breached entry below removes tokens from the pot on purpose. Entry is guided
+//  for the same reason the pokes are: a random sequence that halts on its first
+//  calls would exit an empty book.
+// =============================================================================
+contract EmergencyExitsHandler is FullSurfaceHandler {
+    constructor(BlazePhoenixStaking s, MockERC20 t, address[] memory a) FullSurfaceHandler(s, t, a) {}
+
+    /// Handler actions that settled so far. The emergency opens only once a book
+    /// has formed (positions, loans, interest), not on the first calls of a run.
+    uint256 public settled;
+    uint256 internal constant EMERGENCY_AFTER = 40;
+
+    function _hit(bytes32 k) internal override { super._hit(k); settled += 1; }
+
+    /// Even seed: the guardian's discretionary halt on a sound book, where every
+    /// exit pays in full. Odd seed: a real shortfall and then the permissionless
+    /// trip, where exits go through the pro-rata haircut and its stale-book guard.
+    /// The handler holds the guardian role in the campaign that targets this.
+    function enterEmergency(uint256 seed, uint256 lossBps) public {
+        if (staking.emergencyMode() || settled < EMERGENCY_AFTER) return;
+        if (seed % 2 == 0) {
+            try staking.declareEmergency() { _hit("declareEmergency"); } catch {}
+        } else {
+            uint256 pot = token.balanceOf(address(staking));
+            deal(address(token), address(staking), pot - pot * bound(lossBps, 500, 6000) / 10_000);
+            vm.prank(_actor(seed));
+            try staking.tripBreaker() { _hit("tripBreaker"); } catch {}
+        }
+    }
+    /// Permissionless and emergency-only: attributes the frozen interest of one
+    /// position and refreshes its equity summand.
+    function syncEquity(uint256 seed) public {
+        try staking.syncEquity(_actor(seed)) { _hit("syncEquity"); } catch {}
+    }
+    /// The emergency exit. In a breached emergency it waits (`Staking__StaleEquity`)
+    /// until `syncEquity` has reached every borrower.
+    function emergencyWithdraw(uint256 seed) public {
+        vm.prank(_actor(seed));
+        try staking.emergencyWithdraw() { _hit("emergencyWithdraw"); } catch {}
+    }
+}
+
+// =============================================================================
+//  EQUITY-FRESH through the emergency exits.
+//
+//  The full surface with the emergency doors added. A book forms under ordinary
+//  traffic (deposits, loans, pokes, time), then the guardian halts it or a loss
+//  trips the breaker, and positions are synced and exited in whatever order the
+//  sequence picks. After every one of those calls the haircut's denominator has
+//  to be the stored sum: a sync that attributed without refreshing, or an exit
+//  that left its summand behind, shows here as an accumulator above the sum.
+//  The fixed-order form of the same walk, which is the one the mutant register
+//  pairs with, is `test_EQUITYFRESH_EMG_everySyncAndEveryExit…` in
+//  test/hardening/AttributionRefreshesEquity.t.sol.
+// =============================================================================
+contract InvariantsEmergencyExitsTest is StdInvariant, Base {
+    EmergencyExitsHandler handler;
+    address[] internal who;
+
+    function setUp() public override {
+        super.setUp();
+        vm.prank(admin);
+        staking.fundEmission(50_000_000e18);
+
+        address[] memory a = new address[](4);
+        a[0] = alice; a[1] = bob; a[2] = carol; a[3] = keeper;
+        who = a;
+
+        handler = new EmergencyExitsHandler(staking, token, a);
+        vm.prank(admin);
+        staking.grantRole(keccak256("GUARDIAN_ROLE"), address(handler));
+        targetContract(address(handler));
+    }
+
+    function invariant_EQUITYFRESH_EMG_accumulatorIsTheStoredSumThroughEverySyncAndExit() public view {
+        uint256 sum;
+        for (uint256 i = 0; i < who.length; i++) {
+            (uint256 staked, uint256 debt,,,,,,,,,,,,) = staking.getUserInfo(who[i]);
+            if (staked > debt) sum += staked - debt;
+        }
+        assertEq(staking.totalPositiveEquity(), sum, "EQUITY-FRESH (emergency): accumulator is not the stored sum");
+    }
+
+    /// Same anti-vacuity gate as the first campaign, for the same reason: reaching
+    /// a given door in a given run is fuzz luck, an empty universe is a defect.
     function afterInvariant() public view {
         assertGt(
             handler.calls("deposit"),

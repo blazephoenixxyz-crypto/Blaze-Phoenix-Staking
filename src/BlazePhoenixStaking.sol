@@ -708,9 +708,7 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
     /// @param user_ the position to sync
     function syncEquity(address user_) external {
         if (!emergencyMode) revert Staking__EmergencyNotActive();
-        _accrueInterestFor(user_);
-        UserInfo storage u = _users[user_];
-        _applyBoost(u, u.trackedBoostedEffective, u.trackedBoostedPure);
+        _attribute(user_);
     }
 
     /// @notice During emergency, pull your OWN net equity (staked - debt). Debt is netted
@@ -750,9 +748,10 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
         // (possibly stale-high, since interest freezes at the trip and the accrual above has already
         // debited its stake but not its trackedEquity) with its exact post-accrual `payout`, so the
         // denominator is exact w.r.t. this exit. EXACTNESS (3236): in an emergency interest is
-        // frozen and every attribution refreshes trackedEquity in the same transaction, so the only
-        // stale part of E is U = global − attributed interest. The haircut runs only with U within
-        // dust (else `Staking__StaleEquity`, cleared by `syncEquity`); then E is the true Σ of
+        // frozen and every attribution, before the trip as after it, refreshes trackedEquity in the
+        // same transaction (EQUITY-FRESH, `_attribute`), so the only stale part of E is U = global −
+        // attributed interest. The haircut runs only with U within dust (else
+        // `Staking__StaleEquity`, cleared by `syncEquity`); then E is the true Σ of
         // positive equity, pot/E is constant across exits up to the floor, and no payout depends
         // on the exit order. Σ payouts ≤ pot in every order.
         // When solvent (pot ≥ eCorr) the branch never engages and full net equity is paid, as before.
@@ -1115,7 +1114,10 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
         // path was a disincentive to the exact behaviour the protocol wants.
         if (!paused() && !emergencyMode) {
             uint256 b = _maintBudget();
-            if (b != 0) _sweepBorrowers(msg.sender, b);
+            if (b != 0) {
+                _attributeFirst(msg.sender);   // LOSS-FIRST: the caller's own loss precedes the bonus it is paid
+                _sweepBorrowers(msg.sender, b);
+            }
         }
         uint256 swept;
         for (uint256 i = 0; i < users_.length; ) {
@@ -1144,6 +1146,7 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
         external nonReentrant whenNotPaused whenNotEmergency conserves
     {
         _updateGlobal();
+        _attributeFirst(msg.sender);   // LOSS-FIRST: the caller's own loss precedes the bonus it is paid
         _accrueInterestFor(user_);
         if (!_isLiquidatable(_users[user_])) revert Staking__NotLiquidatable();
         uint256 bonus = _executeLiquidation(user_, msg.sender);
@@ -1275,7 +1278,19 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
     ///      own uncollectible interest is booked before the sweep or the batch pays anyone at par.
     ///      A debt-free position books none and is not touched.
     function _attributeFirst(address who) internal {
-        if (_users[who].debt != 0) _accrueInterestFor(who);
+        if (_users[who].debt != 0) _attribute(who);
+    }
+
+    /// @dev EQUITY-FRESH. An attribution lowers `staked`, so it refreshes the position's
+    ///      positive-equity summand in the same step: weights unchanged, no checkpoint, nothing
+    ///      unsettled repriced (a `_resync` here would rebase the reward debts). The one body behind
+    ///      `syncEquity` and `_attributeFirst`, whose position no later step of the transaction is
+    ///      bound to reach: the borrower window skips the caller, a batch skips a lock still
+    ///      running, a pause carries no window, a refused `lockStep` rolls its own resync back.
+    function _attribute(address user_) internal {
+        _accrueInterestFor(user_);
+        UserInfo storage u = _users[user_];
+        _applyBoost(u, u.trackedBoostedEffective, u.trackedBoostedPure);
     }
 
     /// @dev Window 1 — solvency. Rotating scan of the borrower registry: liquidate anything
@@ -2131,7 +2146,12 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
 
     /// @notice Full 5-equation diagnostic for off-chain monitors. bit0 mirrors the on-chain
     ///         guard; bit1 (Solvency) is a SOFT signal (a position may be transiently unhealthy
-    ///         pre-liquidation) and is intentionally NOT part of the revert guard.
+    ///         pre-liquidation) and is intentionally NOT part of the revert guard. bit4
+    ///         (BoostBounded) reads the weights against the stake they were built on: it is set
+    ///         when `totalBoostedEffective * BOOST_BASE > (totalStaked +
+    ///         totalInterestAccruedGlobal) * boostByDays(MAX_LOCK_DAYS)` or `totalBoostedPure >
+    ///         totalBoostedEffective`. Neither can happen on a correct book, idle or in an
+    ///         emergency; the first is an upper bound that widens with the interest accrued.
     ///   bit0 Conservation  bit1 Solvency  bit2 EmissionCap  bit3 Monotonicity  bit4 BoostBounded
     /// @return violations bitmask of the five checks above; 0 means all hold
     function auditInvariants() external view returns (uint8 violations) {
@@ -2143,8 +2163,14 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
         if (rewardReserve > TOTAL_REWARDS) violations |= 1 << 2;
         if (accRewardPerShare < lastAuditedAccReward || accPureYieldPerShare < lastAuditedAccPure)
             violations |= 1 << 3;
-        uint256 maxBoosted = ML.mulDiv(totalStaked, boostByDays(MAX_LOCK_DAYS), BOOST_BASE);
-        if (totalBoostedEffective > maxBoosted || totalBoostedPure > maxBoosted) violations |= 1 << 4;
+        // BIT4-CLOCK: a weight is bounded by the equity it was BUILT on (its last resync), and
+        // stored stake plus all interest ever debited covers the stake of every build. Reading the
+        // bound over `totalStaked` alone set the bit on a correct idle book. Sound on every clock;
+        // an upper bound, not an equality. The products cannot wrap below 2^256 / 27_500 wei.
+        unchecked {
+            uint256 tbe = totalBoostedEffective;
+            if (tbe * BOOST_BASE > (totalStaked + totalInterestAccruedGlobal) * boostByDays(MAX_LOCK_DAYS) || totalBoostedPure > tbe) violations |= 1 << 4;
+        }
     }
 
     /// @notice Permissionless: raise the bit3 snapshots of `auditInvariants` to the current
@@ -2339,9 +2365,10 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
         // Execution damps a residual denominator; the published rate must too.
         aprBps = ML.mulDiv(_dampPure(base, tbp), 10_000 - RESERVE_FACTOR_BPS, 10_000);
     }
-    /// @notice Emission a claim in this block would pay `user_`.
+    /// @notice Emission a claim in this block would pay `user_`, plus any credit deferred under
+    ///         a breach (`_rewardDeferred`: emission or pure yield, paid by the reward settle).
     /// @param user_ any position
-    /// @return emission in BZPX
+    /// @return emission and deferred credit in BZPX
     function pendingRewards(address user_) external view returns (uint256) {
         return _pendingReward(user_);
     }
@@ -2382,9 +2409,10 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
         return _pureAtLiveWeight(u, _sub0(gross, u.pureYieldDebt));   // the settle's own split
     }
 
-    /// @notice Pure yield a claim in this block would pay `user_`.
+    /// @notice Un-settled pure yield a claim in this block would pay `user_`. Pure yield settled
+    ///         under a breach is a deferred credit, quoted by `pendingRewards`.
     /// @param user_ any position
-    /// @return pure yield in BZPX
+    /// @return un-settled pure yield in BZPX
     function pendingPureYield(address user_) external view returns (uint256) {
         return _pendingPure(_users[user_]);
     }

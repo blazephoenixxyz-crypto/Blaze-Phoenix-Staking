@@ -19,6 +19,71 @@ from v1 re-added.
 
 ---
 
+## The batch poke books its caller's loss before the window it carries (November 2026)
+
+No ABI change. `pokeExpiredLocks` carries the borrower window with its caller as the beneficiary
+of every seizure the window makes, and that window reads `_hardBreach()` before it pays the
+keeper bonus at par. The batch attributed the positions it names, not its caller: a caller whose
+own interest had run past its stake was paid the bonus out of a pot that its own loss, booked by
+its next transaction, left short. `pokeExpiredLocks` now runs `_attributeFirst(msg.sender)` right
+before `_sweepBorrowers`, the order `_autoMaintain` already keeps for every other entry
+(LOSS-FIRST): the caller's own loss is booked first, the window's seizures read it, and the bonus
+stays in `protocolReserve`. A caller without debt is not touched; the lock window is still not
+re-run (the batch normalises by name). `liquidate`, the direct seizure, books its caller's own
+loss the same way before it seizes: `_attributeFirst(msg.sender)` right after `_updateGlobal`,
+so the `_hardBreach()` the bonus is read against includes it.
+
+Pinned by `test/hardening/MaintenanceBeforePayment.t.sol`
+(`test_LOSSFIRST_theCarriersOwnLossIsBookedBeforeTheBatchPokesSeizureBonus`, red at `df0b092`;
+`testFuzz_LOSSFIRST_everyBatchShapeBooksTheCarriersLossBeforeTheSeizureBonus` over every shape of
+the batch, names, order and duplicates, read from the event order and the seizure's
+`keeperBonus`; and the control `test_LOSSFIRST_documents_aDebtFreeCarriersBatchPokeIsStillPaidTheSeizureBonus`,
+green before and after; `test_LOSSFIRST_theCarriersOwnLossIsBookedBeforeItsOwnLiquidationsBonus`,
+red at `2ad030d`, with its control `test_LOSSFIRST_documents_aDebtFreeKeepersLiquidationIsStillPaidTheBonus`).
+Two entries in the mutant register pair the attributions; the two entries that pin the order and
+the clock of the batch were re-targeted to the new text.
+
+Measured: a debt-free caller's batch costs 236 gas more when it names the caller and 2,236 more
+when it does not (one cold read of the caller's debt); a batch that carries no borrower window
+costs the same; a borrower's batch books the attribution its next transaction would have booked.
+A debt-free keeper's `liquidate` costs 2,236 gas more (the same cold read of the keeper's debt).
+Runtime: 24,561 bytes, 15 under the EIP-170 limit (24,543 before: 9 bytes for the batch, 9 for
+`liquidate`).
+
+---
+
+## An attribution refreshes the position's equity (November 2026)
+
+No ABI change. `totalPositiveEquity`, the denominator of the pro-rata emergency haircut, is the sum
+of every position's `trackedEquity`, and `_applyBoost` is the one writer of both. A settle reaches
+it through `_resync`. An attribution that no settle follows now reaches it too: `_attribute`
+charges the position's interest (`_accrueInterestFor`) and refreshes its summand at unchanged
+weights, and it is the body of `syncEquity` and what `_attributeFirst` runs for the caller of
+`pokeExpiredLock` and for every position `pokeExpiredLocks` names. The property, EQUITY-FRESH:
+when a transaction ends, the accumulator is the sum of the stored `max(staked − debt, 0)`, before
+an emergency and after every `syncEquity` and every exit inside one, so a breached haircut pays
+each exit `equity · pot / Σ equity` in every exit order. The refresh moves no weight, no reward
+debt and no checkpoint, and adds no revert. The refresh sits at the caller of the attribution and
+not in `_accrueInterestFor`, whose other callers already reach `_applyBoost` in the same
+transaction (`SHARED_QUANTITIES.md`, `trackedEquity`).
+
+Pinned by `test/hardening/AttributionRefreshesEquity.t.sol` (twenty-one tests; seventeen are red at
+`9731e05`, the other four are the controls and the walks through the two emergency doors, green
+there by design): `trackedEquity` and the accumulator are read against raw storage after each poke
+door (the caller, a self-named batch, a batch under a guardian pause, twelve borrowers past the
+window, a refused `lockStep`, the second either side of the unlock, a borrower with no lock of its
+own by each door), and every exit order is paid the oracle after a trip at the same timestamp.
+Two stateful campaigns in `test/InvariantsFullSurface.t.sol` check the accumulator against the
+stored sum after every call, one over ordinary traffic and one that enters an emergency and exits
+through it (256 runs of 500 calls each by default). Seven entries in the mutant register pair
+these readings.
+
+Measured: a borrower's own `deposit`, `borrow`, `repay`, `claimRewards` and `lock` cost 2,238 gas
+more; `pokeExpiredLock` called by a borrower, 13,838 more; `pokeExpiredLocks` over thirteen named
+positions, twelve of them borrowers, 44,456 more. `withdraw`, `claimPureYield` and `liquidate`,
+and every call by a debt-free caller with the borrower sweep it carries, cost the same as before.
+Runtime: 24,543 bytes, 33 under the EIP-170 limit (24,538 before).
+
 ## Reward debts round up; attack suite (November 2026)
 
 No ABI change. `_checkpoint` now rounds `rewardDebt` and `pureYieldDebt` up (`_wadUp`), in the

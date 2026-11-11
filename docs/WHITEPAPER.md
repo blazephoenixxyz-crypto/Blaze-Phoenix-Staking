@@ -818,7 +818,7 @@ The protocol is tested by two complementary suites:
   configuration in `foundry.toml`):
   - `invariant_solvent` — `isSolvent()` always true
   - `invariant_conservationBit` — bit 0 of `auditInvariants()` never set
-  - `invariant_boostBounded` — boosted denominators never exceed `stake × maxBoost / base`
+  - `invariant_boostBounded` — bit 4 of `auditInvariants()` never set: boosted denominators within `(stake + interest accrued) × maxBoost / base`, the pure one within the effective one
   - `invariant_backingCoversOwed` — `backing + dust ≥ owed` always
   - `invariant_everyLiveCommitmentIsTracked` — no live lock escapes the locker registry (a lock the
     engine cannot see is the original stale-boost bug returning)
