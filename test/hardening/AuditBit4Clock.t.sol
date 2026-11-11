@@ -21,11 +21,11 @@ import {stdStorage, StdStorage} from "forge-std/Test.sol";
 ///         hold on every clock: after a sweep, after an attribution that left the weights where
 ///         they were, during an emergency. Oracle: the public getters and raw storage.
 ///
-///         Bit 4 compares the weights with `totalStaked` alone, which the global interest debit
-///         lowers at once. It is exact on a book whose positions are all resynced, and reads set
-///         on a correct book once the interest not yet followed by a resync exceeds the debt:
-///         a SOFT signal, pinned as such here (report 4134; bits 16 / 18 at 9731e05 and b72ebe9
-///         on a book whose accumulator equals the sum of its tracked weights).
+///         Bit 4 reads the first two. Its bound used to be `totalStaked` alone, which the
+///         global interest debit lowers at once: red at 9731e05 and b72ebe9, where the bit read
+///         set (16 / 18) on a book whose accumulator equals the sum of its tracked weights, once
+///         the interest not yet followed by a resync exceeded the debt (report 4134). A bound over
+///         `totalPositiveEquity` reads set on the carrier and emergency books below.
 contract AuditBit4ClockTest is Base {
     using stdStorage for StdStorage;
 
@@ -57,8 +57,9 @@ contract AuditBit4ClockTest is Base {
         vm.prank(admin); staking.grantRole(keccak256("GUARDIAN_ROLE"), keeper);
     }
 
-    /// The three relations of the header, read off the public getters.
+    /// Bit 4 clear, and the three relations of the header read off the public getters.
     function _assertSoundReading(string memory where) internal view {
+        assertEq(staking.auditInvariants() & BIT4, 0, string.concat(where, ": bit4 set on a correct book"));
         uint256 maxBoost = staking.boostByDays(2555);
         uint256 tbe = staking.totalBoostedEffective();
         uint256 tbp = staking.totalBoostedPure();
@@ -83,20 +84,20 @@ contract AuditBit4ClockTest is Base {
         bits = staking.auditInvariants();
     }
 
-    // ── the SOFT reading of bit 4 ───────────────────────────────────────────────────────────
+    // ── the bit stays clear on a correct idle book ──────────────────────────────────────────
 
-    function test_BIT4_readsSetOnACorrectBookWhileInterestIsUnattributed_30y() public {
-        assertEq(_idleBook(30) & BIT4, BIT4, "SOFT pin: bit4 reads set on the idle book (30y)");
+    function test_BIT4_staysClearWhenUnattributedInterestExceedsDebt_30y() public {
+        assertEq(_idleBook(30) & BIT4, 0, "bit4 set on a correct book (30y)");
     }
 
-    function test_BIT4_readsSetOnACorrectBookWhileInterestIsUnattributed_60y() public {
+    function test_BIT4_staysClearWhenUnattributedInterestExceedsDebt_60y() public {
         uint8 bits = _idleBook(60);
-        assertEq(bits & BIT4, BIT4, "SOFT pin: bit4 reads set on the idle book (60y)");
+        assertEq(bits & BIT4, 0, "bit4 set on a correct book (60y)");
         assertEq(bits & (1 << 1), 1 << 1, "bit1 still reads the terminal state");
     }
 
-    /// Once every position is resynced the two sides are on one clock and bit 4 reads the stored
-    /// book. (At 30 years the 2555-day locks have lapsed, so the resync also brings the boost to 1.00x.)
+    /// Once every position is resynced the weights are on the clock of the stored book, and the
+    /// bit stays clear. (At 30 years the 2555-day locks have lapsed, so the resync also brings the boost to 1.00x.)
     function test_BIT4_readsTheStoredBookOnceEveryPositionIsResynced() public {
         _idleBook(30);
         vm.roll(block.number + 1);
@@ -108,27 +109,38 @@ contract AuditBit4ClockTest is Base {
 
     // ── the guard can fire ──────────────────────────────────────────────────────────────────
 
-    /// An accumulator one wei above stake x maxBoost sets the bit, one at the bound does not.
-    /// Debt-free book: no interest, so the bound is exactly totalStaked x 2.75.
+    /// An effective accumulator one wei above stake x maxBoost sets the bit, one at the bound does
+    /// not. Debt-free book: no interest, so the bound is exactly totalStaked x 2.75.
     function test_BIT4_firesOneWeiAboveTheBound_effective() public {
         vm.prank(alice); staking.deposit(1_000_000e18, 2555);
-        uint256 bound = staking.totalStaked() * staking.boostByDays(2555) / BASE;
+        _fireAt(staking.totalStaked() * staking.boostByDays(2555) / BASE);
+    }
+
+    /// The same on a book that has accrued interest: the bound counts it.
+    function test_BIT4_firesOneWeiAboveTheBound_effectiveWithInterestAccrued() public {
+        _carrier(100);
+        assertGt(staking.totalInterestAccruedGlobal(), 0, "fixture: interest accrued");
+        _fireAt((staking.totalStaked() + staking.totalInterestAccruedGlobal()) * staking.boostByDays(2555) / BASE);
+    }
+
+    function _fireAt(uint256 bound) internal {
         stdstore.target(address(staking)).sig("totalBoostedEffective()").checked_write(bound);
         assertEq(staking.auditInvariants() & BIT4, 0, "at the bound: clear");
         stdstore.target(address(staking)).sig("totalBoostedEffective()").checked_write(bound + 1);
         assertEq(staking.auditInvariants() & BIT4, BIT4, "one wei above: set");
     }
 
+    /// The pure accumulator is bounded by the effective one: equal on a debt-free book.
     function test_BIT4_firesOneWeiAboveTheBound_pure() public {
         vm.prank(alice); staking.deposit(1_000_000e18, 2555);
-        uint256 bound = staking.totalStaked() * staking.boostByDays(2555) / BASE;
-        stdstore.target(address(staking)).sig("totalBoostedPure()").checked_write(bound);
+        uint256 bound = staking.totalBoostedEffective();
+        assertEq(staking.totalBoostedPure(), bound, "fixture: debt-free book, pure == effective");
         assertEq(staking.auditInvariants() & BIT4, 0, "at the bound: clear");
         stdstore.target(address(staking)).sig("totalBoostedPure()").checked_write(bound + 1);
         assertEq(staking.auditInvariants() & BIT4, BIT4, "one wei above: set");
     }
 
-    // ── the sound reading on the clocks where equity and weight part ────────────────────────
+    // ── clear on the clocks where equity and weight part ─── ────────────────────────
 
     /// A borrower carries a poke batch: its own interest is attributed first and its equity
     /// refreshed, the borrower window skips the carrier, its weights stay where its last resync
@@ -150,12 +162,12 @@ contract AuditBit4ClockTest is Base {
         _assertSoundReading("carrier");
     }
 
-    function test_BIT4_soundReadingHoldsWhenACarrierIsAttributedWithoutResync_100d() public { _carrier(100); }
-    function test_BIT4_soundReadingHoldsWhenACarrierIsAttributedWithoutResync_12y() public { _carrier(12 * 365); }
-    function test_BIT4_soundReadingHoldsWhenACarrierIsAttributedWithoutResync_30y() public { _carrier(30 * 365); }
+    function test_BIT4_staysClearWhenACarrierIsAttributedWithoutResync_100d() public { _carrier(100); }
+    function test_BIT4_staysClearWhenACarrierIsAttributedWithoutResync_12y() public { _carrier(12 * 365); }
+    function test_BIT4_staysClearWhenACarrierIsAttributedWithoutResync_30y() public { _carrier(30 * 365); }
 
     /// Emergency: `syncEquity` attributes the frozen interest and refreshes equity, weights unchanged.
-    function test_BIT4_soundReadingHoldsThroughAnEmergencySync() public {
+    function test_BIT4_staysClearThroughAnEmergencySync() public {
         for (uint256 i; i < 60; ++i) _borrower(i, 2555);
         vm.roll(block.number + 11);
         vm.warp(block.timestamp + 30 * 365 days);
@@ -173,7 +185,7 @@ contract AuditBit4ClockTest is Base {
     /// Ranges: 1..24 borrowers, 90..2555-day locks, 1 day..60 idle years. Vectors: the keeper's
     /// claim (sweep), a borrower carrying a poke batch (attribution without resync), an emergency
     /// with every borrower synced.
-    function testFuzz_BIT4_soundReadingHoldsOnEveryClock(uint256 n, uint256 lockDays, uint256 idleDays, uint256 door) public {
+    function testFuzz_BIT4_staysClearOnEveryClock(uint256 n, uint256 lockDays, uint256 idleDays, uint256 door) public {
         n = bound(n, 1, 24); lockDays = bound(lockDays, 90, 2555); idleDays = bound(idleDays, 1, 60 * 365);
         for (uint256 i; i < n; ++i) _borrower(i, lockDays);
         vm.prank(bob); staking.deposit(100e18, 90);
