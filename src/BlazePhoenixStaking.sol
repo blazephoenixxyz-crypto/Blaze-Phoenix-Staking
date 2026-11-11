@@ -2360,9 +2360,10 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
         // Execution damps a residual denominator; the published rate must too.
         aprBps = ML.mulDiv(_dampPure(base, tbp), 10_000 - RESERVE_FACTOR_BPS, 10_000);
     }
-    /// @notice Emission a claim in this block would pay `user_`.
+    /// @notice Emission a claim in this block would pay `user_`, plus any credit deferred under
+    ///         a breach (`_rewardDeferred`: emission or pure yield, paid by the reward settle).
     /// @param user_ any position
-    /// @return emission in BZPX
+    /// @return emission and deferred credit in BZPX
     function pendingRewards(address user_) external view returns (uint256) {
         return _pendingReward(user_);
     }
@@ -2403,9 +2404,10 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
         return _pureAtLiveWeight(u, _sub0(gross, u.pureYieldDebt));   // the settle's own split
     }
 
-    /// @notice Pure yield a claim in this block would pay `user_`.
+    /// @notice Un-settled pure yield a claim in this block would pay `user_`. Pure yield settled
+    ///         under a breach is a deferred credit, quoted by `pendingRewards`.
     /// @param user_ any position
-    /// @return pure yield in BZPX
+    /// @return un-settled pure yield in BZPX
     function pendingPureYield(address user_) external view returns (uint256) {
         return _pendingPure(_users[user_]);
     }

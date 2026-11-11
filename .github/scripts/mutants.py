@@ -1375,6 +1375,12 @@ dict(nome="claimPureYield: the sweep runs between the emission and the pure-yiel
       old='        unchecked { totalInterestAccruedGlobal += slice; }',
       new='        // MUTANT',
       teste='test_BIT4_soundReadingHoldsWhenACarrierIsAttributedWithoutResync_30y'),
+# fix-1112 4132 - assert "emission quote absorbed the deferred pure yield" (the quote drops the deferred credit: a pure yield deferred under a breach is quoted by neither getter while the claim still pays it)
+ dict(nome="_pendingReward: the quote leaves out the deferred credit (_rewardDeferred not read)",
+      f=F,
+      old='        uint256 deferred = _rewardDeferred[user_];   // EMIS-DEFER credit, paid by the same settle',
+      new='        uint256 deferred = 0; // MUTANT',
+      teste='test_DEFER_pureCreditIsQuotedByPendingRewards'),
 ]
 # (source file under out/, contract): a mutant in script/ moves Deploy, not the staking contract
 CONTRACTS = (("BlazePhoenixStaking.sol", "BlazePhoenixStaking"), ("Deploy.s.sol", "Deploy"))

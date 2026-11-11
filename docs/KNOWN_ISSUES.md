@@ -15,8 +15,10 @@ rules, scope and awards are in [`SECURITY.md`](../SECURITY.md) and at
   the pure yield a lapsed boost did not earn, settled by the lock sweep that runs after the
   borrower sweep) is not netted against the booked loss on its own. `absorbBadDebt` applies the
   reserve first, and anyone may call it with `amount_ = 0` to do only that.
-  Emission deferred under a breach stays owed to its position and is paid by that position's first
-  settlement after the breach clears. Documented in `README.md` (section 1),
+  Emission and pure yield deferred under a breach stay owed to their position and are paid by
+  that position's first settlement after the breach clears. The deferred credit has one quote,
+  `pendingRewards`, whichever channel it came from; `pendingPureYield` quotes the un-settled
+  share only, and the two sum to what a claim pays. Documented in `README.md` (section 1),
   `docs/WHITEPAPER.md` (section 2.1) and `src/BlazePhoenixStaking.sol` (contract header and the
   EMIS-DEFER comment in `_settlePendingRewards`).
 - **An emergency exit forfeits unpaid rewards.** `emergencyWithdraw` returns net equity, closes the

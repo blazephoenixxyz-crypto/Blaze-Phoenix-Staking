@@ -15,7 +15,7 @@ empty and live), and after the reward debts were made to round up at the checkpo
 made to refresh the position's equity summand (`test/hardening/AttributionRefreshesEquity.t.sol`,
 with the campaign invariants in `test/InvariantsFullSurface.t.sol`), and after the batch poke and
 the direct seizure were made to book their caller's own loss before the bonus they pay (the
-LOSS-FIRST carrier tests in `test/hardening/MaintenanceBeforePayment.t.sol`), and after bit 4 of `auditInvariants` was pinned as a soft signal beside the boost relations that hold on every clock (`test/hardening/AuditBit4Clock.t.sol`): **483 tests in 61 `.t.sol`
+LOSS-FIRST carrier tests in `test/hardening/MaintenanceBeforePayment.t.sol`), and after bit 4 of `auditInvariants` was pinned as a soft signal beside the boost relations that hold on every clock (`test/hardening/AuditBit4Clock.t.sol`), and after the deferred credit was pinned to its one quote (`test/hardening/DeferredPureYieldQuote.t.sol`): **485 tests in 62 `.t.sol`
 files** by the counting rule below, which also counts the report-only `check_*` specs.
 Regenerate with:
 
@@ -92,18 +92,18 @@ zero is a fact about the suite and the place to look first.
 
 | area | P | A | D | V | Q | S | G | T | E | Y | M | I | H | R | Z | K | W | O | X | C | N | U | L | J |
 |---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
-| deposit / top-up / lock | - | 60 | 72 | 62 | 40 | 10 | 54 | 238 | 53 | 62 | 42 | 24 | 3 | - | - | 26 | 28 | 40 | **0** | 123 | 74 | **0** | - | - |
+| deposit / top-up / lock | - | 60 | 72 | 62 | 40 | 10 | 54 | 240 | 53 | 62 | 42 | 24 | 3 | - | - | 26 | 28 | 40 | **0** | 123 | 76 | **0** | - | - |
 | withdraw | - | 1 | 4 | 7 | 5 | 3 | 14 | 26 | 4 | 9 | 12 | 1 | **0** | - | - | 6 | 4 | **0** | **0** | 14 | 4 | **0** | - | - |
-| borrow / repay | - | 36 | 49 | 52 | 21 | 8 | 30 | 173 | 36 | 56 | 18 | 15 | 3 | - | - | 11 | 26 | 18 | **0** | 81 | 58 | **0** | - | - |
+| borrow / repay | - | 36 | 49 | 52 | 21 | 8 | 30 | 175 | 36 | 56 | 18 | 15 | 3 | - | - | 11 | 26 | 18 | **0** | 81 | 60 | **0** | - | - |
 | interest | - | 5 | 7 | 9 | 6 | **0** | 3 | 29 | 4 | 13 | **0** | **0** | **0** | - | - | 2 | 5 | 6 | **0** | 8 | 15 | **0** | - | - |
-| emission / rewards | - | 31 | 60 | 45 | 39 | 9 | 36 | 169 | 34 | 35 | 30 | 17 | 1 | - | - | 43 | 18 | 28 | **0** | 135 | 58 | **0** | - | - |
-| pure yield | - | 9 | 11 | 11 | 7 | 2 | 7 | 35 | 6 | 13 | 4 | 5 | 1 | - | - | 3 | 6 | 6 | **0** | 17 | 23 | **0** | - | - |
+| emission / rewards | - | 31 | 60 | 45 | 39 | 9 | 36 | 171 | 34 | 35 | 30 | 17 | 1 | - | - | 43 | 18 | 28 | **0** | 135 | 60 | **0** | - | - |
+| pure yield | - | 9 | 11 | 11 | 7 | 2 | 7 | 37 | 6 | 13 | 4 | 5 | 1 | - | - | 3 | 6 | 6 | **0** | 17 | 25 | **0** | - | - |
 | liquidation | - | 1 | 7 | 6 | 3 | **0** | 8 | 26 | 7 | 11 | 4 | 2 | **0** | - | - | **0** | 3 | **0** | **0** | 12 | 12 | **0** | - | - |
 | maintenance windows | - | 3 | 8 | 3 | 3 | 2 | 6 | 20 | **0** | 5 | 6 | **0** | **0** | - | - | 1 | 1 | 4 | **0** | 4 | 6 | **0** | - | - |
 | lock sweep / poke | - | 60 | 31 | 19 | 6 | 2 | 16 | 80 | 13 | 26 | 13 | 12 | 1 | - | - | 9 | 8 | 15 | **0** | 39 | 20 | **0** | - | - |
 | emergency / breaker | - | 21 | 13 | 39 | 2 | 7 | 47 | 66 | 10 | 126 | 18 | 11 | 2 | - | - | 3 | 38 | 10 | **0** | 60 | 21 | **0** | - | - |
 | admin / reserves | - | 20 | 42 | 62 | 30 | 7 | 37 | 152 | 32 | 50 | 32 | 11 | 2 | - | - | 27 | 40 | 26 | **0** | 163 | 48 | **0** | - | - |
-| views / solvency | - | 23 | 34 | 44 | 22 | 11 | 29 | 136 | 20 | 42 | 26 | 11 | 1 | - | - | 14 | 25 | 23 | **0** | 79 | 48 | **0** | - | - |
+| views / solvency | - | 23 | 34 | 44 | 22 | 11 | 29 | 138 | 20 | 42 | 26 | 11 | 1 | - | - | 14 | 25 | 23 | **0** | 79 | 50 | **0** | - | - |
 
 288 cells: 60 without object, 228 measured, **37 empty**.
 
