@@ -2146,7 +2146,13 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
 
     /// @notice Full 5-equation diagnostic for off-chain monitors. bit0 mirrors the on-chain
     ///         guard; bit1 (Solvency) is a SOFT signal (a position may be transiently unhealthy
-    ///         pre-liquidation) and is intentionally NOT part of the revert guard.
+    ///         pre-liquidation) and is intentionally NOT part of the revert guard. bit4
+    ///         (BoostBounded) is SOFT too: interest is debited from `totalStaked` as it accrues,
+    ///         while a position's weights keep the equity of its last resync, so on a book left
+    ///         idle the bit can read set with every weight correct; it reads the stored book once
+    ///         the positions are resynced. On every clock `totalBoostedEffective * BOOST_BASE <=
+    ///         (totalStaked + totalInterestAccruedGlobal) * boostByDays(MAX_LOCK_DAYS)` and
+    ///         `totalBoostedPure <= totalBoostedEffective`.
     ///   bit0 Conservation  bit1 Solvency  bit2 EmissionCap  bit3 Monotonicity  bit4 BoostBounded
     /// @return violations bitmask of the five checks above; 0 means all hold
     function auditInvariants() external view returns (uint8 violations) {

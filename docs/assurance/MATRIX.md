@@ -15,7 +15,7 @@ empty and live), and after the reward debts were made to round up at the checkpo
 made to refresh the position's equity summand (`test/hardening/AttributionRefreshesEquity.t.sol`,
 with the campaign invariants in `test/InvariantsFullSurface.t.sol`), and after the batch poke and
 the direct seizure were made to book their caller's own loss before the bonus they pay (the
-LOSS-FIRST carrier tests in `test/hardening/MaintenanceBeforePayment.t.sol`): **473 tests in 60 `.t.sol`
+LOSS-FIRST carrier tests in `test/hardening/MaintenanceBeforePayment.t.sol`), and after bit 4 of `auditInvariants` was pinned as a soft signal beside the boost relations that hold on every clock (`test/hardening/AuditBit4Clock.t.sol`): **483 tests in 61 `.t.sol`
 files** by the counting rule below, which also counts the report-only `check_*` specs.
 Regenerate with:
 
@@ -92,18 +92,18 @@ zero is a fact about the suite and the place to look first.
 
 | area | P | A | D | V | Q | S | G | T | E | Y | M | I | H | R | Z | K | W | O | X | C | N | U | L | J |
 |---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
-| deposit / top-up / lock | - | 56 | 70 | 58 | 40 | 10 | 54 | 231 | 51 | 60 | 42 | 24 | 3 | - | - | 26 | 26 | 40 | **0** | 119 | 72 | **0** | - | - |
+| deposit / top-up / lock | - | 60 | 72 | 62 | 40 | 10 | 54 | 238 | 53 | 62 | 42 | 24 | 3 | - | - | 26 | 28 | 40 | **0** | 123 | 74 | **0** | - | - |
 | withdraw | - | 1 | 4 | 7 | 5 | 3 | 14 | 26 | 4 | 9 | 12 | 1 | **0** | - | - | 6 | 4 | **0** | **0** | 14 | 4 | **0** | - | - |
-| borrow / repay | - | 35 | 47 | 48 | 21 | 8 | 30 | 169 | 34 | 54 | 18 | 15 | 3 | - | - | 11 | 24 | 18 | **0** | 77 | 56 | **0** | - | - |
-| interest | - | 3 | 4 | 7 | 6 | **0** | 3 | 24 | 4 | 11 | **0** | **0** | **0** | - | - | 2 | 3 | 6 | **0** | 6 | 15 | **0** | - | - |
-| emission / rewards | - | 29 | 58 | 42 | 39 | 9 | 36 | 163 | 32 | 34 | 30 | 17 | 1 | - | - | 43 | 17 | 28 | **0** | 132 | 56 | **0** | - | - |
-| pure yield | - | 7 | 9 | 9 | 7 | 2 | 7 | 32 | 6 | 11 | 4 | 5 | 1 | - | - | 3 | 4 | 6 | **0** | 15 | 23 | **0** | - | - |
-| liquidation | - | 1 | 7 | 4 | 3 | **0** | 8 | 24 | 5 | 11 | 4 | 2 | **0** | - | - | **0** | 3 | **0** | **0** | 10 | 10 | **0** | - | - |
+| borrow / repay | - | 36 | 49 | 52 | 21 | 8 | 30 | 173 | 36 | 56 | 18 | 15 | 3 | - | - | 11 | 26 | 18 | **0** | 81 | 58 | **0** | - | - |
+| interest | - | 5 | 7 | 9 | 6 | **0** | 3 | 29 | 4 | 13 | **0** | **0** | **0** | - | - | 2 | 5 | 6 | **0** | 8 | 15 | **0** | - | - |
+| emission / rewards | - | 31 | 60 | 45 | 39 | 9 | 36 | 169 | 34 | 35 | 30 | 17 | 1 | - | - | 43 | 18 | 28 | **0** | 135 | 58 | **0** | - | - |
+| pure yield | - | 9 | 11 | 11 | 7 | 2 | 7 | 35 | 6 | 13 | 4 | 5 | 1 | - | - | 3 | 6 | 6 | **0** | 17 | 23 | **0** | - | - |
+| liquidation | - | 1 | 7 | 6 | 3 | **0** | 8 | 26 | 7 | 11 | 4 | 2 | **0** | - | - | **0** | 3 | **0** | **0** | 12 | 12 | **0** | - | - |
 | maintenance windows | - | 3 | 8 | 3 | 3 | 2 | 6 | 20 | **0** | 5 | 6 | **0** | **0** | - | - | 1 | 1 | 4 | **0** | 4 | 6 | **0** | - | - |
-| lock sweep / poke | - | 55 | 30 | 18 | 6 | 2 | 16 | 75 | 13 | 25 | 13 | 12 | 1 | - | - | 9 | 7 | 15 | **0** | 38 | 20 | **0** | - | - |
-| emergency / breaker | - | 20 | 11 | 37 | 2 | 7 | 47 | 64 | 10 | 124 | 18 | 11 | 2 | - | - | 3 | 36 | 10 | **0** | 58 | 21 | **0** | - | - |
-| admin / reserves | - | 19 | 40 | 58 | 30 | 7 | 37 | 148 | 30 | 48 | 32 | 11 | 2 | - | - | 27 | 38 | 26 | **0** | 159 | 46 | **0** | - | - |
-| views / solvency | - | 22 | 33 | 42 | 22 | 11 | 29 | 131 | 18 | 42 | 26 | 11 | 1 | - | - | 14 | 25 | 23 | **0** | 77 | 46 | **0** | - | - |
+| lock sweep / poke | - | 60 | 31 | 19 | 6 | 2 | 16 | 80 | 13 | 26 | 13 | 12 | 1 | - | - | 9 | 8 | 15 | **0** | 39 | 20 | **0** | - | - |
+| emergency / breaker | - | 21 | 13 | 39 | 2 | 7 | 47 | 66 | 10 | 126 | 18 | 11 | 2 | - | - | 3 | 38 | 10 | **0** | 60 | 21 | **0** | - | - |
+| admin / reserves | - | 20 | 42 | 62 | 30 | 7 | 37 | 152 | 32 | 50 | 32 | 11 | 2 | - | - | 27 | 40 | 26 | **0** | 163 | 48 | **0** | - | - |
+| views / solvency | - | 23 | 34 | 44 | 22 | 11 | 29 | 136 | 20 | 42 | 26 | 11 | 1 | - | - | 14 | 25 | 23 | **0** | 79 | 48 | **0** | - | - |
 
 288 cells: 60 without object, 228 measured, **37 empty**.
 

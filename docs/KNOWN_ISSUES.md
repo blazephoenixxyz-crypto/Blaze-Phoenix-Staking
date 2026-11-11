@@ -135,6 +135,16 @@ rules, scope and awards are in [`SECURITY.md`](../SECURITY.md) and at
   the debt-free position collects 1,081,081.08 BZPX of emission when nothing else transacts and
   1,097,587.96 BZPX when it claims daily. Documented in `src/BlazePhoenixStaking.sol`
   (`_autoMaintain`, `_atLiveWeight`) and `test/fix1102/InterestStaleWeight.t.sol`.
+- **Bit 4 of `auditInvariants` is a soft signal on an idle book.** It compares the boosted
+  weights with `totalStaked × maxBoost`. Interest is debited from `totalStaked` as it accrues,
+  while a borrower's weight keeps the equity of its last resync until a transaction reaches it.
+  On a book left idle until the interest no resync has followed exceeds the debt, the bit reads
+  set with every weight correct (60 max-boost borrowers at the borrow cap, 30 years without a
+  transaction), and it clears once the positions are resynced. The relations that hold on every
+  clock, an emergency included, are `totalBoostedEffective × 1e4 ≤ (totalStaked +
+  totalInterestAccruedGlobal) × boostByDays(2555)` and `totalBoostedPure ≤ totalBoostedEffective`.
+  `totalPositiveEquity` is not a bound for the effective weight: an attribution that no resync
+  follows lowers it while the weight stays. Pinned in `test/hardening/AuditBit4Clock.t.sol`.
 - **A seizure's keeper bonus is paid at par inside the borrower sweep.** It is the one payment the
   maintenance sweep makes ahead of a loss it may still book: when the borrower window seizes a
   position, the caller's bonus (`LIQ_BONUS_BPS`, at most 5% of the seized debt) leaves at once,

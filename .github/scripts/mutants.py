@@ -1351,6 +1351,30 @@ dict(nome="claimPureYield: the sweep runs between the emission and the pure-yiel
       old="        _attributeFirst(msg.sender);   // LOSS-FIRST: the caller's own loss precedes the bonus it is paid\n        _accrueInterestFor(user_);",
       new="        // MUTANT\n        _accrueInterestFor(user_);",
       teste='test_LOSSFIRST_theCarriersOwnLossIsBookedBeforeItsOwnLiquidationsBonus'),
+# fix-1112 4134 - assert "at the bound: clear" (an accumulator exactly at stake x maxBoost sets bit 4: every fully boosted debt-free book reads as a violation)
+ dict(nome="auditInvariants: bit 4 fires at the bound instead of above it (> -> >=)",
+      f=F,
+      old='        if (totalBoostedEffective > maxBoosted || totalBoostedPure > maxBoosted) violations |= 1 << 4;',
+      new='        if (totalBoostedEffective >= maxBoosted || totalBoostedPure >= maxBoosted) violations |= 1 << 4; // MUTANT',
+      teste='test_BIT4_firesOneWeiAboveTheBound_effective'),
+# fix-1112 4134 - assert "one wei above: set" (the boost bound is never compared: bit 4 cannot fire)
+ dict(nome="auditInvariants: bit 4 is never raised (comparison deleted)",
+      f=F,
+      old='        if (totalBoostedEffective > maxBoosted || totalBoostedPure > maxBoosted) violations |= 1 << 4;',
+      new='        // MUTANT',
+      teste='test_BIT4_firesOneWeiAboveTheBound_pure'),
+# fix-1112 4134 - assert "SOFT pin: bit4 reads set on the idle book (30y)" (the pin of the documented soft reading: a change of the bound's base must move this test and the docs with it)
+ dict(nome="auditInvariants: bit 4 reads its bound over totalStaked + totalInterestAccruedGlobal (the documented soft reading no longer holds)",
+      f=F,
+      old='        uint256 maxBoosted = ML.mulDiv(totalStaked, boostByDays(MAX_LOCK_DAYS), BOOST_BASE);',
+      new='        uint256 maxBoosted = ML.mulDiv(totalStaked + totalInterestAccruedGlobal, boostByDays(MAX_LOCK_DAYS), BOOST_BASE); // MUTANT',
+      teste='test_BIT4_readsSetOnACorrectBookWhileInterestIsUnattributed_30y'),
+# fix-1112 4134 - assert "carrier: effective weight above maxBoost x (totalStaked + interest accrued)" (the global interest counter stops: stake plus interest accrued no longer covers the stake the weights were built on)
+ dict(nome="_updateInterestIndex: the debited slice is not added to totalInterestAccruedGlobal (the every-clock boost relation loses its interest term)",
+      f=F,
+      old='        unchecked { totalInterestAccruedGlobal += slice; }',
+      new='        // MUTANT',
+      teste='test_BIT4_soundReadingHoldsWhenACarrierIsAttributedWithoutResync_30y'),
 ]
 # (source file under out/, contract): a mutant in script/ moves Deploy, not the staking contract
 CONTRACTS = (("BlazePhoenixStaking.sol", "BlazePhoenixStaking"), ("Deploy.s.sol", "Deploy"))
