@@ -118,6 +118,44 @@ jobs:
           forge test --match-path "test/*Invariant*" --fuzz-runs 512 --invariant-runs 128 --invariant-depth 128 -vv || true
           forge test --match-path "test/*Conservation*" --fuzz-runs 512 -vv || true
 
+  montecarlo:
+    name: Monte Carlo — deep blind walk (16 pre-registered batches)
+    # Deterministic: the seeds are keccak256("82ac0d0", k) for k = 0..15 (docs/MONTE_CARLO.md),
+    # so this job GATES. A red here is a counterexample with its (k, j, i), never variance.
+    # Batches 0..3 also run locally; 4..15 run only here.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+
+      - uses: foundry-rs/foundry-toolchain@v1
+
+      - name: Blind walk, batches 0..15 x 24 sequences x 160 actions
+        env:
+          MC_FIRST_BATCH: "0"
+          MC_BATCHES: "16"
+          MC_SEQS: "24"
+          MC_ACTIONS: "160"
+        run: |
+          set -o pipefail
+          forge test --match-test test_MC_blindWalk --gas-limit 18446744073709551615 -vv 2>&1 | tee mc.log
+
+      - name: Hypothesis grid
+        run: forge test --match-path test/montecarlo/Hypotheses.t.sol -vv
+
+      - name: Results (regenerates docs/MONTE_CARLO.md below the marker; not committed)
+        run: |
+          node test/montecarlo/report.mjs mc.log
+          { echo "### Monte Carlo"; sed -n '/<!-- RESULTS -->/,$p' docs/MONTE_CARLO.md; } >> "$GITHUB_STEP_SUMMARY"
+
   yul-guard:
     name: Yul evaluation-order guard
     runs-on: ubuntu-latest
