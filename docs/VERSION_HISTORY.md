@@ -43,7 +43,7 @@ red at `2ad030d`, with its control `test_LOSSFIRST_documents_aDebtFreeKeepersLiq
 Two entries in the mutant register pair the attributions; the two entries that pin the order and
 the clock of the batch were re-targeted to the new text.
 
-Measured: a debt-free caller's batch costs 188 gas more when it names the caller and 2,236 more
+Measured: a debt-free caller's batch costs 236 gas more when it names the caller and 2,236 more
 when it does not (one cold read of the caller's debt); a batch that carries no borrower window
 costs the same; a borrower's batch books the attribution its next transaction would have booked.
 A debt-free keeper's `liquidate` costs 2,236 gas more (the same cold read of the keeper's debt).
