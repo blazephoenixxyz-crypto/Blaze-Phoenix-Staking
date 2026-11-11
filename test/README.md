@@ -98,3 +98,18 @@ the fuzzed state space rather than a case only the unit tests reach.
 > Note: the constructor grants `DEFAULT_ADMIN_ROLE` + `ADMIN_ROLE` to the deployer but does **not**
 > grant `GUARDIAN_ROLE` to anyone — the admin must `grantRole(keccak256("GUARDIAN_ROLE"), guardian)`
 > before `pause()` / `declareEmergency()` can be used. The tests do this explicitly.
+
+## 3. Monte Carlo — the blind walk and the hypothesis grid (`test/montecarlo/`)
+
+`MonteCarloWalk.t.sol` draws random sequences of every public action (deposit, borrow, repay,
+withdraw, claims, lock, pokes, liquidate, donation, loss, breaker, emergency exits, time jumps
+over the ten-year programme and across the halving boundary) from seeds derived from the base
+commit, and asserts the pre-registered invariants of `docs/MONTE_CARLO.md` after every action.
+In the suite it runs batch 0, sequences 0..2; the campaign runs with `MC_BATCHES`, `MC_SEQS`,
+`MC_ACTIONS` and `--gas-limit 18446744073709551615` (the CI job `montecarlo`, 16 batches).
+`MC_BATCH=k MC_SEQ=j` replays one sequence. `Hypotheses.t.sol` is the named grid on top: one
+staker above the damping mark paid the closed form at every boundary, a dust staker damped by
+`weight / MIN_EMISSION_WEIGHT`, N stakers from dust to the cap, a window across the halving, the
+pro-rata emergency haircut, and the reward-debt rebase. `node test/montecarlo/report.mjs <log>`
+regenerates the results section of `docs/MONTE_CARLO.md`.
+
