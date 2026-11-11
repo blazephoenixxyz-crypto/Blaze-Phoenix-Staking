@@ -2147,12 +2147,11 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
     /// @notice Full 5-equation diagnostic for off-chain monitors. bit0 mirrors the on-chain
     ///         guard; bit1 (Solvency) is a SOFT signal (a position may be transiently unhealthy
     ///         pre-liquidation) and is intentionally NOT part of the revert guard. bit4
-    ///         (BoostBounded) is SOFT too: interest is debited from `totalStaked` as it accrues,
-    ///         while a position's weights keep the equity of its last resync, so on a book left
-    ///         idle the bit can read set with every weight correct; it reads the stored book once
-    ///         the positions are resynced. On every clock `totalBoostedEffective * BOOST_BASE <=
-    ///         (totalStaked + totalInterestAccruedGlobal) * boostByDays(MAX_LOCK_DAYS)` and
-    ///         `totalBoostedPure <= totalBoostedEffective`.
+    ///         (BoostBounded) reads the weights against the stake they were built on: it is set
+    ///         when `totalBoostedEffective * BOOST_BASE > (totalStaked +
+    ///         totalInterestAccruedGlobal) * boostByDays(MAX_LOCK_DAYS)` or `totalBoostedPure >
+    ///         totalBoostedEffective`. Neither can happen on a correct book, idle or in an
+    ///         emergency; the first is an upper bound that widens with the interest accrued.
     ///   bit0 Conservation  bit1 Solvency  bit2 EmissionCap  bit3 Monotonicity  bit4 BoostBounded
     /// @return violations bitmask of the five checks above; 0 means all hold
     function auditInvariants() external view returns (uint8 violations) {
@@ -2164,8 +2163,14 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
         if (rewardReserve > TOTAL_REWARDS) violations |= 1 << 2;
         if (accRewardPerShare < lastAuditedAccReward || accPureYieldPerShare < lastAuditedAccPure)
             violations |= 1 << 3;
-        uint256 maxBoosted = ML.mulDiv(totalStaked, boostByDays(MAX_LOCK_DAYS), BOOST_BASE);
-        if (totalBoostedEffective > maxBoosted || totalBoostedPure > maxBoosted) violations |= 1 << 4;
+        // BIT4-CLOCK: a weight is bounded by the equity it was BUILT on (its last resync), and
+        // stored stake plus all interest ever debited covers the stake of every build. Reading the
+        // bound over `totalStaked` alone set the bit on a correct idle book. Sound on every clock;
+        // an upper bound, not an equality. The products cannot wrap below 2^256 / 27_500 wei.
+        unchecked {
+            uint256 tbe = totalBoostedEffective;
+            if (tbe * BOOST_BASE > (totalStaked + totalInterestAccruedGlobal) * boostByDays(MAX_LOCK_DAYS) || totalBoostedPure > tbe) violations |= 1 << 4;
+        }
     }
 
     /// @notice Permissionless: raise the bit3 snapshots of `auditInvariants` to the current

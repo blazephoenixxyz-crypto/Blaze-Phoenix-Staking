@@ -81,7 +81,7 @@ liquidate / time-warp):
 
 - `invariant_solvent` — `isSolvent()` is always true.
 - `invariant_conservationBit` — the on-chain conservation bit is never set.
-- `invariant_boostBounded` — bit 4 of `auditInvariants()` never set over the campaign: boosted denominators within `stake · maxBoost / base` (a soft signal on a long-idle book, see `docs/KNOWN_ISSUES.md`).
+- `invariant_boostBounded` — bit 4 of `auditInvariants()` never set: boosted denominators within `(stake + interest accrued) · maxBoost / base`, the pure one within the effective one.
 - `invariant_backingCoversOwed` — `backing + dust ≥ owed` always.
 - `invariant_everyLiveCommitmentIsTracked` — **the load-bearing BP-2026-001 invariant.** The locker
   registry is the only window that can see a debt-free position, so a live lock that escapes it is a

@@ -1351,30 +1351,48 @@ dict(nome="claimPureYield: the sweep runs between the emission and the pure-yiel
       old="        _attributeFirst(msg.sender);   // LOSS-FIRST: the caller's own loss precedes the bonus it is paid\n        _accrueInterestFor(user_);",
       new="        // MUTANT\n        _accrueInterestFor(user_);",
       teste='test_LOSSFIRST_theCarriersOwnLossIsBookedBeforeItsOwnLiquidationsBonus'),
-# fix-1112 4134 - assert "at the bound: clear" (an accumulator exactly at stake x maxBoost sets bit 4: every fully boosted debt-free book reads as a violation)
- dict(nome="auditInvariants: bit 4 fires at the bound instead of above it (> -> >=)",
+# fix-1112 4134 - assert "bit4 set on a correct book (30y)" (M1, the fix reverted: the bound reads `totalStaked` alone, which the global interest debit lowers ahead of the weights)
+ dict(nome='auditInvariants: bit 4 bounds the weights by totalStaked alone (interest accrued dropped from the bound)',
       f=F,
-      old='        if (totalBoostedEffective > maxBoosted || totalBoostedPure > maxBoosted) violations |= 1 << 4;',
-      new='        if (totalBoostedEffective >= maxBoosted || totalBoostedPure >= maxBoosted) violations |= 1 << 4; // MUTANT',
+      old='            if (tbe * BOOST_BASE > (totalStaked + totalInterestAccruedGlobal) * boostByDays(MAX_LOCK_DAYS) || totalBoostedPure > tbe) violations |= 1 << 4;',
+      new='            if (tbe * BOOST_BASE > totalStaked * boostByDays(MAX_LOCK_DAYS) || totalBoostedPure > tbe) violations |= 1 << 4; // MUTANT',
+      teste='test_BIT4_staysClearWhenUnattributedInterestExceedsDebt_30y'),
+# fix-1112 4134 - assert "at the bound: clear" (M2: an effective accumulator exactly at the bound sets bit 4: every fully boosted debt-free book reads as a violation)
+ dict(nome='auditInvariants: bit 4 fires at the effective bound instead of above it (> -> >=)',
+      f=F,
+      old='            if (tbe * BOOST_BASE > (totalStaked + totalInterestAccruedGlobal) * boostByDays(MAX_LOCK_DAYS) || totalBoostedPure > tbe) violations |= 1 << 4;',
+      new='            if (tbe * BOOST_BASE >= (totalStaked + totalInterestAccruedGlobal) * boostByDays(MAX_LOCK_DAYS) || totalBoostedPure > tbe) violations |= 1 << 4; // MUTANT',
       teste='test_BIT4_firesOneWeiAboveTheBound_effective'),
-# fix-1112 4134 - assert "one wei above: set" (the boost bound is never compared: bit 4 cannot fire)
- dict(nome="auditInvariants: bit 4 is never raised (comparison deleted)",
+# fix-1112 4134 - assert "at the bound: clear" (M2, pure side: a pure accumulator equal to the effective one sets bit 4)
+ dict(nome='auditInvariants: bit 4 fires when the pure weight equals the effective weight (> -> >=)',
       f=F,
-      old='        if (totalBoostedEffective > maxBoosted || totalBoostedPure > maxBoosted) violations |= 1 << 4;',
-      new='        // MUTANT',
+      old='            if (tbe * BOOST_BASE > (totalStaked + totalInterestAccruedGlobal) * boostByDays(MAX_LOCK_DAYS) || totalBoostedPure > tbe) violations |= 1 << 4;',
+      new='            if (tbe * BOOST_BASE > (totalStaked + totalInterestAccruedGlobal) * boostByDays(MAX_LOCK_DAYS) || totalBoostedPure >= tbe) violations |= 1 << 4; // MUTANT',
       teste='test_BIT4_firesOneWeiAboveTheBound_pure'),
-# fix-1112 4134 - assert "SOFT pin: bit4 reads set on the idle book (30y)" (the pin of the documented soft reading: a change of the bound's base must move this test and the docs with it)
- dict(nome="auditInvariants: bit 4 reads its bound over totalStaked + totalInterestAccruedGlobal (the documented soft reading no longer holds)",
+# fix-1112 4134 - assert "one wei above: set" (M3: the boost bound is never compared, bit 4 cannot fire)
+ dict(nome='auditInvariants: bit 4 is never raised (comparison deleted)',
       f=F,
-      old='        uint256 maxBoosted = ML.mulDiv(totalStaked, boostByDays(MAX_LOCK_DAYS), BOOST_BASE);',
-      new='        uint256 maxBoosted = ML.mulDiv(totalStaked + totalInterestAccruedGlobal, boostByDays(MAX_LOCK_DAYS), BOOST_BASE); // MUTANT',
-      teste='test_BIT4_readsSetOnACorrectBookWhileInterestIsUnattributed_30y'),
-# fix-1112 4134 - assert "carrier: effective weight above maxBoost x (totalStaked + interest accrued)" (the global interest counter stops: stake plus interest accrued no longer covers the stake the weights were built on)
+      old='            if (tbe * BOOST_BASE > (totalStaked + totalInterestAccruedGlobal) * boostByDays(MAX_LOCK_DAYS) || totalBoostedPure > tbe) violations |= 1 << 4;',
+      new='            // MUTANT',
+      teste='test_BIT4_firesOneWeiAboveTheBound_effectiveWithInterestAccrued'),
+# fix-1112 4134 - assert "carrier: bit4 set on a correct book" (the bound reads `totalPositiveEquity`, which an attribution without resync lowers while the weights stay)
+ dict(nome='auditInvariants: bit 4 bounds the effective weight by totalPositiveEquity',
+      f=F,
+      old='            if (tbe * BOOST_BASE > (totalStaked + totalInterestAccruedGlobal) * boostByDays(MAX_LOCK_DAYS) || totalBoostedPure > tbe) violations |= 1 << 4;',
+      new='            if (tbe * BOOST_BASE > totalPositiveEquity * boostByDays(MAX_LOCK_DAYS) || totalBoostedPure > tbe) violations |= 1 << 4; // MUTANT',
+      teste='test_BIT4_staysClearWhenACarrierIsAttributedWithoutResync_100d'),
+# fix-1112 4134 - assert "emergency, syncing: bit4 set on a correct book" (the bound reads the stored stake plus the unattributed interest only: interest attributed without a resync drops out)
+ dict(nome='auditInvariants: bit 4 bounds the weights by totalStaked + unattributed interest (attributed interest dropped)',
+      f=F,
+      old='            if (tbe * BOOST_BASE > (totalStaked + totalInterestAccruedGlobal) * boostByDays(MAX_LOCK_DAYS) || totalBoostedPure > tbe) violations |= 1 << 4;',
+      new='            if (tbe * BOOST_BASE > (totalStaked + totalInterestAccruedGlobal - _interestAttributed) * boostByDays(MAX_LOCK_DAYS) || totalBoostedPure > tbe) violations |= 1 << 4; // MUTANT',
+      teste='test_BIT4_staysClearThroughAnEmergencySync'),
+# fix-1112 4134 - assert "carrier: bit4 set on a correct book" (the global interest counter stops: stake plus interest accrued no longer covers the stake the weights were built on)
  dict(nome="_updateInterestIndex: the debited slice is not added to totalInterestAccruedGlobal (the every-clock boost relation loses its interest term)",
       f=F,
       old='        unchecked { totalInterestAccruedGlobal += slice; }',
       new='        // MUTANT',
-      teste='test_BIT4_soundReadingHoldsWhenACarrierIsAttributedWithoutResync_30y'),
+      teste='test_BIT4_staysClearWhenACarrierIsAttributedWithoutResync_30y'),
 # fix-1112 4132 - assert "emission quote absorbed the deferred pure yield" (the quote drops the deferred credit: a pure yield deferred under a breach is quoted by neither getter while the claim still pays it)
  dict(nome="_pendingReward: the quote leaves out the deferred credit (_rewardDeferred not read)",
       f=F,
