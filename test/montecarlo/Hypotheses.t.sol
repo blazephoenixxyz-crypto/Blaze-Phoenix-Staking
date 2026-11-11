@@ -117,12 +117,10 @@ contract HypothesesTest is Base {
             rng = uint256(keccak256(abi.encodePacked(rng)));
             if (rng % 2 == 0) { vm.prank(who[i]); try staking.claimRewards() {} catch {} }
         }
-        // MC-SHARE is read at a settled instant (A1 in docs/MONTE_CARLO.md): a fresh depositor
-        // settles the window; its own position has nothing pending.
-        address settler = address(0x5e77);
-        token.mint(settler, 1e18);
-        vm.prank(settler); token.approve(address(staking), type(uint256).max);
-        vm.prank(settler); staking.deposit(1e18, 90);
+        // MC-SHARE is read at a settled instant (A1 in docs/MONTE_CARLO.md): one more claim
+        // settles the window whatever the earlier draws did (a claim with nothing pending does
+        // not revert; a deposit would, past the end of the programme).
+        vm.prank(who[0]); staking.claimRewards();
         assertEq(staking.lastRewardTime(), block.timestamp, "H3: the window is not settled");
         uint256 sum = 0;
         for (uint256 i = 0; i < n; i++) sum += staking.pendingRewards(who[i]);
