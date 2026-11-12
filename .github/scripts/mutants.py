@@ -410,8 +410,8 @@ M = [
  # ── EMIS-DEFER, the class: the settle reads the pot after the loss its own tx books (test/hardening/EmissionDeferredUnderBreach.t.sol)
  dict(nome="emission settle: the position is not attributed before the breach read",
       f=F,
-      old="        _accrueInterestFor(user_);\n        UserInfo storage u = _users[user_];\n        uint256 due = _rewardDeferred[user_];",
-      new="        UserInfo storage u = _users[user_]; // MUTANT\n        uint256 due = _rewardDeferred[user_];",
+      old="        _accrueInterestFor(user_);\n        UserInfo storage u = _users[user_];\n        uint256 due = _rewardDeferred[user_] + _settleEmission(u);",
+      new="        UserInfo storage u = _users[user_]; // MUTANT\n        uint256 due = _rewardDeferred[user_] + _settleEmission(u);",
       teste="test_EMISDEFER_claimThatBooksItsOwnShortfallReadsThePotAfterIt"),
  dict(nome="emission settle: the own-loss read ignores the reserve (a covered seizure is deferred)",
       f=F,
@@ -1257,7 +1257,7 @@ dict(nome="claimPureYield: the sweep runs between the emission and the pure-yiel
       new='        _sweepExpiredLocks(beneficiary, lBudget); // MUTANT\n        _sweepBorrowers(beneficiary, bBudget);',
       teste='test_LOSSFIRST_thirdPartyOrder_'),
 # J-1109 - assert "the stale-weight excess of a borrower is the residue" / "a lock normalised after its unlock returns the boost it drew there"
- dict(nome='_settlePendingRewards: pays the window at the tracked weight (no P1-C, no LOCK-STALE)',
+ dict(nome='_settleEmission: pays the window at the tracked weight (no P1-C, no LOCK-STALE)',
       f=F,
       old='            uint256 paid   = _atLiveWeight(u, u.staked, earned);',
       new='            uint256 paid   = earned; // MUTANT',
@@ -1782,7 +1782,7 @@ dict(nome="claimPureYield: the sweep runs between the emission and the pure-yiel
       new='        return _dampPure(slice - ML.mulDiv(slice, RESERVE_FACTOR_BPS + 1, 10_000), tbp); // MUTANT',
       teste='testFuzz_AtqInterestOneStep_SimpleOnThePrincipal_SplitBetweenPoolAndReserveToTheWei'),
  # ── montecarlo (test/montecarlo/*.t.sol; docs/MONTE_CARLO.md) ─────────────────────────────────
-  dict(nome="_settlePendingRewards: the stale-weight excess stays distributed instead of returning to the reserve (the residue decomposition reads the settle preview wei for wei)",
+  dict(nome="_settleEmission: the stale-weight excess stays distributed instead of returning to the reserve (the residue decomposition reads the settle preview wei for wei)",
        f=F,
        old="            totalRewardDistributed -= earned - paid;",
        new="            totalRewardDistributed -= 0; // MUTANT",
@@ -1832,6 +1832,12 @@ dict(nome="claimPureYield: the sweep runs between the emission and the pure-yiel
       old="        u.rewardDebt     = _wadUp(u.trackedBoostedEffective, accRewardPerShare);",
       new="        u.rewardDebt     = _wadUp(u.trackedBoostedEffective, accRewardPerShare) / 2; // MUTANT",
       teste="test_H6_lockExtensionAndTopUp_rebaseTheRewardDebtWithoutMovingPendingRewards"),
+ # ── fix1112: the emergency hatch returns the stale-weight excess of the exiter's last window ──
+ dict(nome="emergencyWithdraw: the hatch keeps the stale-weight excess with the forfeit (no move to the reserve)",
+      f=F,
+      old="        _settleEmission(u);\n        uint256 principal = u.staked;",
+      new="        uint256 principal = u.staked; // MUTANT",
+      teste="test_RD_residue_1_21_104_isTheForfeitOfEmergencyExitsPlusLivePureYield"),
 ]# (source file under out/, contract): a mutant in script/ moves Deploy, not the staking contract
 CONTRACTS = (("BlazePhoenixStaking.sol", "BlazePhoenixStaking"), ("Deploy.s.sol", "Deploy"))
 

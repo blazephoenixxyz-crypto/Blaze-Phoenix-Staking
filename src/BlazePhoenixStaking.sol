@@ -713,7 +713,8 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
     /// @notice During emergency, pull your OWN net equity (staked - debt). Debt is netted
     ///         against principal (collateral == borrowed asset). Interest is charged up to the
     ///         trip and frozen since; unpaid emission and pure yield are forfeited and stay
-    ///         counted in `owed()` with no position to claim them (docs/KNOWN_ISSUES.md). In a
+    ///         counted in `owed()` with no position to claim them (docs/KNOWN_ISSUES.md); the
+    ///         stale-weight excess of the last emission window returns to `rewardReserve`. In a
     ///         breached emergency the payout is scaled pro rata (below). Closes the position entirely.
     ///         Funnels through _applyBoost, so exiting cannot leave a stale boosted "ghost"
     ///         share behind. NOT conservation-guarded, so it remains callable even while the
@@ -723,12 +724,16 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
         // Close the emission window on the weights that were actually present BEFORE this exit
         // removes its share. Without it the window since lastRewardTime is integrated later over
         // the stayers alone, and each stayer is paid the exiter's part on top of its own. The
-        // exiter's own part is forfeited as before (no reward maths on this path); what moves is
-        // only who the window is divided among. Interest is frozen in emergency, so the index
+        // exiter's own part is forfeited as before (only its stale-weight excess moves, below);
+        // what changes here is who the window is divided among. Interest is frozen in emergency, so the index
         // update inside only slides the clock.
         _updateGlobal();
         _accrueInterestFor(msg.sender);   // attribute what this position already owes before exiting
         UserInfo storage u = _users[msg.sender];
+        // The exiter's own emission is forfeited (stays in distributed - paid, see KNOWN_ISSUES);
+        // the stale-weight excess of its last window was never earned by anyone, so it goes back
+        // to the reserve exactly as a settle would have moved it. Read before the position closes.
+        _settleEmission(u);
         uint256 principal = u.staked;
         uint256 debt   = u.debt;
         // ERODED-EXIT. A borrower whose interest has outgrown its whole collateral reaches here with
@@ -1627,17 +1632,7 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
     function _settlePendingRewards(address user_) internal {
         _accrueInterestFor(user_);
         UserInfo storage u = _users[user_];
-        uint256 due = _rewardDeferred[user_];
-        uint256 gross = ML.mulDiv(u.trackedBoostedEffective, accRewardPerShare, WAD);
-        if (gross > u.rewardDebt) {
-            // P1-C: the window is paid at the live weight; the stale-weight excess was never earned,
-            // so it leaves the distributed side and returns to the reserve (conservation unchanged).
-            uint256 earned = gross - u.rewardDebt;
-            uint256 paid   = _atLiveWeight(u, u.staked, earned);
-            rewardReserve          += earned - paid;
-            totalRewardDistributed -= earned - paid;
-            due += paid; u.rewardDebt = gross;
-        }
+        uint256 due = _rewardDeferred[user_] + _settleEmission(u);
         if (due == 0) return;
         // EMIS-DEFER. Same rule as `claimRewards` and PURE-UNCOLL: no emission leaves at par while
         // the pot cannot cover every claim. Unlike pure yield, this settle sits under doors that
@@ -2078,6 +2073,22 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
 
     function _balance() internal view returns (uint256) {
         return ML.rawBalanceOf(bzpx, address(this));
+    }
+
+    /// @dev The emission window of `u` since its last checkpoint, read once: what the position
+    ///      earned at the live weight is returned as `due`; the stale-weight excess (P1-C) was never
+    ///      earned, so it leaves the distributed side and returns to the reserve (conservation
+    ///      unchanged). Two callers, one question: the settle pays `due`, the emergency hatch
+    ///      forfeits it and keeps only the move of the excess (docs/KNOWN_ISSUES.md).
+    function _settleEmission(UserInfo storage u) internal returns (uint256 due) {
+        uint256 gross = ML.mulDiv(u.trackedBoostedEffective, accRewardPerShare, WAD);
+        if (gross > u.rewardDebt) {
+            uint256 earned = gross - u.rewardDebt;
+            uint256 paid   = _atLiveWeight(u, u.staked, earned);
+            rewardReserve          += earned - paid;
+            totalRewardDistributed -= earned - paid;
+            due += paid; u.rewardDebt = gross;
+        }
     }
 
     /// @dev hard, one-sided: contract must hold at least what it owes (minus dust).

@@ -134,9 +134,13 @@ contract AtqEmergencyHandler is FullSurfaceHandler {
         observe();
         uint256 eq = trueEquity(a);
         uint256 b0 = token.balanceOf(a);
+        uint256 r0 = staking.rewardReserve();
         vm.prank(a);
         try staking.emergencyWithdraw() {
             uint256 got = token.balanceOf(a) - b0;
+            // fix1112: the hatch returns the exiter's stale-weight excess from `totalRewardDistributed`
+            // to `rewardReserve`; the frozen snapshot moves by exactly that, nothing else may move it.
+            if (frozenSet) fDist -= staking.rewardReserve() - r0;
             if (got > eq) exitOverpaid++;
             else if (got < eq) { haircut += eq - got; haircutExits++; }
             (uint256 s1, uint256 d1) = raw(a);
