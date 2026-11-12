@@ -61,7 +61,8 @@ action of every sequence. One false assertion anywhere makes the test red and is
 Reported distributions (min / median / p99 / max, with the `(k, j, i)` of the maximiser): the
 MC-CONSERVE diff, the residue `R = totalRewardDistributed - totalRewardsPaid - sum_i
 pendingRewards(i)`: what the book still counts as distributed with no position to claim it (the
-forfeits of emergency exits and their stale-weight excess) plus rounding, which is pro-protocol
+forfeits of emergency exits; since fix1112 the hatch returns their stale-weight excess to
+`rewardReserve`, so it no longer sits in `R`) plus rounding, which is pro-protocol
 (`R >= -DUST` is asserted); the maximiser is decomposed wei for wei in
 `test/montecarlo/ResidueDecomposition.t.sol`, and `D`.
 
@@ -93,7 +94,7 @@ Logs read: `mc-all16.log`. Batches 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13,
 |---|---|
 | MC-CONSERVE abs diff (tolerance 1e10; asserted outside a breached emergency, A3) | n=61440, min 0, median 0, p99 0, max 711407254039647433503125 at (k=12, j=21, i=140); 253 of 61440 samples above the tolerance, every one inside a breached emergency (anywhere else it is a failure, and failures are 0) |
 | MC-CLOSED D = scheduled - distributed (damping and reserve cap only; asserted >= 0) | n=61440, min 0, median 39963, p99 89987183103869484409148079, max 89999999999999999997563886 at (k=0, j=1, i=80) |
-| rounding residue R = distributed - paid - sum(pending) (asserted >= -1e10) | n=5157, min 0, median 2743359, p99 4363630938559416836704117, max 55437465372907153741701104 at (k=1, j=21, i=104) |
+| rounding residue R = distributed - paid - sum(pending) (asserted >= -1e10) | n=5157, min 0, median 2743359, p99 4363630938559416836704117, max 55437465372907153741701104 at (k=1, j=21, i=104); replayed on the fix1112 tree the same case gives R = 55309813961212838433439778 (the holder's forfeited emission plus 3.5e7 wei of rounding), the 127651411694315308261326 wei of stale-weight excess now sitting in `rewardReserve`; the other quantiles are as the campaign logged them before the fix |
 
 ### Seeds actually used
 
