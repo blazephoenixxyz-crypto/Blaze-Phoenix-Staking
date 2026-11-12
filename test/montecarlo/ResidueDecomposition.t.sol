@@ -33,7 +33,9 @@ contract ResidueDecompositionTest is MonteCarloWalkTest {
     uint256 internal settlePreviewPaid;
     uint256 internal settlePreviewToReserve;
     uint256 internal settlePreviewDistDown;
+    uint256 internal settlePreviewPureToReserve;   // protocolReserve moved by the settle preview (pure LOCK-STALE)
     uint256 internal reserveReturned;   // rewardReserve moved by the hatches themselves (fix1112)
+    uint256 internal pureReturned;      // protocolReserve moved by the hatches themselves (fix1112, `_settlePure`)
     uint256 internal previewCancelReverted; uint256 internal previewUnpauseReverted; uint256 internal previewClaimReverted;
 
     function _peekActor() internal view returns (address) {
@@ -52,10 +54,12 @@ contract ResidueDecompositionTest is MonteCarloWalkTest {
         uint256 settledB = settled;
         if (staking.emergencyMode()) _previewSettle(who);
         uint256 resB = staking.rewardReserve();
+        uint256 protB = staking.protocolReserve();
         ok = super._act(a);
         if (settled == settledB) return ok;   // the exit reverted
         nExits++;
         reserveReturned += staking.rewardReserve() - resB;
+        pureReturned    += staking.protocolReserve() - protB;
         forfeitEmission += pr;
         forfeitPure     += py;
         uint256 paid = token.balanceOf(who) - balB;
@@ -86,6 +90,7 @@ contract ResidueDecompositionTest is MonteCarloWalkTest {
         uint256 distB = staking.totalRewardDistributed();
         uint256 resB  = staking.rewardReserve();
         uint256 paidB = staking.totalRewardsPaid();
+        uint256 protB = staking.protocolReserve();
         vm.prank(admin); try staking.cancelEmergency() {} catch { previewCancelReverted++; }
         vm.prank(admin); try staking.unpause() {} catch { previewUnpauseReverted++; }
         vm.prank(who);   try staking.claimRewards() {} catch { previewClaimReverted++; }
@@ -94,9 +99,10 @@ contract ResidueDecompositionTest is MonteCarloWalkTest {
         uint256 p = staking.totalRewardsPaid() - paidB;
         uint256 r = staking.rewardReserve() - resB;
         uint256 d = distB - staking.totalRewardDistributed();
+        uint256 q = staking.protocolReserve() - protB;
         uint256 c1 = previewCancelReverted; uint256 c2 = previewUnpauseReverted; uint256 c3 = previewClaimReverted;
         vm.revertToState(snap);   // reverts this contract's storage too: the ghosts are written after
-        settlePreviewPaid += p; settlePreviewToReserve += r; settlePreviewDistDown += d;
+        settlePreviewPaid += p; settlePreviewToReserve += r; settlePreviewDistDown += d; settlePreviewPureToReserve += q;
         previewCancelReverted = c1; previewUnpauseReverted = c2; previewClaimReverted = c3;
     }
 
@@ -108,7 +114,7 @@ contract ResidueDecompositionTest is MonteCarloWalkTest {
         curK = k; curJ = j;
         _fresh(k, j);
         forfeitEmission = 0; forfeitPure = 0; nExits = 0; nHaircutExits = 0; payoutPostSum = 0;
-        paidSum = 0; haircutFormula = 0; haircutDebited = 0; underwaterExits = 0; reserveReturned = 0;
+        paidSum = 0; haircutFormula = 0; haircutDebited = 0; underwaterExits = 0; reserveReturned = 0; pureReturned = 0;
         for (uint256 i = 0; i <= stop; i++) {
             curI = i;
             uint256 a = _rnd() % NACT;
@@ -159,6 +165,7 @@ contract ResidueDecompositionTest is MonteCarloWalkTest {
         (uint256 diff,) = _diffNow();
         console2.log("MC-CONSERVE diff here", diff);
         console2.log("settlePreview paid toReserve distDown", settlePreviewPaid, settlePreviewToReserve, settlePreviewDistDown);
+        console2.log("settlePreview pureToReserve / hatch pureReturned", settlePreviewPureToReserve, pureReturned);
         console2.log("lastRewardTime now", staking.lastRewardTime(), block.timestamp);
         console2.log("preview reverts cancel unpause claim", previewCancelReverted, previewUnpauseReverted, previewClaimReverted);
 
@@ -171,11 +178,14 @@ contract ResidueDecompositionTest is MonteCarloWalkTest {
         // 1) the holder's earned emission, forfeited by the hatch: a settle in the same block pays
         //    exactly the quote the hatch discarded (quote == execution)
         assertEq(settlePreviewPaid, forfeitEmission, "the settle pays what the hatch forfeited");
-        // 2) the stale-weight excess a settle returns to the reserve (LOCK-STALE, P1-C): the hatch
-        //    moves the same wei to the reserve itself (fix1112), so it leaves distributed - paid
-        assertEq(settlePreviewDistDown, settlePreviewToReserve, "LOCK-STALE moves distributed to the reserve, nothing else");
+        // 2) the stale-weight excess a settle returns to the reserves (LOCK-STALE, P1-C): the hatch
+        //    moves the same wei itself (fix1112: `_settleEmission` to `rewardReserve`, `_settlePure`
+        //    to `protocolReserve`), so it leaves distributed - paid. One holder without debt and no
+        //    interest here, so the pure side is zero on both legs; the identity is pinned all the same.
+        assertEq(settlePreviewDistDown, settlePreviewToReserve + settlePreviewPureToReserve, "LOCK-STALE moves distributed to the two reserves, nothing else");
         assertGt(settlePreviewToReserve, DUST, "the stale excess is a real amount here, not rounding");
         assertEq(reserveReturned, settlePreviewToReserve, "the hatch returns exactly the excess a settle would have returned");
+        assertEq(reserveReturned + pureReturned, settlePreviewToReserve + settlePreviewPureToReserve, "_settlePure: the hatch returns the pure excess a settle would have returned");
         // 3) the rest is rounding, under the dust
         uint256 explained = forfeitEmission + sumP;
         assertLe(uint256(R) - explained, DUST, "R = forfeited emission + live pure yield, up to dust");

@@ -378,9 +378,10 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
     ///      `_updateInterestIndex`, the P1-C and LOCK-STALE returns in `_settlePendingRewards` and
     ///      `_settlePendingPureYield`) are frozen for the emergency, so `cancelEmergency` requires
     ///      it unchanged (3326 meta-guard). One writer is open in the halt by design: the hatch
-    ///      returns the exiter's stale-weight excess to the reserve (`_settleEmission`) and moves
-    ///      this anchor by the same amount, so the meta-guard keeps its exactness without locking
-    ///      the cancel behind a solvent exit.
+    ///      returns the exiter's stale-weight excess of the last emission AND pure-yield window to
+    ///      the reserves (`_settleEmission`, `_settlePure`) and moves this anchor by the same
+    ///      amount, so the meta-guard keeps its exactness without locking the cancel behind a
+    ///      solvent exit.
     uint256 private _distributedAtTrip;
 
     // ── Events ────────────────────────────────────────────────────────────────────────────
@@ -733,13 +734,15 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
         _updateGlobal();
         _accrueInterestFor(msg.sender);   // attribute what this position already owes before exiting
         UserInfo storage u = _users[msg.sender];
-        // The exiter's own emission is forfeited (stays in distributed - paid, see KNOWN_ISSUES);
-        // the stale-weight excess of its last window was never earned by anyone, so it goes back
-        // to the reserve exactly as a settle would have moved it. Read before the position closes.
+        // The exiter's own emission and pure yield are forfeited (stay in distributed - paid, see
+        // KNOWN_ISSUES); the stale-weight excess of its last emission window AND of its last
+        // pure-yield window was never earned by anyone, so each goes back to its reserve exactly
+        // as a settle would have moved it. Read before the position closes.
         // The move is measured on `totalRewardDistributed` itself and mirrored on the 3326 anchor,
         // so `cancelEmergency` still reads an exact freeze and a solvent exit never locks it.
         uint256 d0 = totalRewardDistributed;
         _settleEmission(u);
+        _settlePure(u);
         uint256 moved = d0 - totalRewardDistributed;
         if (moved != 0) _distributedAtTrip -= moved;
         uint256 principal = u.staked;
@@ -1720,9 +1723,8 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
 
     function _settlePendingPureYield(address user_) internal {
         UserInfo storage u = _users[user_];
-        if (u.trackedBoostedPure == 0) return;
-        uint256 gross = ML.mulDiv(u.trackedBoostedPure, accPureYieldPerShare, WAD);
-        if (gross <= u.pureYieldDebt) return;
+        (uint256 due, bool window) = _settlePure(u);
+        if (!window) return;
         // PURE-UNCOLL. Pure yield is credited when interest accrues, before `_accrueInterestFor`
         // learns how much of it a borrower can actually pay; an uncollectible shortfall the
         // reserve cannot cover lands in `totalBadDebt` and reads as a breach. From then on no
@@ -1730,15 +1732,6 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
         // It is CREDITED instead of reverting (W2-R1), exactly as EMIS-DEFER: the slice moves to
         // `_rewardDeferred` (unpaid, so `_owed()` still carries it) and the first settle after
         // the breach clears pays it, so the doors that resync a lock stay open in a breach.
-        uint256 due = gross - u.pureYieldDebt;
-        u.pureYieldDebt = gross;
-        // LOCK-STALE: the part of the window after `unlockTime` is paid at 1.00x. The excess was
-        // never earned, so it leaves the distributed side for `protocolReserve`, where every
-        // undistributed slice of the flow lands (conservation unchanged).
-        uint256 paid = _pureAtLiveWeight(u, due);
-        protocolReserve        += due - paid;
-        totalRewardDistributed -= due - paid;
-        due = paid;
         if (_hardBreach()) { _rewardDeferred[user_] += due; return; }
         totalRewardsPaid += due;
         emit PureYieldClaimed(user_, due);
@@ -2102,6 +2095,30 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
             rewardReserve          += excess;
             totalRewardDistributed -= excess;
             u.rewardDebt = gross;
+        }
+    }
+
+    /// @dev The pure-yield window of `u` since its last checkpoint, read once: what the position
+    ///      earned at the live weight is returned as `due`; the lapsed-lock excess (LOCK-STALE: the
+    ///      part of the window after `unlockTime` priced at the boost) was never earned, so it
+    ///      leaves the distributed side for `protocolReserve`, where every undistributed slice of
+    ///      the flow lands (conservation unchanged). `window` says whether the accumulator moved
+    ///      past the debt at all: the settle keeps its event shape on it. Two callers, one
+    ///      question: the settle pays `due`, the emergency hatch forfeits it and keeps only the
+    ///      move of the excess (docs/KNOWN_ISSUES.md). Clamped as `_settleEmission` (I4).
+    function _settlePure(UserInfo storage u) internal returns (uint256 due, bool window) {
+        uint256 bp = u.trackedBoostedPure;
+        if (bp == 0) return (0, false);
+        uint256 gross = ML.mulDiv(bp, accPureYieldPerShare, WAD);
+        if (gross > u.pureYieldDebt) {
+            window = true;
+            uint256 earned = gross - u.pureYieldDebt;
+            uint256 excess = _sub0(earned, _pureAtLiveWeight(u, earned));
+            due = earned - excess;
+            excess = _min(excess, totalRewardDistributed);
+            protocolReserve        += excess;
+            totalRewardDistributed -= excess;
+            u.pureYieldDebt = gross;
         }
     }
 
