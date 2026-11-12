@@ -151,6 +151,22 @@ jobs:
             echo "::endgroup::"
           done
 
+      # Campaign 2 (docs/MONTE_CARLO_EMISSION.md): the emission curve alone, every settle compared
+      # with the schedule written from literals. Seeds keccak256("385b297", k), so it gates too.
+      - name: Emission curve walk, batches 0..3 x 24 sequences x 160 actions (one forge run per batch)
+        env:
+          ECW_BATCHES: "1"
+          ECW_SEQS: "24"
+          ECW_ACTIONS: "160"
+        run: |
+          set -o pipefail
+          for k in $(seq 0 3); do
+            echo "::group::batch $k"
+            ECW_FIRST_BATCH=$k forge test --match-contract "^EmissionCurveWalkTest$" --match-test test_ECW_blindWalk --gas-limit 18446744073709551615 -vv 2>&1 | tee -a ecw.log
+            echo "::endgroup::"
+          done
+          { echo "### Monte Carlo campaign 2 (emission curve)"; echo '```'; grep -E "ECW" ecw.log; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+
       - name: Hypothesis grid
         run: forge test --match-path test/montecarlo/Hypotheses.t.sol -vv
 

@@ -81,4 +81,59 @@ the line, the EC-9 split loss.
 <!-- RESULTS -->
 ## Results
 
-Not run yet.
+### The first run, as it happened
+
+The first run on the campaign seeds did not complete, and the cause was the test file, not the
+contract.
+
+- Batch 0 stopped at sequence 1 with an arithmetic panic inside the EC-9 bookkeeping of the test:
+  the harness computed `reserve before - reserve after` for the whole-window path BEFORE testing
+  that the window was comparable. In that window a settle normalised a lapsed lock, which hands
+  the boost it did not earn back to `rewardReserve`, so the reserve stood above its value before
+  the window and the subtraction underflowed. The other 23 sequences of batch 0, replayed one by
+  one on the unchanged harness, passed.
+- Batches 1 to 3 were terminated by the runner's memory ceiling: the state snapshots taken for
+  EC-9 were never released.
+
+Two lines of the harness changed, and nothing else: the EC-9 subtraction is now made only after
+the comparability test that the pre-registration already states, and each snapshot is deleted when
+it is reverted to. No seed, no sampling rule, no invariant and no tolerance was touched. One check
+was added, and it is stricter than what was registered: on a comparable window (total weight
+unchanged) a reserve that GROWS is a failure.
+
+### The campaign (seeds from `385b297`, batches 0..3, 24 sequences, 160 actions)
+
+Pre-registered failures: **0**.
+
+| batch | sequences | calls observed | reverted | settles with a release | split comparisons | clean full closes |
+|---|---|---|---|---|---|---|
+| 0 | 24 | 4,377 | 1,414 | 332 | 188 | 5 |
+| 1 | 24 | 4,480 | 1,346 | 335 | 223 | 9 |
+| 2 | 24 | 4,334 | 1,461 | 312 | 187 | 6 |
+| 3 | 24 | 4,368 | 1,332 | 327 | 199 | 6 |
+| all | 96 | 17,559 | 5,553 | 1,306 | 797 | 26 |
+
+Every one of the 26 clean full closes released 90,000,000e18 exactly (EC-10).
+
+### Maximisers (wei; replay with `ECW_BATCH=k ECW_SEQ=j`)
+
+| batch | EC-7 gap at `(j, i)` | EC-2 deficit under the line at `(j, i)` | EC-9 split loss at `(j, i)` |
+|---|---|---|---|
+| 0 | 1,100,103,642 at (19, 77) | 229,183,998 at (1, 23) | 2 at (11, 30) |
+| 1 | 1,681,405,174,094,090,999,081,348 at (13, 161) | 229,183,998 at (1, 9) | 2 at (6, 58) |
+| 2 | 2,484,866,005,016,137,688 at (1, 62) | 229,183,998 at (0, 47) | 3 at (1, 10) |
+| 3 | 1,266,300,931 at (17, 89) | 229,183,998 at (0, 32) | 0 |
+
+- **EC-2.** The deficit reaches 229,183,998 wei in every batch, 2 wei inside the registered
+  bound of 229,184,000: the bound is the sum of the two floored rates' remainders and the walk
+  gets within one second of it.
+- **EC-9.** A window settled in pieces lost at most 3 wei against the window settled once, with
+  at most 5 pieces.
+- **EC-7.** The largest gap, 1,681,405.17 BZPX at `(1, 13, 161)`, is the forced close of a
+  sequence in which one lock lapsed and was never touched again. It is replayed and taken apart
+  in `test/montecarlo/EmissionCurveGap.t.sol`: the gap is the boost that lock stopped earning at
+  its `unlockTime`, still booked as distributed because the position was not touched, and quoted
+  to nobody. One call to `pokeExpiredLock` by any address pays the position exactly its quote
+  and moves 1,681,405,174,094,088,484,754,067 wei back to `rewardReserve`, where a second treasury
+  sweep takes it; 2,514,327,281 wei stay unassigned. The gaps of the other three batches were
+  not taken apart.

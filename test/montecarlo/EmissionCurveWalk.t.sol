@@ -278,9 +278,14 @@ contract EmissionCurveWalkTest is Base {
             vm.roll(vm.getBlockNumber() + 20);
             vm.prank(STRANGER);
             s.claimRewards();
-            once = rBefore - s.rewardReserve();
+            // The subtraction is made only on a comparable window: a lock normalised by this
+            // settle hands its stale excess back, and the reserve may then stand ABOVE rBefore.
+            uint256 rOnce = s.rewardReserve();
             comparable = s.totalBoostedEffective() == tbe0;
-            vm.revertToState(id);
+            bool grew = comparable && rOnce > rBefore;
+            if (comparable && !grew) once = rBefore - rOnce;
+            vm.revertToStateAndDelete(id);                       // the snapshot is never read again
+            if (grew) { _fail("EC-9 the reserve grew over an unchanged weight", j, i); return; }
         } else {
             k = 1;
         }
@@ -293,6 +298,7 @@ contract EmissionCurveWalkTest is Base {
         // normalisation moves the weight and hands its stale excess back to the reserve.
         if (k > 1 && comparable && s.totalBoostedEffective() == tbe0) {
             ++nSplits;
+            if (s.rewardReserve() > rBefore) { _fail("EC-9 the reserve grew over an unchanged weight", j, i); return; }
             uint256 pieces = rBefore - s.rewardReserve();
             // EC-9  pieces never release more than the whole, and less only by the throttle's floors
             if (pieces > once) { _fail("EC-9 pieces released more", j, i); return; }
