@@ -138,15 +138,18 @@ jobs:
 
       - uses: foundry-rs/foundry-toolchain@v1
 
-      - name: Blind walk, batches 0..15 x 24 sequences x 160 actions
+      - name: Blind walk, batches 0..15 x 24 sequences x 160 actions (one forge run per batch)
         env:
-          MC_FIRST_BATCH: "0"
-          MC_BATCHES: "16"
+          MC_BATCHES: "1"
           MC_SEQS: "24"
           MC_ACTIONS: "160"
         run: |
           set -o pipefail
-          forge test --match-test test_MC_blindWalk --gas-limit 18446744073709551615 -vv 2>&1 | tee mc.log
+          for k in $(seq 0 15); do
+            echo "::group::batch $k"
+            MC_FIRST_BATCH=$k forge test --match-test test_MC_blindWalk --gas-limit 18446744073709551615 -vv 2>&1 | tee -a mc.log
+            echo "::endgroup::"
+          done
 
       - name: Hypothesis grid
         run: forge test --match-path test/montecarlo/Hypotheses.t.sol -vv

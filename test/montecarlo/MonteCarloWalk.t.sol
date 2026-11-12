@@ -390,26 +390,36 @@ contract MonteCarloWalkTest is Test {
     function _actions() internal view returns (uint256) { return vm.envOr("MC_ACTIONS", uint256(160)); }
 
     // ── the campaign ─────────────────────────────────────────────────────────
+    uint256 internal totalActions;
+
+    /// One sequence in its own call frame: the EVM memory of a sequence is released when the
+    /// call returns, so a long campaign does not pay the quadratic memory cost of one frame
+    /// (the deep CI job ran out of gas near the 120th sequence in a single frame). External so
+    /// `this.runSequence` opens the frame; the ghosts and the counters live in storage.
+    function runSequence(uint256 k, uint256 j) external {
+        require(msg.sender == address(this), "MC: internal driver");
+        curK = k; curJ = j;
+        _fresh(k, j);
+        uint256 nAct = _actions();
+        for (uint256 i = 0; i < nAct; i++) {
+            curI = i;
+            uint256 a = _rnd() % NACT;
+            _act(a);
+            _check(k, j, i, a);
+            totalActions++;
+        }
+        _logQ(k, j);
+    }
+
     function test_MC_blindWalk() public {
         uint256 batches = vm.envOr("MC_BATCHES", uint256(1));   // in-suite default; the campaign sets 4 (local) or 16 (CI)
         uint256 first = vm.envOr("MC_FIRST_BATCH", uint256(0));
         uint256 seqs = vm.envOr("MC_SEQS", uint256(3));   // in-suite default; the campaign sets 24
-        uint256 nAct = _actions();
         bool replay = vm.envOr("MC_BATCH", uint256(type(uint256).max)) != type(uint256).max;
-        uint256 totalActions = 0;
         for (uint256 k = first; k < first + batches; k++) {
             for (uint256 j = 0; j < seqs; j++) {
                 if (replay && (k != vm.envUint("MC_BATCH") || j != vm.envUint("MC_SEQ"))) continue;
-                curK = k; curJ = j;
-                _fresh(k, j);
-                for (uint256 i = 0; i < nAct; i++) {
-                    curI = i;
-                    uint256 a = _rnd() % NACT;
-                    _act(a);
-                    _check(k, j, i, a);
-                    totalActions++;
-                }
-                _logQ(k, j);
+                this.runSequence(k, j);
             }
         }
         console2.log(string.concat("T\t", vm.toString(totalActions), "\t", vm.toString(fails)));
