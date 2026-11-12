@@ -281,7 +281,8 @@ any fork against a different asset.
 
 | Parameter | Value |
 |---|---|
-| Total emission | 90,000,000 BZPX — five-year halving, `60M >> p` per 5-year period, 2 periods (see below) |
+| Total emission (per contract) | 90,000,000 BZPX — five-year halving, `60M >> p` per 5-year period, 2 periods (see below) |
+| Deployments | two independent deployments of this contract, each capped at 90,000,000 BZPX: 2 × 90M = 180M allocated to staking |
 | Max stake / wallet | 30,000,000 BZPX |
 | Max LTV (on effective stake) | 50% |
 | Max protocol utilisation (`totalDebt / totalStaked`, checked at borrow) | 75% |
@@ -295,7 +296,13 @@ any fork against a different asset.
 
 ---
 
-## Emission — 90M BZPX, halving every five years
+## Emission — 90M BZPX per contract, halving every five years
+
+**Two deployments, one cap each.** Staking is allocated 2 × 90M = 180,000,000 BZPX, delivered as
+two independent deployments of this same contract, 90,000,000 BZPX each. Each deployment has its
+own `TOTAL_REWARDS` cap on `fundEmission`, its own `emissionStart` (set when it is deployed) and its
+own state, so neither contract can emit more than 90,000,000 BZPX. Everything below describes one
+deployment.
 
 Period `p` (0-indexed, five years each) emits `60M >> p`, and the programme runs 2 periods
 (10 years). The total is exact by construction, not by calibration: `60M + 30M = 90M`.
