@@ -4,7 +4,7 @@ pragma solidity 0.8.28;
 // fix1112, second part. The emergency hatch returns the exiter's stale-weight excess to the
 // reserve through `_settleEmission`, which lowers `totalRewardDistributed`; `cancelEmergency`
 // requires that quantity frozen since the trip (3326 meta-guard). Red at 80db7e9: one solvent
-// exit with excess > 0 locked the cancel for good (Staking__InvariantBreached). The hatch now
+// exit with excess > 0 made the cancel revert forever (Staking__InvariantBreached). The hatch now
 // mirrors the move on the anchor, and the two reward subtractions it inherited from the settle are
 // clamped so the last door never closes on broken reward arithmetic (I4, the measured side wins).
 //
