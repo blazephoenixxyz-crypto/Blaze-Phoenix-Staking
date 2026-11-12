@@ -138,6 +138,8 @@ contract ResidueDecompositionTest is MonteCarloWalkTest {
     }
 
     /// The maximiser of R in docs/MONTE_CARLO.md: (k=1, j=21, i=104), R = 55,437,465,372,907,153,741,701,104.
+    /// Pins `_settleEmission`: the excess it returns to `rewardReserve` is the gap this test measures;
+    /// mutants 67 and 339 on those lines turn it red.
     function test_RD_residue_1_21_104_isTheForfeitOfEmergencyExitsPlusLivePureYield() public {
         _runTo(1, 21, 104);
         uint256 dist = staking.totalRewardDistributed();
