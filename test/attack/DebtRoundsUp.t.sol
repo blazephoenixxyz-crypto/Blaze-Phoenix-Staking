@@ -226,9 +226,24 @@ contract DebtRoundsUpTest is Base {
     function testFuzz_I7_checkpointRoundsBothDebtsUp(uint256 first, uint256 amt, uint256 dt) public {
         // Bounded so both accumulators move (with acc == 0 floor and ceiling coincide): a weight
         // of at least one token and a day of a 4M loan's interest; the top-up may be dust.
-        first = bound(first, 1e18, 1_000_000e18);
-        amt = bound(amt, 1, 1_000_000e18);
-        dt = bound(dt, 1 days, 3000 days);
+        // The clock reaches the last second of the 8-year programme (2920 days); deposits and locks
+        // are refused from the close on.
+        _checkpointCase(bound(first, 1e18, 1_000_000e18), bound(amt, 1, 1_000_000e18), bound(dt, 1 days, 2920 days - 1));
+    }
+
+    /// The clock edges of the fuzz, pinned: the first day, the last second a 90-day top-up fits,
+    /// the second after it, and the last second of the programme.
+    function test_I7_checkpointRoundsBothDebtsUp_atTheClockEdges() public {
+        uint256[4] memory dts = [uint256(1 days), 2920 days - 90 days, 2920 days - 90 days + 1, 2920 days - 1];
+        for (uint256 i; i < dts.length; ++i) {
+            uint256 snap = vm.snapshotState();
+            _checkpointCase(1e18 + 7, 3, dts[i]);
+            vm.revertToStateAndDelete(snap);
+        }
+    }
+
+    function _checkpointCase(uint256 first, uint256 amt, uint256 dt) internal {
+        assertEq(staking.emissionEnd(), block.timestamp + 2920 days, "fixture: the programme starts now");
         vm.prank(admin);
         staking.fundEmission(90_000_000e18);
         vm.prank(bob);
@@ -240,7 +255,10 @@ contract DebtRoundsUpTest is Base {
         vm.warp(block.timestamp + dt);
         vm.roll(block.number + 11);
         vm.prank(alice);
-        staking.deposit(amt, 90);
+        // A 90-day top-up fits until 90 days before the close; in the last 90 days no lock fits, so
+        // the weight-changing checkpoint is a partial withdraw (her own 90-day lock has long ended).
+        if (dt <= 2920 days - 90 days) staking.deposit(amt, 90);
+        else staking.withdraw(amt < first ? amt : first - 1);
         assertGt(staking.accRewardPerShare(), 0, "no emission accrued");
         assertGt(staking.accPureYieldPerShare(), 0, "no pure yield accrued");
         _assertCeil(alice, OFF_BE, OFF_REWARD_DEBT, staking.accRewardPerShare(), "I7: rewardDebt is not the ceiling");

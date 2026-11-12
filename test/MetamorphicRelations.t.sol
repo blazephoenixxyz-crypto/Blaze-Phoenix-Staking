@@ -18,11 +18,13 @@ pragma solidity 0.8.28;
 //    MR-R1  the interest rate is monotone in utilisation and clamps at 100 %
 //    MR-R2  the rate is continuous at the kink and Lipschitz with the steep slope
 //    MR-E1  cumulative emission is monotone, never exceeds TOTAL_REWARDS
-//    MR-E2  inside one halving period the emission is exactly linear at R0 >> p
-//    CO-E   at every period anchor the emission is the geometric series
-//           S * (1 - 2^-k), S = 120M, exactly (0, 60M, 90M); anywhere, the closed
-//           form sits at or above the sum of the floored rates and less than
-//           p * PERIOD wei over it
+//    MR-E2  inside one 2-year period the emission is exactly linear at the
+//           base rate plus the bonus rate halved p times, RB + (RX >> p)
+//    CO-E   at every period anchor the emission is the linear base (60M over
+//           8 years, less its per-second floor) plus the geometric bonus series
+//           S * (1 - 2^-k), S = 32M (0, 16M, 24M, 28M, 30M); the close is 90M to
+//           the wei; anywhere, the closed form sits above the sum of the floored
+//           rates by exactly the bonus floor residues of the completed periods
 //    MR-D1  the reward channel is linear: twice the stake (same lock, same
 //           block) earns twice the reward, within 2 wei             [derived below]
 //    MR-D2  the reward channel is additive: one deposit of a + b and two
@@ -127,50 +129,75 @@ contract MetamorphicRelationsTest is Base {
         assertLe(ey, staking.TOTAL_REWARDS(), "MR-E1: emission above the hard cap");
     }
 
+    // The emission specification, pinned by literal (never read back from the contract):
+    // a linear base of 60M over 8 years plus a bonus series S = 32M halved every 2 years.
+    uint256 constant E_PERIOD = 63_072_000;                    // 2 * 365 days
+    uint256 constant E_LENGTH = 252_288_000;                   // 4 periods, 2920 days
+    uint256 constant E_BASE   = 60_000_000e18;
+    uint256 constant E_SERIES = 32_000_000e18;
+    uint256 constant E_RB     = 237_823_439_878_234_398;       // floor(60M / E_LENGTH)
+    uint256 constant E_RX     = 253_678_335_870_116_692;       // floor(16M / E_PERIOD)
+
+    /// MR-E2. Inside period p the closed form is RB * dt + const + (RX >> p) * (dt - p * P), so one
+    /// second more adds exactly RB + (RX >> p): the base rate never halves, only the bonus does.
     function testFuzz_EmissionInsideAPeriodIsLinear(uint256 x, uint256 delta) public view {
         uint256 s = staking.emissionStart();
-        uint256 P = staking.HALVING_PERIOD();
         x = bound(x, s, staking.emissionEnd() - 1);
-        uint256 p = (x - s) / P;
-        uint256 periodEnd = s + (p + 1) * P;               // first second of the next period
+        uint256 p = (x - s) / E_PERIOD;
+        uint256 periodEnd = s + (p + 1) * E_PERIOD;        // first second of the next period
         delta = bound(delta, 0, periodEnd - 1 - x);
-        uint256 r = staking.INITIAL_REWARD_PER_SEC() >> p;
-        assertEq(staking.emittedAt(x + delta) - staking.emittedAt(x), r * delta, "MR-E2: not linear at R0 >> p");
+        uint256 r = E_RB + (E_RX >> p);
+        assertEq(staking.emittedAt(x + delta) - staking.emittedAt(x), r * delta, "MR-E2: not linear at RB + (RX >> p)");
     }
 
-    /// CO-E anchors. The series is S = 120 000 000e18; the contract keeps it private, so it is
-    /// pinned here by literal, not read back. S = 1.2e26 = 2^27 * 3 * 5^25, so S >> k == S / 2^k
-    /// exactly for k <= 2, and the specified geometric series S * (1 - 2^-k) is met to the wei:
-    /// 0, 60M, 90M. The close, S * (1 - 2^-2), is the published budget of 90 000 000e18.
-    function test_EmissionAtEveryPeriodAnchorIsTheGeometricSeries() public view {
+    /// CO-E anchors. Both halves of the curve are pinned by literal, not read back.
+    /// Bonus: S = 3.2e25 = 2^29 * 5^24, so S >> k == S / 2^k exactly for k <= 4 and the series
+    /// S * (1 - 2^-k) is met to the wei: 0, 16M, 24M, 28M, 30M.
+    /// Base: RB = floor(60M / L) loses 60M - RB * L = 197 376 000 wei over the whole length L, and
+    /// L = 4P, so each period anchor sits 49 344 000 wei per completed period below the nominal
+    /// 15M * k. The close returns the whole 60M, so the last anchor is the budget, 90M, exactly.
+    /// Anchors: 31M, 54M, 73M less k * 49 344 000 wei (the table of the 8-year curve), then 90M.
+    function test_EmissionAtEveryPeriodAnchorIsLinearBasePlusGeometricBonus() public view {
         uint256 s = staking.emissionStart();
-        uint256 P = 157_680_000;                    // 5 * 365 days, the published period
-        uint256 S = 120_000_000e18;                 // the halving series
-        assertEq(S % (2 ** 2), 0, "precondition of the exactness: S divisible by 2^2");
-        for (uint256 k = 0; k <= 2; k++) {
-            assertEq(staking.emittedAt(s + k * P), S - S / (2 ** k), "CO-E: anchor off the geometric series");
+        assertEq(E_SERIES % (2 ** 4), 0, "precondition of the exactness: S divisible by 2^4");
+        assertEq(E_BASE - E_RB * E_LENGTH, 197_376_000, "precondition: the base floor residue over 8 years");
+        assertEq(E_BASE / 4 - E_RB * E_PERIOD, 49_344_000, "precondition: the base floor residue per period");
+        uint256[5] memory anchor = [
+            uint256(0),
+            30_999_999_999_999_999_950_656_000,                // 31M - 49 344 000
+            53_999_999_999_999_999_901_312_000,                // 54M - 2 * 49 344 000
+            72_999_999_999_999_999_851_968_000,                // 73M - 3 * 49 344 000
+            90_000_000_000_000_000_000_000_000                 // the close, 90M to the wei
+        ];
+        for (uint256 k = 0; k <= 3; k++) {
+            assertEq(anchor[k], E_BASE / 4 * k - 49_344_000 * k + (E_SERIES - E_SERIES / (2 ** k)), "precondition: anchor table");
+            assertEq(staking.emittedAt(s + k * E_PERIOD), anchor[k], "CO-E: anchor off linear base + geometric bonus");
         }
-        assertEq(S - S / 4, 90_000_000e18, "precondition: the series closes on the published budget");
-        assertEq(staking.emittedAt(s + 2 * P + 365 days), S - S / 4, "CO-E: flat after the close");
+        assertEq(E_BASE + E_SERIES - E_SERIES / 16, anchor[4], "precondition: base + series close on the published budget");
+        assertEq(staking.emittedAt(s + 4 * E_PERIOD), anchor[4], "CO-E: the close is not 90M");
+        assertEq(staking.emittedAt(s + 4 * E_PERIOD + 365 days), anchor[4], "CO-E: flat after the close");
     }
 
-    /// CO-E differential. Oracle: integrate the floored rates, sum_{k<p} (R0 >> k) * P + (R0 >> p) * r.
-    /// R0 = floor(S / (2P)) for the series S, so R0 >> k = floor(S / (2^(k+1) P)) and (R0 >> k) * P
-    /// lies in (S / 2^(k+1) - P, S / 2^(k+1)]. Summed over k < p against the exact S (1 - 2^-p):
-    /// the closed form is >= the oracle and exceeds it by less than p * P wei.
+    /// CO-E differential. Oracle: integrate the floored rates,
+    /// sum_{k<p} (RB + (RX >> k)) * P + (RB + (RX >> p)) * r. The base term RB * dt is the same on
+    /// both sides. RX = floor(S / (2P)), so RX >> k = floor(S / (2^(k+1) P)) and (RX >> k) * P lies
+    /// in (S / 2^(k+1) - P, S / 2^(k+1)]: the closed form, which books S (1 - 2^-p) exactly, is
+    /// above the oracle by less than p * P wei. Exactly, the per-period bonus residues
+    /// S / 2^(k+1) - (RX >> k) * P are 2 176 000, 1 088 000, 544 000 wei, so the gap at p = 0..3 is
+    /// 0, 2 176 000, 3 264 000, 3 808 000.
     function testFuzz_ClosedFormEmissionVersusTheSumOfRates(uint256 x) public view {
         uint256 s = staking.emissionStart();
-        uint256 P = staking.HALVING_PERIOD();
-        uint256 R0 = staking.INITIAL_REWARD_PER_SEC();
         x = bound(x, s, staking.emissionEnd() - 1);
         uint256 dt = x - s;
-        uint256 p = dt / P;
+        uint256 p = dt / E_PERIOD;
         uint256 oracle;
-        for (uint256 k = 0; k < p; k++) oracle += (R0 >> k) * P;
-        oracle += (R0 >> p) * (dt - p * P);
+        for (uint256 k = 0; k < p; k++) oracle += (E_RB + (E_RX >> k)) * E_PERIOD;
+        oracle += (E_RB + (E_RX >> p)) * (dt - p * E_PERIOD);
         uint256 closed = staking.emittedAt(x);
+        uint256[4] memory gap = [uint256(0), 2_176_000, 3_264_000, 3_808_000];
         assertGe(closed, oracle, "CO-E: the closed form fell below the integrated rates");
-        assertLe(closed - oracle, p * P, "CO-E: the closed form ran ahead of the integrated rates");
+        assertLe(closed - oracle, p * E_PERIOD, "CO-E: the closed form ran ahead of the integrated rates");
+        assertEq(closed - oracle, gap[p], "CO-E: the gap is not the bonus floor residues of the completed periods");
     }
 
     // ── reward channel ───────────────────────────────────────────────────────

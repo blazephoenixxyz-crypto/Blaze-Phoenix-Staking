@@ -140,10 +140,10 @@ contract EventPayloadsTest is Base {
         T = staking.emissionEnd();
         vm.warp(T);
         // The schedule closes at exactly the budget (no tail), so the residue is the empty year's
-        // scheduled emission: E(start + 365 days) = R0 · 365 days, R0 = ⌊60M / (5·365 days)⌋
-        // = 380 517 503 805 175 038 wei/s, i.e. 12M − 1 632 000 wei (derived in Python).
+        // scheduled emission: E(start + 365 days) = R0 · 365 days, R0 = ⌊60M / 2920 days⌋ + ⌊16M / 730 days⌋
+        // = 491 501 775 748 351 090 wei/s, i.e. 15.5M − 25 760 000 wei (derived in Python).
         _expect();
-        emit BlazePhoenixStaking.UndistributedEmissionSwept(treasury, 11_999_999_999_999_999_998_368_000);
+        emit BlazePhoenixStaking.UndistributedEmissionSwept(treasury, 15_499_999_999_999_999_974_240_000);
         vm.prank(admin);
         staking.sweepUndistributedEmission();
     }
@@ -349,8 +349,8 @@ contract EventPayloadsTest is Base {
         assertEq(tbe, (uint256(10_000e18) * _boost(365)) / 10_000, "sole weight");
         uint256 acc0 = staking.accRewardPerShare();
         uint256 lrt = staking.lastRewardTime();
-        // Period 0 of the halving curve: R0 = (120M / 2) / (5·365 days) wei/s, linear in time.
-        uint256 reward = (uint256(60_000_000e18) / (5 * 365 days)) * (T - lrt);
+        // Period 0 of the curve: R0 = ⌊60M / 2920 days⌋ (base) + ⌊16M / 730 days⌋ (bonus) wei/s, linear in time.
+        uint256 reward = (uint256(60_000_000e18) / 2920 days + uint256(16_000_000e18) / 730 days) * (T - lrt);
         uint256 rr = staking.rewardReserve();
         if (reward > rr) reward = rr;
         uint256 acc1 = acc0 + (reward * 1e18) / tbe;

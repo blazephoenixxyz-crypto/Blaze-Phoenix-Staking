@@ -89,7 +89,9 @@ console.log('\n── V2 :: first-depositor and dust-weight inflation ───�
   // The property is proportionality, not a hard zero. Emission below the throttle mark is scaled
   // by weight, so a dust position earns dust rather than the whole schedule. Measured against the
   // counterfactual it would have captured unthrottled.
-  const unthrottled = 380_517_503_805_175_038n * (30n * DAY)   /* R0 x 30 days */;
+  // R0 = period-0 rate of the 8-year emission: linear base 60M / 8 years + first bonus 16M / 2 years.
+  const R0 = (60_000_000n * 10n ** 18n) / (8n * YEAR) + (16_000_000n * 10n ** 18n) / (2n * YEAR);
+  const unthrottled = R0 * (30n * DAY)   /* R0 x 30 days */;
   console.log(`     unthrottled, that solitary window would have been worth ${fmt(unthrottled)}`);
   console.log(`     dust actually captured ${dustRw} wei — a factor of ${dustRw === 0n ? '∞' : (Number(unthrottled / dustRw)).toExponential(2)} less`);
   check(dustRw * 1_000_000_000_000n < unthrottled, 'V2: a dust position captures a negligible fraction of the schedule',

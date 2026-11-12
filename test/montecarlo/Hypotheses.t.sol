@@ -7,8 +7,9 @@ pragma solidity 0.8.28;
 //  Each test states one hypothesis of the grid (number of stakers, amounts from dust
 //  to the cap, lock durations, halving and programme boundaries, loss and emergency
 //  exit, the reward-debt rebase) and asserts a named invariant against a closed form
-//  written here from the schedule as documented (12M a year for five years, then 6M a
-//  year for five years, 90M in all), never read back from the contract.
+//  written here from the schedule as documented (8 years: a linear base of 60M, 7.5M a
+//  year, plus a bonus of 16M, 8M, 4M, 2M over four 2-year periods; 90M in all), never
+//  read back from the contract.
 //
 //  Run: forge test --match-path test/montecarlo/Hypotheses.t.sol -vv
 //  Mutants: .github/scripts/mutants.py, "montecarlo" block, one per test.
@@ -19,9 +20,12 @@ import {Base} from "../BlazePhoenixStaking.t.sol";
 contract HypothesesTest is Base {
     uint256 internal constant DUST = 1e10;
     uint256 internal constant T0 = 1_900_000_000;
-    uint256 internal constant P = 5 * 365 days;
-    uint256 internal constant S = 120_000_000e18;
-    uint256 internal constant R0 = (S / 2) / P;
+    uint256 internal constant P = 63_072_000;                  // 2 * 365 days
+    uint256 internal constant L = 4 * P;                       // the programme, 2920 days
+    uint256 internal constant B = 60_000_000e18;               // the linear base
+    uint256 internal constant S = 32_000_000e18;               // the bonus series
+    uint256 internal constant RB = 237_823_439_878_234_398;    // floor(B / L)
+    uint256 internal constant RX = 253_678_335_870_116_692;    // floor((S / 2) / P)
     uint256 internal constant TOTAL = 90_000_000e18;
     uint256 internal constant MINW = 1_000e18;
     uint256 internal constant CAP = 30_000_000e18;
@@ -32,13 +36,14 @@ contract HypothesesTest is Base {
         staking.fundEmission(TOTAL);
     }
 
-    /// The schedule as documented: period 0 at R0, period 1 at R0/2, closed at 90M.
+    /// The schedule as documented: the base at RB throughout, the bonus at RX >> p in period p
+    /// (p = 0..3) with each completed period booked exactly (S - (S >> p)), closed at 90M.
     function _closed(uint256 ts) internal pure returns (uint256) {
         if (ts <= T0) return 0;
         uint256 dt = ts - T0;
-        if (dt >= 2 * P) return TOTAL;
+        if (dt >= L) return TOTAL;
         uint256 p = dt / P;
-        return (S - (S >> p)) + (R0 >> p) * (dt - p * P);
+        return RB * dt + (S - (S >> p)) + (RX >> p) * (dt - p * P);
     }
 
     function _settle(address who) internal {
@@ -46,15 +51,21 @@ contract HypothesesTest is Base {
         staking.claimRewards();
     }
 
-    // ── H1: one staker above MIN weight, ten years, every boundary ±1 s ──────
+    // ── H1: one staker above MIN weight, eight years, every boundary ±1 s ────
     /// MC-CLOSED with D == 0: a lone staker whose weight is above the damping mark is paid the
     /// closed form exactly at every halving and programme boundary, and 90M at the close.
     function test_H1_oneStakerAboveMinWeight_distributedEqualsTheClosedFormAtEveryBoundary() public {
+        assertEq(RB, B / L, "precondition: RB is the floored base rate");
+        assertEq(RX, (S / 2) / P, "precondition: RX is the floored opening bonus rate");
+        assertEq(B + S - (S >> 4), TOTAL, "precondition: base + bonus series close on 90M");
         vm.prank(alice);
         staking.deposit(10_000e18, 90);
-        uint256[11] memory at = [
-            T0 + 1, T0 + 90 days, T0 + P - 1, T0 + P, T0 + P + 1, T0 + P + 400 days,
-            T0 + 2 * P - 1, T0 + 2 * P, T0 + 2 * P + 1, T0 + 2 * P + 365 days, T0 + 3 * P
+        uint256[19] memory at = [
+            T0 + 1, T0 + 90 days,
+            T0 + P - 1, T0 + P, T0 + P + 1, T0 + P + 400 days,
+            T0 + 2 * P - 1, T0 + 2 * P, T0 + 2 * P + 1, T0 + 2 * P + 400 days,
+            T0 + 3 * P - 1, T0 + 3 * P, T0 + 3 * P + 1, T0 + 3 * P + 400 days,
+            T0 + 4 * P - 1, T0 + 4 * P, T0 + 4 * P + 1, T0 + 4 * P + 365 days, T0 + 6 * P
         ];
         for (uint256 i = 0; i < at.length; i++) {
             vm.warp(at[i]);
@@ -77,7 +88,7 @@ contract HypothesesTest is Base {
         staking.deposit(1e18, 2555);
         uint256 tbe = staking.totalBoostedEffective();
         assertLt(tbe, MINW, "H2: fixture is not below the mark");
-        uint256[4] memory at = [T0 + 1, T0 + 30 days, T0 + P + 1, T0 + 2555 days - 1];
+        uint256[6] memory at = [T0 + 1, T0 + 30 days, T0 + P + 1, T0 + 2 * P + 1, T0 + 3 * P + 1, T0 + 2555 days - 1];
         uint256 expected = 0;
         uint256 last = T0;
         for (uint256 i = 0; i < at.length; i++) {
@@ -97,7 +108,7 @@ contract HypothesesTest is Base {
     /// MC-SHARE: paid + pending never exceeds distributed, and the residue is pro-protocol.
     function testFuzz_H3_nStakers_paidPlusPendingNeverExceedsDistributed(uint256 seed, uint8 nRaw, uint32 jump) public {
         uint256 n = bound(uint256(nRaw), 1, 100);
-        uint256 dt = bound(uint256(jump), 1, 2 * P + 1 days);
+        uint256 dt = bound(uint256(jump), 1, L + 1 days);
         address[] memory who = new address[](n);
         uint256 rng = seed;
         for (uint256 i = 0; i < n; i++) {
@@ -132,18 +143,24 @@ contract HypothesesTest is Base {
         assertEq(staking.auditInvariants() & 0x1D, 0, "H3: auditInvariants raised (bit 1 excluded)");
     }
 
-    // ── H4: a window that straddles the halving boundary ─────────────────────
+    // ── H4: a window that straddles each of the three halving boundaries ─────
+    /// One window per turn k = 1, 2, 3 (start + 2k years), each from k * P - pre to k * P + post.
+    /// pre and post are drawn per turn and bounded by 360 days, so the windows never overlap
+    /// (k * P + 360 days < (k + 1) * P - 360 days, P = 730 days). The lock (2555 days) outlives
+    /// the last window (3 * P + 360 days = 2550 days).
     function testFuzz_H4_windowAcrossTheHalvingBoundary_equalsTheClosedFormDelta(uint32 pre, uint32 post) public {
-        uint256 t1 = T0 + P - bound(uint256(pre), 0, 400 days);
-        uint256 t2 = T0 + P + bound(uint256(post), 0, 400 days);
         vm.prank(alice);
         staking.deposit(10_000e18, 2555);
-        vm.warp(t1); _settle(alice);
-        uint256 d1 = staking.totalRewardDistributed();
-        vm.warp(t2); _settle(alice);
-        uint256 d2 = staking.totalRewardDistributed();
-        assertEq(d1, _closed(t1), "H4: distributed at t1 != closed form");
-        assertEq(d2 - d1, _closed(t2) - _closed(t1), "H4: window across the boundary != closed-form delta");
+        for (uint256 k = 1; k <= 3; k++) {
+            uint256 t1 = T0 + k * P - bound(uint256(keccak256(abi.encode(pre, k))), 0, 360 days);
+            uint256 t2 = T0 + k * P + bound(uint256(keccak256(abi.encode(post, k))), 0, 360 days);
+            vm.warp(t1); _settle(alice);
+            uint256 d1 = staking.totalRewardDistributed();
+            vm.warp(t2); _settle(alice);
+            uint256 d2 = staking.totalRewardDistributed();
+            assertEq(d1, _closed(t1), "H4: distributed at t1 != closed form");
+            assertEq(d2 - d1, _closed(t2) - _closed(t1), "H4: window across the boundary != closed-form delta");
+        }
     }
 
     // ── H5: a loss, the breaker, and every emergency exit ────────────────────

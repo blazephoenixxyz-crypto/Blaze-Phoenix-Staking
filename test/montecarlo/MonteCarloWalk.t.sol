@@ -160,7 +160,12 @@ contract MonteCarloWalkTest is Test {
         uint256 endT = staking.emissionEnd();
         uint256[] memory b = new uint256[](10);
         b[0] = 1;
-        uint256 h1 = start + period;
+        // The halving boundary still ahead: the first turn start + k * period (k = 1..3; the fourth
+        // is emissionEnd, drawn below) whose +1 s is in the future, so over a walk every one of the
+        // three turns is drawn at -1/0/+1 s. Past the last turn it stays at start + 3 * period and
+        // the draws collapse to 1 s.
+        uint256 k = now_ > start ? (now_ - start - 1) / period + 1 : 1;
+        uint256 h1 = start + (k < 3 ? k : 3) * period;
         b[1] = h1 > now_ + 1 ? h1 - 1 - now_ : 1; b[2] = h1 > now_ ? h1 - now_ : 1; b[3] = h1 + 1 > now_ ? h1 + 1 - now_ : 1;
         b[4] = endT > now_ + 1 ? endT - 1 - now_ : 1; b[5] = endT > now_ ? endT - now_ : 1; b[6] = endT + 1 > now_ ? endT + 1 - now_ : 1;
         (,,,,,,,,, uint256 ld, uint256 ut,,,) = staking.getUserInfo(actors[_rnd() % nActors]);

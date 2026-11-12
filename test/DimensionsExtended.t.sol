@@ -292,29 +292,40 @@ contract DimensionsExtendedTest is Base {
             "accRewardPerShare must have stopped accruing exactly at emissionEnd, not at the late touch time");
     }
 
-    // ─── Dimension 13 — the halving curve itself (two 5-year periods) ─────────────────────
-    // The period-boundary anchors are EXACT by construction (the partial term is zero there and
-    // the 120M series is divisible by 2^2), so these are assertEq, not approx: any drift in the
-    // closed form is a hard failure, not noise. The literals are derived apart from the contract
-    // (the closed form restated from the specification, evaluated in Python):
-    //   PERIOD = 5·365 days = 157 680 000 s, R0 = ⌊60M / PERIOD⌋ = 380 517 503 805 175 038 wei/s,
-    //   halfway through period 0:  R0 · PERIOD/2                 = 30M − 4 080 000 wei,
-    //   halfway through period 1:  60M + (R0 >> 1) · PERIOD/2    = 75M − 2 040 000 wei.
+    // ─── Dimension 13 — the emission curve itself (8 years: linear base + biennial-halving bonus) ─
+    // The period-boundary anchors are EXACT by construction (the partial term is zero there, the
+    // 32M bonus series is divisible by 2^4, and the base floor loses the same 49 344 000 wei in
+    // every period), so these are assertEq, not approx: any drift in the closed form is a hard
+    // failure, not noise. The literals are derived apart from the contract (the closed form
+    // restated from the specification, evaluated in Python):
+    //   PERIOD = 2·365 days = 63 072 000 s, programme = 4 periods,
+    //   RB = ⌊60M / (4·PERIOD)⌋ = 237 823 439 878 234 398 wei/s (the base, never halved),
+    //   RX = ⌊16M / PERIOD⌋     = 253 678 335 870 116 692 wei/s (the bonus, halved per period),
+    //   end of period k (k = 1..3): 15M·k − 49 344 000·k + 32M·(1 − 2^-k) = 31M, 54M, 73M less
+    //   49 344 000·k wei; the close returns 90M exactly;
+    //   halfway through period k (years 1, 3, 5, 7): 15.5M, 42.5M, 63.5M, 81.5M less
+    //   25 760 000, 74 560 000, 123 632 000, 188 608 000 wei.
     function test_Dim13_EmissionCurveHalvingAnchors() public view {
         uint256 start  = staking.emissionStart();
-        uint256 period = 157_680_000;                       // 5 · 365 days, the published period
+        uint256 period = 63_072_000;                        // 2 · 365 days, the published period
 
-        assertEq(staking.emissionEnd(), start + 2 * period, "the programme closes after two periods (10 years)");
+        assertEq(staking.emissionEnd(), start + 4 * period, "the programme closes after four periods (8 years)");
         assertEq(staking.emittedAt(start), 0, "curve starts at zero");
-        assertEq(staking.emittedAt(start + period),     60_000_000e18, "year 5: 60M (2/3 of the budget)");
-        assertEq(staking.emittedAt(start + 2 * period), 90_000_000e18, "year 10, the close: 90M, the whole budget");
-        assertEq(staking.emittedAt(start + 2 * period + 365 days), 90_000_000e18,
+        assertEq(staking.emittedAt(start + period),     30_999_999_999_999_999_950_656_000, "year 2: 31M less the base floor");
+        assertEq(staking.emittedAt(start + 2 * period), 53_999_999_999_999_999_901_312_000, "year 4: 54M less the base floor");
+        assertEq(staking.emittedAt(start + 3 * period), 72_999_999_999_999_999_851_968_000, "year 6: 73M less the base floor");
+        assertEq(staking.emittedAt(start + 4 * period), 90_000_000e18, "year 8, the close: 90M, the whole budget");
+        assertEq(staking.emittedAt(start + 4 * period + 365 days), 90_000_000e18,
             "the curve is flat after the close");
 
-        // Mid-period the curve is linear at the halved rate; the floor of R0 shows in the last wei.
-        assertEq(staking.emittedAt(start + period / 2), 29_999_999_999_999_999_995_920_000,
-            "halfway through period 0 at R0");
-        assertEq(staking.emittedAt(start + period + period / 2), 74_999_999_999_999_999_997_960_000,
-            "halfway through period 1 at R0 >> 1");
+        // Mid-period the curve is linear at RB + (RX >> p); the floors show in the last wei.
+        assertEq(staking.emittedAt(start + period / 2), 15_499_999_999_999_999_974_240_000,
+            "year 1, halfway through period 0 at RB + RX");
+        assertEq(staking.emittedAt(start + period + period / 2), 42_499_999_999_999_999_925_440_000,
+            "year 3, halfway through period 1 at RB + (RX >> 1)");
+        assertEq(staking.emittedAt(start + 2 * period + period / 2), 63_499_999_999_999_999_876_368_000,
+            "year 5, halfway through period 2 at RB + (RX >> 2)");
+        assertEq(staking.emittedAt(start + 3 * period + period / 2), 81_499_999_999_999_999_811_392_000,
+            "year 7, halfway through period 3 at RB + (RX >> 3)");
     }
 }
