@@ -548,6 +548,12 @@ remainder recorded as `totalBadDebt`.
 
 ### 6.1 Schedule — five-year halving, closed-form O(1)
 
+**Two deployments, one cap each.** Staking is allocated 2 × 90M = 180,000,000 BZPX, delivered as
+two independent deployments of this same contract, 90,000,000 BZPX each. Each deployment has its
+own `TOTAL_REWARDS` cap on `fundEmission`, its own `emissionStart` (set when it is deployed) and its
+own state, so neither contract can emit more than 90,000,000 BZPX. Everything in this section describes
+one deployment.
+
 ```
 TOTAL_REWARDS          = 90,000,000 BZPX                     (the fundEmission cap)
 HALVING_SERIES         = 120,000,000 BZPX                    (the series S the curve is cut from)

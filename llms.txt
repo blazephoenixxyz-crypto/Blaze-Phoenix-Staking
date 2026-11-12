@@ -127,7 +127,13 @@ unreachable, not merely observable.
   reversible once it clears. Recorded bad debt counts in `owed` (never netted):
   anyone may recapitalise it with `absorbBadDebt(amount)`, reserve first.
 
-## Emission — 90M BZPX on a five-year-halving curve (v4)
+## Emission — 90M BZPX per contract on a five-year-halving curve (v4)
+
+Staking is allocated 2 × 90M = 180,000,000 BZPX, as two independent deployments
+of this same contract, 90,000,000 BZPX each. Each deployment has its own
+TOTAL_REWARDS cap on fundEmission, its own emissionStart and its own state, so
+neither contract can emit more than 90,000,000 BZPX. The curve below is one
+deployment's.
 
 Period `p` (0-indexed, five years each) emits `60M >> p`, for 2 periods: 12M/year
 in years 1–5 (60M), 6M/year in years 6–10 (30M). The total is exact by
