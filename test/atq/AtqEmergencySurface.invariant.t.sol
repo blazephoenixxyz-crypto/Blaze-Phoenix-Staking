@@ -144,7 +144,11 @@ contract AtqEmergencyHandler is FullSurfaceHandler {
             // fix1112: the hatch returns the exiter's stale-weight excess from `totalRewardDistributed`
             // to `rewardReserve` (emission, `_settleEmission`) and to `protocolReserve` (pure yield,
             // `_settlePure`); the frozen snapshot moves by exactly that, nothing else may move it.
-            if (frozenSet) fDist -= (staking.rewardReserve() - r0) + (staking.protocolReserve() - p0);
+            // An underwater exit can draw a reserve down to cover the loss: a reserve that fell
+            // contributes 0, so the snapshot then under-moves and the frozen check turns red (fails safe).
+            uint256 r1 = staking.rewardReserve();
+            uint256 p1 = staking.protocolReserve();
+            if (frozenSet) fDist -= (r1 > r0 ? r1 - r0 : 0) + (p1 > p0 ? p1 - p0 : 0);
             if (got > eq) exitOverpaid++;
             else if (got < eq) { haircut += eq - got; haircutExits++; }
             (uint256 s1, uint256 d1) = raw(a);
