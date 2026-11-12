@@ -44,6 +44,7 @@ contract AtqEmergencyHandler is FullSurfaceHandler {
     uint256 public exitOverpaid;
     uint256 public exitLeftover;
     uint256 public cancelledWhileBreached;
+    uint256 public cancelRefusedSolvent;    // fix1112: a solvent book must stay cancellable after exits
     uint256 public frozenMoved;
     uint256 public equityMismatch;
     uint256 public syncReverted;
@@ -105,7 +106,8 @@ contract AtqEmergencyHandler is FullSurfaceHandler {
         bool breached = staking.backing() + DUST < staking.owed();
         observe();                      // before the prank: observe() makes external calls
         vm.prank(adm);
-        try staking.cancelEmergency() { frozenSet = false; if (breached) cancelledWhileBreached++; _hit("cancelEmergency"); } catch {}
+        try staking.cancelEmergency() { frozenSet = false; if (breached) cancelledWhileBreached++; _hit("cancelEmergency"); }
+        catch { if (!breached && staking.emergencyMode()) cancelRefusedSolvent++; }
     }
     function pause() public { vm.prank(guardian); try staking.pause() { _hit("pause"); } catch {} }
     function unpause() public { vm.prank(adm); try staking.unpause() { _hit("unpause"); } catch {} }
@@ -192,6 +194,7 @@ contract AtqEmergencySurfaceTest is StdInvariant, Base {
         assertEq(handler.exitOverpaid(), 0, "an exit paid above the stored equity");
         assertEq(handler.exitLeftover(), 0, "an exit left a position or a registry entry behind");
         assertEq(handler.cancelledWhileBreached(), 0, "cancelEmergency passed on a short book");
+        assertEq(handler.cancelRefusedSolvent(), 0, "cancelEmergency refused on a solvent book");
         assertEq(handler.equityMismatch(), 0, "after syncing every position the accumulator is not the sum");
         assertEq(handler.syncReverted(), 0, "syncEquity reverted inside an emergency");
         assertTrue(handler.breakerTrips() == 0 || lost != 0, "the breaker tripped with no loss");
@@ -244,10 +247,30 @@ contract AtqEmergencySurfaceTest is StdInvariant, Base {
         handler.emergencyWithdraw(0); _check();
         handler.emergencyWithdraw(2); handler.emergencyWithdraw(3); _check();
         assertEq(handler.calls("emergencyWithdraw"), 4, "every position exits");
+        handler.cancelEmergency(); _check();                // still short: refused, and not counted as a solvent refusal
+        assertEq(handler.calls("cancelEmergency"), 1, "a short book does not resume after the exits either");
         assertEq(handler.calls("syncAll"), 1); assertEq(handler.calls("syncEquity"), 1);
         assertEq(handler.haircutExits(), 4, "setup: the pot was short, every exit was cut");
         assertLe(token.balanceOf(address(staking)), 4, "a short pot is paid out to the last wei but the floors");
         handler.syncAll(); _check();
         assertEq(staking.totalPositiveEquity(), 0, "nothing is left to draw on the pot");
+    }
+
+    /// fix1112, second part (red at 80db7e9): on a solvent book, exits through the hatch carry a
+    /// stale-weight excess back to the reserve; the cancel must still pass afterwards.
+    function test_AtqScriptedSolventHatchKeepsTheCancelOpen() public {
+        for (uint256 i = 0; i < 4; i++) handler.deposit(i, 1_000_000e18, 90);
+        assertEq(handler.calls("deposit"), 4, "setup: four positions");
+        handler.passLockPeriod(200 days); _check();         // every lock lapses inside the window
+        handler.declareEmergency(); _check();
+        assertEq(handler.calls("declareEmergency"), 1);
+        uint256 r0 = staking.rewardReserve();
+        handler.emergencyWithdraw(0); handler.emergencyWithdraw(2); _check();
+        assertEq(handler.calls("emergencyWithdraw"), 2, "setup: two exits");
+        assertEq(handler.haircutExits(), 0, "setup: a solvent pot pays in full");
+        assertGt(staking.rewardReserve(), r0, "setup: the exits carried a stale-weight excess");
+        handler.cancelEmergency(); _check();
+        assertEq(handler.calls("cancelEmergency"), 1, "a solvent book resumes after the exits");
+        assertFalse(staking.emergencyMode());
     }
 }

@@ -30,7 +30,8 @@ rules, scope and awards are in [`SECURITY.md`](../SECURITY.md) and at
   `rewardReserve`, and no function pays it out. The stale-weight excess of the exiter's last window
   (the part a settle returns to `rewardReserve` under LOCK-STALE) is not part of the forfeit: the
   hatch reads the window through the same `_settleEmission` the settle uses and moves that excess
-  to the reserve, where `sweepUndistributedEmission` reaches it. Measured on the Monte Carlo
+  to the reserve, where `sweepUndistributedEmission` reaches it; the hatch mirrors that move on the
+  3326 anchor, so `cancelEmergency` stays reachable after solvent exits. Measured on the Monte Carlo
   maximiser (1,21,104): 55,309,813.96 BZPX forfeited by the holder, 127,651.41 BZPX of stale-weight
   excess returned to the reserve, 3.5e7 wei of rounding (`test/montecarlo/ResidueDecomposition.t.sol`).
   The forfeited pure yield keeps its own stale excess (`_settlePendingPureYield` would move it to

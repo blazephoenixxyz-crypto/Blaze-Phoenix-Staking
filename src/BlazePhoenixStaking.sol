@@ -377,7 +377,10 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
     /// @dev `totalRewardDistributed` when the emergency began; its writers (`_updateGlobal`,
     ///      `_updateInterestIndex`, the P1-C and LOCK-STALE returns in `_settlePendingRewards` and
     ///      `_settlePendingPureYield`) are frozen for the emergency, so `cancelEmergency` requires
-    ///      it unchanged (3326 meta-guard).
+    ///      it unchanged (3326 meta-guard). One writer is open in the halt by design: the hatch
+    ///      returns the exiter's stale-weight excess to the reserve (`_settleEmission`) and moves
+    ///      this anchor by the same amount, so the meta-guard keeps its exactness without locking
+    ///      the cancel behind a solvent exit.
     uint256 private _distributedAtTrip;
 
     // ── Events ────────────────────────────────────────────────────────────────────────────
@@ -733,7 +736,12 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
         // The exiter's own emission is forfeited (stays in distributed - paid, see KNOWN_ISSUES);
         // the stale-weight excess of its last window was never earned by anyone, so it goes back
         // to the reserve exactly as a settle would have moved it. Read before the position closes.
+        // The move is measured on `totalRewardDistributed` itself and mirrored on the 3326 anchor,
+        // so `cancelEmergency` still reads an exact freeze and a solvent exit never locks it.
+        uint256 d0 = totalRewardDistributed;
         _settleEmission(u);
+        uint256 moved = d0 - totalRewardDistributed;
+        if (moved != 0) _distributedAtTrip -= moved;
         uint256 principal = u.staked;
         uint256 debt   = u.debt;
         // ERODED-EXIT. A borrower whose interest has outgrown its whole collateral reaches here with
@@ -2084,10 +2092,16 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
         uint256 gross = ML.mulDiv(u.trackedBoostedEffective, accRewardPerShare, WAD);
         if (gross > u.rewardDebt) {
             uint256 earned = gross - u.rewardDebt;
-            uint256 paid   = _atLiveWeight(u, u.staked, earned);
-            rewardReserve          += earned - paid;
-            totalRewardDistributed -= earned - paid;
-            due += paid; u.rewardDebt = gross;
+            // Clamped, never checked: the live weight sits below the tracked one by derivation and
+            // the excess inside the distributed side by construction, but the hatch runs on a book
+            // nobody vouches for, so a broken derivation pays the accrued window and moves nothing
+            // past what is booked (I4: the measured side wins; no new refusal on the last door).
+            uint256 excess = _sub0(earned, _atLiveWeight(u, u.staked, earned));
+            due = earned - excess;
+            excess = _min(excess, totalRewardDistributed);
+            rewardReserve          += excess;
+            totalRewardDistributed -= excess;
+            u.rewardDebt = gross;
         }
     }
 
