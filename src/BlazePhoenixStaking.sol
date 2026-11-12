@@ -481,12 +481,12 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
     ///      relieves the stack pressure the modifier's own comment flags, since the locals now
     ///      live in the helper's frame instead of stacking on top of every guarded function's.
     function _conservationSnapshot() internal view returns (uint256 lhsBefore, uint256 rhsBefore) {
-        lhsBefore = ML.rawBalanceOf(bzpx, address(this)) + totalDebt + totalBadDebt + stakedOverdraw;
+        lhsBefore = _balance() + totalDebt + totalBadDebt + stakedOverdraw;
         rhsBefore = totalStaked + rewardReserve + protocolReserve + _pendingDistribution();
     }
 
     function _conservationCheck(uint256 lhsBefore, uint256 rhsBefore) internal view {
-        uint256 lhs = ML.rawBalanceOf(bzpx, address(this)) + totalDebt + totalBadDebt + stakedOverdraw + rhsBefore;
+        uint256 lhs = _balance() + totalDebt + totalBadDebt + stakedOverdraw + rhsBefore;
         uint256 rhs = lhsBefore + totalStaked + rewardReserve + protocolReserve + _pendingDistribution();
         if ((lhs > rhs ? lhs - rhs : rhs - lhs) > CONSERVATION_DUST) revert Staking__InvariantBreached();
     }
@@ -555,7 +555,7 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
         // nothing — but only if it is settled before the new funding lands. Without this, topping
         // the reserve up later retroactively pays out a window the protocol could not have paid.
         _updateGlobal();
-        if (!ML.rawTransferFrom(bzpx, msg.sender, address(this), amount_)) revert Staking__TransferFailed();
+        _pull(amount_);
         totalEmissionFunded += amount_;
         rewardReserve       += amount_;
         emit EmissionFunded(msg.sender, amount_);
@@ -572,7 +572,7 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
         _updateGlobal();   // read the book as of now: the elapsed interest slice moves the reserve and the claims
         amount_ = _min(amount_, protocolReserve);
         protocolReserve -= amount_;
-        if (!ML.rawTransfer(bzpx, treasury, amount_)) revert Staking__TransferFailed();
+        _pay(treasury, amount_);
         // Revenue leaves only while every claim is covered, read AFTER it leaves: once a hidden
         // loss has pushed `totalStaked + rewardReserve` below `totalDebt`, the reserve is what
         // keeps the pot covering every claim, and taking it opens a breach on a book that read
@@ -610,7 +610,7 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
         uint256 residue = rewardReserve;
         if (residue == 0) revert Staking__ZeroAmount();
         rewardReserve = 0;
-        if (!ML.rawTransfer(bzpx, treasury, residue)) revert Staking__TransferFailed();
+        _pay(treasury, residue);
         // Same rule as `withdrawReserve`, read AFTER the sweep: the residue sits in `_owed()` and in
         // the pot, and once a hidden loss has pushed `totalStaked + protocolReserve` below
         // `totalDebt` it is what keeps the pot covering every claim, so taking it opens a breach on
@@ -696,8 +696,7 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
         if (fromReserve + fromCaller == 0) revert Staking__ZeroAmount();
         protocolReserve -= fromReserve;
         totalBadDebt     = bad - fromReserve - fromCaller;
-        if (fromCaller != 0 && !ML.rawTransferFrom(bzpx, msg.sender, address(this), fromCaller))
-            revert Staking__TransferFailed();
+        if (fromCaller != 0) _pull(fromCaller);
         emit BadDebtAbsorbed(msg.sender, fromReserve, fromCaller);
     }
 
@@ -756,7 +755,7 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
         // on the exit order. Σ payouts ≤ pot in every order.
         // When solvent (pot ≥ eCorr) the branch never engages and full net equity is paid, as before.
         if (payout > 0) {
-            uint256 pot   = ML.rawBalanceOf(bzpx, address(this));
+            uint256 pot   = _balance();
             // Self-corrected denominator: totalPositiveEquity − (this exiter's stale-high term) +
             // (its exact equity). eCorr ≥ payout always (the total includes u.trackedEquity as a
             // summand), so no underflow and no division by zero once payout > 0.
@@ -800,7 +799,7 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
         delete _rewardDeferred[msg.sender];   // deferred emission is unpaid emission: forfeited too
 
         if (payout > 0) {
-            if (!ML.rawTransfer(bzpx, msg.sender, payout)) revert Staking__TransferFailed();
+            _pay(msg.sender, payout);
         }
         emit EmergencyWithdrawn(msg.sender, payout);
     }
@@ -839,7 +838,7 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
         _settlePendingPureYield(msg.sender);
         _processLockExpiry(msg.sender);
 
-        if (!ML.rawTransferFrom(bzpx, msg.sender, address(this), amount_)) revert Staking__TransferFailed();
+        _pull(amount_);
 
         u.staked      += amount_;
         u.depositBlock = uint64(block.number);
@@ -920,7 +919,7 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
 
         _resync(msg.sender);
 
-        if (!ML.rawTransfer(bzpx, msg.sender, amount_)) revert Staking__TransferFailed();
+        _pay(msg.sender, amount_);
         emit Borrowed(msg.sender, amount_, u.debt, _interestRate());
     }
 
@@ -941,7 +940,7 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
         if (u.debt == 0) revert Staking__NoDebt();
 
         uint256 toRepay = amount_ > u.debt ? u.debt : amount_;
-        if (!ML.rawTransferFrom(bzpx, msg.sender, address(this), toRepay)) revert Staking__TransferFailed();
+        _pull(toRepay);
 
         u.debt    -= toRepay;
         totalDebt -= toRepay;
@@ -992,7 +991,7 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
 
         _resync(msg.sender);
 
-        if (!ML.rawTransfer(bzpx, msg.sender, amount_)) revert Staking__TransferFailed();
+        _pay(msg.sender, amount_);
         emit Withdrawn(msg.sender, amount_, 0, 0, amount_);
     }
 
@@ -1653,7 +1652,7 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
         // LOSS-FIRST inside the borrower window (`maintStep`): a later step of the same window can
         // still book a loss this read cannot see, so every position the window settles is
         // credited, never paid; its next own settle pays it.
-        if (msg.sig == this.maintStep.selector || ML.rawBalanceOf(bzpx, address(this)) + CONSERVATION_DUST
+        if (msg.sig == this.maintStep.selector || _balance() + CONSERVATION_DUST
             < _owed() + _sub0(_sub0(u.debt, u.staked), protocolReserve)) {
             _rewardDeferred[user_] = due; return;
         }
@@ -2063,13 +2062,27 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
     ///      payment into a standing breach, hence the distinct error (meta-guard of EMIS-DEFER,
     ///      W2-R1 and R1-02).
     function _payAtPar(address to, uint256 amount) internal {
-        if (!ML.rawTransfer(bzpx, to, amount)) revert Staking__TransferFailed();
+        _pay(to, amount);
         if (_hardBreach()) revert Staking__PaidIntoBreach();
+    }
+
+    /// @dev The three token calls, each written once: a failed transfer reverts with the one
+    ///      public error the callers already raised, so every call site reads and reverts as before.
+    function _pay(address to, uint256 amount) internal {
+        if (!ML.rawTransfer(bzpx, to, amount)) revert Staking__TransferFailed();
+    }
+
+    function _pull(uint256 amount) internal {
+        if (!ML.rawTransferFrom(bzpx, msg.sender, address(this), amount)) revert Staking__TransferFailed();
+    }
+
+    function _balance() internal view returns (uint256) {
+        return ML.rawBalanceOf(bzpx, address(this));
     }
 
     /// @dev hard, one-sided: contract must hold at least what it owes (minus dust).
     function _hardBreach() internal view returns (bool) {
-        return ML.rawBalanceOf(bzpx, address(this)) + CONSERVATION_DUST < _owed();
+        return _balance() + CONSERVATION_DUST < _owed();
     }
 
     // ── PUBLIC SOLVENCY SURFACE — anyone can verify the protocol on-chain, for free ────────
@@ -2084,7 +2097,7 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
 
     /// @notice The physical BZPX the contract actually holds right now.
     /// @return the contract's BZPX balance
-    function backing() external view returns (uint256) { return ML.rawBalanceOf(bzpx, address(this)); }
+    function backing() external view returns (uint256) { return _balance(); }
 
     /// @notice TRUE iff backing >= owed (minus dust): solvent on what has been recorded.
     /// @return false exactly when `tripBreaker` would succeed (outside an emergency)
@@ -2101,7 +2114,7 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
     function collateralRatio() public view returns (uint256) {
         uint256 o = _owed();
         if (o == 0) return type(uint256).max;
-        return ML.mulDiv(ML.rawBalanceOf(bzpx, address(this)), WAD, o);
+        return ML.mulDiv(_balance(), WAD, o);
     }
 
     struct SolvencyReport {
@@ -2127,7 +2140,7 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
     /// @dev `owed` and `deficit` are lower bounds (see `owed()`): a loss not yet recorded can leave
     ///      `deficit` at 0 and `solvent` true until the next sweep that reaches the borrower.
     function solvency() external view returns (SolvencyReport memory r) {
-        uint256 bal = ML.rawBalanceOf(bzpx, address(this));
+        uint256 bal = _balance();
         uint256 o   = _owed();
         r.backing             = bal;
         r.owed                = o;
