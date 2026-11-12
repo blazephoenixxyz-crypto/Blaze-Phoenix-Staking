@@ -689,10 +689,30 @@ async function MR_emission() {
   // ask whether any route can still move the residue. The pool stays full for the whole
   // remaining window, so what is left over is the empty window at the start (the schedule
   // closes at exactly TOTAL_REWARDS, with no tail).
+  // The contract against the literal schedule (the checks above compare the oracle with itself:
+  // nothing had been released yet). While the lock runs and the pool is full, a settle releases
+  // exactly the schedule's window since the deposit, so `funded - rewardReserve` must equal the
+  // oracle at the settle's own clock, to the wei. Six yearly settles cross all three turns.
+  const start = BigInt(await staking.call('emissionStart'));
+  const from  = BigInt(await staking.call('lastRewardTime'));          // the deposit's settle
+  const funded = BigInt(await staking.call('totalEmissionFunded'));
+  let offCurve = 0n, yearsRead = 0, turnsCrossed = 0;
   for (let k = 0; k < 11; k++) {
     chain.warp(YEAR); chain.mine(11);
     await staking.send(users[0], 'claimRewards', []);
+    if (k < 6) {
+      const at = BigInt(await staking.call('lastRewardTime'));
+      const released = funded - BigInt(await staking.call('rewardReserve'));
+      const expected = emittedAt(at - start) - emittedAt(from - start);
+      const gap = released > expected ? released - expected : expected - released;
+      if (gap > offCurve) offCurve = gap;
+      turnsCrossed = Number((at - start) / HALVING_PERIOD);
+      yearsRead++;
+    }
   }
+  check(yearsRead === 6 && turnsCrossed === 3 && from > start && offCurve === 0n,
+        'MR-EMISSION: six yearly settles across the three turns release the literal schedule to the wei',
+        `settles ${yearsRead}, turns crossed ${turnsCrossed}, worst |released - schedule| = ${offCurve} wei`);
   const residue = BigInt(await staking.call('rewardReserve'));
   console.log(`     after emissionEnd — rewardReserve still holds: ${fmt(residue)}`);
 

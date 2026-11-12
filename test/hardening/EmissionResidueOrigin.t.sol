@@ -15,7 +15,8 @@ import {IAccessControl} from "@openzeppelin/contracts/access/IAccessControl.sol"
 ///         window carrying weight above MIN_EMISSION_WEIGHT, the residue is exactly their sum.
 ///         Book: carol stakes 1M and touches the book every ten days (the D2 shape of
 ///         UnbookedLossReadIsALowerBound); `n - 1` passive stakers of 10k each, all 90-day locks.
-///         Measured at d71468f (residue at the close, every staker settled once after it):
+///         Measured at d71468f, on the earlier 10-year schedule; the identity asserted below does
+///         not depend on the schedule (residue at the close, every staker settled once after it):
 ///         no borrow n=1: 0, n=2: 0, n=10: 353.97e18; borrow n=1: 110101.57e18, n=2: 106363.44e18
 ///         (the D2 reserve at its breach, ten years later), n=10: 83877.55e18.
 contract EmissionResidueOriginTest is Base {

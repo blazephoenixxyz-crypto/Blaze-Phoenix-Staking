@@ -59,17 +59,18 @@ contract LapsedLockSplitTest is Base {
 
     /// Oracle: dave is the 1.00x unit. Per unit of weight, the window paid him what alice's weight
     /// earned at every instant; alice's weight was B/BASE of his up to tu and equal after it. The
-    /// emission window flows on the curve: E(t) = `emittedAt(t)`, which halves at start + 5 years,
-    /// inside this window (t0 = start + 1 year, tu = start + 3 years, t1 = start + 5 years + 180
-    /// days), so wall time would mis-split it. Inside one period the curve is linear and the two
-    /// splits agree to the wei, so a window that stops short of the halving cannot tell them apart.
+    /// emission window flows on the curve: E(t) = `emittedAt(t)`, whose bonus halves at start + 2
+    /// and start + 4 years, both inside this window (t0 = start + 1 year, tu = start + 3 years,
+    /// t1 = start + 5 years + 180 days), so wall time would mis-split it. Inside one period the
+    /// curve is linear and the two splits agree to the wei, so a window that crosses no turn cannot
+    /// tell them apart.
     /// Expected:
     ///     alice = dave * (B * (E(tu) - E(t0)) + BASE * (E(t1) - E(tu))) / (BASE * (E(t1) - E(t0))).
     /// The emission alice's lapsed boost did not earn is back in `rewardReserve`:
     ///     reserve after = reserve before - (E(t1) - E(t0)) + (dave * B / BASE - alice).
     function test_LapsedLockEmissionIsPaidTheBoostUntilUnlockAndBaseAfter() public {
         (uint256 t0, uint256 tu) = _fixture(true, false);
-        uint256 t1 = staking.emissionStart() + 5 * 365 days + 180 days;   // 180 days past the first halving
+        uint256 t1 = staking.emissionStart() + 5 * 365 days + 180 days;   // past the second bonus turn (start + 4 years)
         uint256 r0 = staking.rewardReserve();
         (uint256 quoteA, uint256 paidA, uint256 paidD) = _settle(t1);
         uint256 b = staking.boostByDays(LOCK);
@@ -78,7 +79,7 @@ contract LapsedLockSplitTest is Base {
         uint256 e1 = staking.emittedAt(t1);
         assertGt(paidD, 0, "fixture: emission flowed");
         assertTrue((eu - e0) * (t1 - t0) != (e1 - e0) * (tu - t0),
-            "fixture: the curve and wall-time splits differ in this window (it crosses the halving)");
+            "fixture: the curve and wall-time splits differ in this window (it crosses a bonus turn)");
         uint256 expected = paidD * (b * (eu - e0) + BASE_BPS * (e1 - eu)) / (BASE_BPS * (e1 - e0));
         assertApproxEqAbs(paidA, expected, DUST, "lapsed boost paid past unlockTime (emission)");
         assertEq(quoteA, paidA, "pendingRewards is the payment");
