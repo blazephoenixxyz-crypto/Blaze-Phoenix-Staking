@@ -34,8 +34,9 @@ rules, scope and awards are in [`SECURITY.md`](../SECURITY.md) and at
   3326 anchor, so `cancelEmergency` stays reachable after solvent exits. Measured on the Monte Carlo
   maximiser (1,21,104): 55,309,813.96 BZPX forfeited by the holder, 127,651.41 BZPX of stale-weight
   excess returned to the reserve, 3.5e7 wei of rounding (`test/montecarlo/ResidueDecomposition.t.sol`).
-  The forfeited pure yield keeps its own stale excess (`_settlePendingPureYield` would move it to
-  `protocolReserve`); that part is not returned. In a breached emergency the forfeit stays in the balance
+  The forfeited pure yield is read the same way: the hatch runs `_settlePure`, the helper the pure
+  settle uses, so the lapsed-lock excess of the last pure-yield window returns to `protocolReserve`
+  (`test/fix1112/HatchReturnsPureStaleExcess.t.sol`), and only the earned pure yield is forfeited. In a breached emergency the forfeit stays in the balance
   the haircut divides among the exits. The exit moves `backing()` and `owed()` by the same amount,
   so the identity holds and `owed()` reads high by the forfeits, never low. Documented in `README.md`
   (sections 1 and 4), `src/BlazePhoenixStaking.sol` (NatSpec of `emergencyWithdraw`) and

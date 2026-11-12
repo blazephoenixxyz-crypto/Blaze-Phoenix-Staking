@@ -137,18 +137,32 @@ contract AtqEmergencyHandler is FullSurfaceHandler {
         uint256 eq = trueEquity(a);
         uint256 b0 = token.balanceOf(a);
         uint256 r0 = staking.rewardReserve();
+        uint256 p0 = staking.protocolReserve();
         vm.prank(a);
         try staking.emergencyWithdraw() {
             uint256 got = token.balanceOf(a) - b0;
             // fix1112: the hatch returns the exiter's stale-weight excess from `totalRewardDistributed`
-            // to `rewardReserve`; the frozen snapshot moves by exactly that, nothing else may move it.
-            if (frozenSet) fDist -= staking.rewardReserve() - r0;
+            // to `rewardReserve` (emission, `_settleEmission`) and to `protocolReserve` (pure yield,
+            // `_settlePure`); the frozen snapshot moves by exactly that, nothing else may move it.
+            if (frozenSet) fDist -= (staking.rewardReserve() - r0) + (staking.protocolReserve() - p0);
             if (got > eq) exitOverpaid++;
             else if (got < eq) { haircut += eq - got; haircutExits++; }
             (uint256 s1, uint256 d1) = raw(a);
             if (s1 != 0 || d1 != 0 || staking.isTrackedBorrower(a) || staking.isTrackedLocker(a)) exitLeftover++;
             _hit("emergencyWithdraw");
         } catch {}
+    }
+    /// fix1112: the sequence lapse -> declare -> exit -> cancel in one call, so the fuzzer composes
+    /// at every depth what the four independent handlers rarely line up: a lock that lapsed inside
+    /// the window, a halt, a solvent exit that returns its stale excess (emission and pure yield)
+    /// and the cancel that must still pass (`cancelRefusedSolvent` counts a refusal; `_check`
+    /// asserts it stays 0, which is what kills the mutant "the hatch moves distributed but not the
+    /// 3326 anchor" through the invariant itself).
+    function lapseDeclareExitCancel(uint256 seed) public {
+        passLockPeriod(91 days + (seed % 300 days));
+        declareEmergency();
+        emergencyWithdraw(seed);
+        cancelEmergency();
     }
 }
 
