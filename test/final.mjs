@@ -685,12 +685,12 @@ async function MR_emission() {
   const err = p.stranded > predicted ? p.stranded - predicted : predicted - p.stranded;
   console.log(`     predicted     : ${fmt(predicted)}   |model error| = ${fmt(err)}`);
 
-  // Run the programme to completion (8 years) with the pool CONTINUOUSLY populated, then
+  // Run the programme to completion (8 years) with stake CONTINUOUSLY present, then
   // ask whether any route can still move the residue. The pool stays full for the whole
   // remaining window, so what is left over is the empty window at the start (the schedule
   // closes at exactly TOTAL_REWARDS, with no tail).
   // The contract against the literal schedule (the checks above compare the oracle with itself:
-  // nothing had been released yet). While the lock runs and the pool is full, a settle releases
+  // nothing had been released yet). While the lock runs and the stake is in place, a settle releases
   // exactly the schedule's window since the deposit, so `funded - rewardReserve` must equal the
   // oracle at the settle's own clock, to the wei. Six yearly settles cross all three turns.
   const start = BigInt(await staking.call('emissionStart'));

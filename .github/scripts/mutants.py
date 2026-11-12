@@ -165,7 +165,7 @@ M = [
       teste="test_UnderfundedWindowIsClampedToTheReserve"),
  # The close is the closed form at p = EMISSION_PERIODS, B + S − (S >> 4) = 90M, which equals the budget:
  # `return TOTAL_REWARDS` there would be an equivalent mutant. Two non-equivalent ones instead. Base
- # plus the whole series (92M) is masked at a full pool by the 90M reserve clamp, so the anchor test reads it.
+ # plus the whole series (92M) is masked on a fully funded programme by the 90M reserve clamp, so the anchor test reads it.
  dict(nome="emission: the close returns base plus the whole series (BASE_REWARDS + HALVING_SERIES), not the closed form at p = EMISSION_PERIODS",
       f=F,
       old="        if (x >= emissionEnd)   return BASE_REWARDS + HALVING_SERIES - (HALVING_SERIES >> EMISSION_PERIODS);",
@@ -226,8 +226,8 @@ M = [
  # TOTAL_REWARDS caps funding; the curve is shaped by HALVING_SERIES. Shrinking the cap makes a 90M
  # funding literal exceed it; growing it moves nothing on the curve, so only the published budget
  # literal sees it (90M settles, 1 wei more is refused). HALVING_SERIES is private: only literals
- # see it. 31M closes the programme at 89.0625M (the full pool sees it); 33M closes at 90.9375M, which
- # the 90M reserve clamps away at a full pool, so the anchor at the first turn (16.5M of bonus) sees it.
+ # see it. 31M closes the programme at 89.0625M (the fully funded programme sees it); 33M closes at 90.9375M, which
+ # the 90M reserve clamps away on a fully funded programme, so the anchor at the first turn (16.5M of bonus) sees it.
  dict(nome="emission: the programme budget shrinks (TOTAL_REWARDS 90M becomes 89M)",
       f=F,
       old="    uint256 public  constant TOTAL_REWARDS          = 90_000_000e18;",

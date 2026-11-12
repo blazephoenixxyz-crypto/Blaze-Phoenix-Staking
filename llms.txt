@@ -2,7 +2,7 @@
 
 > BlazePhoenix-Staking is an oracle-free staking and lending protocol for the EVM: collateral, borrowed asset and reward token are the same token (BZPX), so no price oracle exists anywhere in the system. Solvency is enforced on-chain by a conservation identity that every value-moving transaction must satisfy or revert, and anyone can read it for free. Emission is deterministic: 90M BZPX per contract over 8 years, a linear base plus a bonus that halves every two years (biennial halving), evaluated in closed form in O(1). Immutable (no proxy, no upgrade path), source-available under BUSL-1.1, mutation-tested and invariant-tested.
 
-BlazePhoenix-Staking is a locked-staking and borrowing engine written in Solidity (`VERSION = "4.0.0"`). You stake BZPX for a committed lock, earn a lock boost and a share of emission and of borrow interest, and may borrow BZPX against your staked BZPX. Because there is one asset, there is no price to feed, no price to manipulate, and no price-based liquidation: oracle manipulation, liquidation MEV and read-only reentrancy against a price read are absent surfaces, not mitigated risks.
+BlazePhoenix-Staking is a lock-based staking and borrowing engine written in Solidity (`VERSION = "4.0.0"`). You stake BZPX for a committed lock, earn a lock boost and a share of emission and of borrow interest, and may borrow BZPX against your staked BZPX. Because there is one asset, there is no price to feed, no price to manipulate, and no price-based liquidation: oracle manipulation, liquidation MEV and read-only reentrancy against a price read are absent surfaces, not mitigated risks.
 
 Key facts, each checkable in the source:
 
@@ -99,7 +99,7 @@ The right-hand side is `_owed()`. **Solvency means balance >= owed.** Every valu
 - **Autonomous maintenance.** No keeper bot and no admin button. Every ordinary user transaction drives a gas-bounded, self-sizing sweep over two rotating registries, borrowers and lockers, that liquidates what is underwater, normalises expired locks, and pays the seizure surplus to whoever carried the gas.
 - **No backdoor.** No admin sweep of principal. Reserve withdrawals are bounded by protocol revenue and can only reach the immutable treasury address. The emergency hatch is pull-only.
 - **Two halt paths, one of them objective.** A guardian may halt at discretion; separately, anyone may trip the breaker, but only when the chain itself proves insolvency (`balance + dust < owed`), reversible once it clears. Recorded bad debt counts in `owed` (never netted): anyone may recapitalise it with `absorbBadDebt(amount)`, reserve first.
-- **Locked staking with lock boost.** Every deposit is a commitment of 90 to 2555 days; boost is continuous in the duration, `boost(d) = 10000 + 750·(d/365) + 250·(d/365)²` bps, and an expired lock is re-priced to 1.00x.
+- **Lock-based staking with lock boost.** Every deposit is a commitment of 90 to 2555 days; boost is continuous in the duration, `boost(d) = 10000 + 750·(d/365) + 250·(d/365)²` bps, and an expired lock is re-priced to 1.00x.
 - **Borrow against staked collateral.** Max LTV 50% of net stake (staked minus debt), liquidation threshold 95%, liquidation bonus 5% paid to the gas-payer, reserve factor 3%.
 
 ## Security properties (invariants)
