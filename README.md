@@ -401,6 +401,7 @@ The design rules drawn from the time axis are in
 | [docs/WHITEPAPER.md](./docs/WHITEPAPER.md) | The full design: accounting model, interest curve, liquidation, emission |
 | [docs/INVARIANTS_AND_TIME.md](./docs/INVARIANTS_AND_TIME.md) | Engineering report on the time axis: why a balanced ledger is not enough, and the design rules that follow |
 | [docs/VERSION_HISTORY.md](./docs/VERSION_HISTORY.md) | Version-by-version change map, including what each release deliberately did **not** move |
+| [docs/MONTE_CARLO.md](./docs/MONTE_CARLO.md) | Pre-registered Monte Carlo campaign: blind seeds derived from the base commit, the invariants and tolerances fixed before the first run, and the measured distributions |
 | [SECURITY.md](./SECURITY.md) | Disclosure policy, scope, and where reports land hardest |
 | [docs/KNOWN_ISSUES.md](./docs/KNOWN_ISSUES.md) | Known issues, out-of-scope classes and behaviour that is by design |
 | [llms.txt](./llms.txt) | Machine-readable summary for AI agents and crawlers |
