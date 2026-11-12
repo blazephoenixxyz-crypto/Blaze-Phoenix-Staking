@@ -147,7 +147,7 @@ jobs:
           set -o pipefail
           for k in $(seq 0 15); do
             echo "::group::batch $k"
-            MC_FIRST_BATCH=$k forge test --match-test test_MC_blindWalk --gas-limit 18446744073709551615 -vv 2>&1 | tee -a mc.log
+            MC_FIRST_BATCH=$k forge test --match-contract "^MonteCarloWalkTest$" --match-test test_MC_blindWalk --gas-limit 18446744073709551615 -vv 2>&1 | tee -a mc.log
             echo "::endgroup::"
           done
 
