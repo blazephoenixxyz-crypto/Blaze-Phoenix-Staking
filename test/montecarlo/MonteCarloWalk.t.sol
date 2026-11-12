@@ -181,7 +181,7 @@ contract MonteCarloWalkTest is Test {
     }
 
     // ── one action ───────────────────────────────────────────────────────────
-    function _act(uint256 a) internal returns (bool ok) {
+    function _act(uint256 a) internal virtual returns (bool ok) {
         address who = _actor();
         uint256 lrt = staking.lastRewardTime();
         uint256 tbe = staking.totalBoostedEffective();

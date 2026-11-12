@@ -27,7 +27,12 @@ rules, scope and awards are in [`SECURITY.md`](../SECURITY.md) and at
   once no breach remains, after which a holder who did not exit claims as usual. The forfeited
   amount stays in the contract, counted in `totalRewardDistributed - totalRewardsPaid` (a term of
   `owed()`) with no position left to claim it: `sweepUndistributedEmission` reaches only
-  `rewardReserve`, and no function pays it out. In a breached emergency it stays in the balance
+  `rewardReserve`, and no function pays it out. The same term also keeps the stale-weight excess of the
+  exiter's last window (the part a settle returns to `rewardReserve` under LOCK-STALE,
+  `_settlePendingRewards`): the hatch does no reward maths, so what would have gone back to the
+  reserve stays with the forfeit. Measured on the Monte Carlo maximiser (1,21,104): 55,309,813.96
+  BZPX forfeited by the holder, 127,651.41 BZPX of stale-weight excess, 3.5e7 wei of rounding
+  (`test/montecarlo/ResidueDecomposition.t.sol`). In a breached emergency it stays in the balance
   the haircut divides among the exits. The exit moves `backing()` and `owed()` by the same amount,
   so the identity holds and `owed()` reads high by the forfeits, never low. Documented in `README.md`
   (sections 1 and 4), `src/BlazePhoenixStaking.sol` (NatSpec of `emergencyWithdraw`) and

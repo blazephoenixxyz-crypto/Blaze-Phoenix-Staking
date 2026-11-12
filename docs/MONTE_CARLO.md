@@ -59,8 +59,11 @@ action of every sequence. One false assertion anywhere makes the test red and is
 | MC-CLOSED | `D = scheduled - totalRewardDistributed >= 0`, where `scheduled` is the ghost sum, over every state-changing call, of `emittedAt(now) - emittedAt(lastRewardTime)` taken when `totalBoostedEffective > 0` (before damping and before the reserve cap). In the one-staker hypothesis with weight >= MIN_EMISSION_WEIGHT and a fully funded programme, `D == 0` exactly | 0 |
 
 Reported distributions (min / median / p99 / max, with the `(k, j, i)` of the maximiser): the
-MC-CONSERVE diff, the rounding residue `R = totalRewardDistributed - totalRewardsPaid - sum_i
-pendingRewards(i)` (rounding is pro-protocol: `R >= -DUST` is asserted), and `D`.
+MC-CONSERVE diff, the residue `R = totalRewardDistributed - totalRewardsPaid - sum_i
+pendingRewards(i)`: what the book still counts as distributed with no position to claim it (the
+forfeits of emergency exits and their stale-weight excess) plus rounding, which is pro-protocol
+(`R >= -DUST` is asserted); the maximiser is decomposed wei for wei in
+`test/montecarlo/ResidueDecomposition.t.sol`, and `D`.
 
 ### Amendments recorded after the first run (batch 0, tree `94e1bdb` + the test): pre-registration errors, not contract findings
 
