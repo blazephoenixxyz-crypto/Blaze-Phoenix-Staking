@@ -33,6 +33,7 @@ contract ResidueDecompositionTest is MonteCarloWalkTest {
     uint256 internal settlePreviewPaid;
     uint256 internal settlePreviewToReserve;
     uint256 internal settlePreviewDistDown;
+    uint256 internal reserveReturned;   // rewardReserve moved by the hatches themselves (fix1112)
     uint256 internal previewCancelReverted; uint256 internal previewUnpauseReverted; uint256 internal previewClaimReverted;
 
     function _peekActor() internal view returns (address) {
@@ -50,9 +51,11 @@ contract ResidueDecompositionTest is MonteCarloWalkTest {
         uint256 balB = token.balanceOf(who);
         uint256 settledB = settled;
         if (staking.emergencyMode()) _previewSettle(who);
+        uint256 resB = staking.rewardReserve();
         ok = super._act(a);
         if (settled == settledB) return ok;   // the exit reverted
         nExits++;
+        reserveReturned += staking.rewardReserve() - resB;
         forfeitEmission += pr;
         forfeitPure     += py;
         uint256 paid = token.balanceOf(who) - balB;
@@ -105,7 +108,7 @@ contract ResidueDecompositionTest is MonteCarloWalkTest {
         curK = k; curJ = j;
         _fresh(k, j);
         forfeitEmission = 0; forfeitPure = 0; nExits = 0; nHaircutExits = 0; payoutPostSum = 0;
-        paidSum = 0; haircutFormula = 0; haircutDebited = 0; underwaterExits = 0;
+        paidSum = 0; haircutFormula = 0; haircutDebited = 0; underwaterExits = 0; reserveReturned = 0;
         for (uint256 i = 0; i <= stop; i++) {
             curI = i;
             uint256 a = _rnd() % NACT;
@@ -135,6 +138,8 @@ contract ResidueDecompositionTest is MonteCarloWalkTest {
     }
 
     /// The maximiser of R in docs/MONTE_CARLO.md: (k=1, j=21, i=104), R = 55,437,465,372,907,153,741,701,104.
+    /// Pins `_settleEmission`: the excess it returns to `rewardReserve` is the gap this test measures;
+    /// mutants 67 and 339 on those lines turn it red.
     function test_RD_residue_1_21_104_isTheForfeitOfEmergencyExitsPlusLivePureYield() public {
         _runTo(1, 21, 104);
         uint256 dist = staking.totalRewardDistributed();
@@ -157,8 +162,9 @@ contract ResidueDecompositionTest is MonteCarloWalkTest {
         console2.log("lastRewardTime now", staking.lastRewardTime(), block.timestamp);
         console2.log("preview reverts cancel unpause claim", previewCancelReverted, previewUnpauseReverted, previewClaimReverted);
 
-        // the campaign's number, byte for byte
-        assertEq(uint256(R), 55437465372907153741701104, "R of (1,21,104) as docs/MONTE_CARLO.md reports it");
+        // the campaign's number, byte for byte, less the stale-weight excess the hatch now returns
+        // (fix1112): 55437465372907153741701104 was R while the hatch did no reward maths
+        assertEq(uint256(R) + settlePreviewToReserve, 55437465372907153741701104, "R of (1,21,104) as docs/MONTE_CARLO.md reports it, before fix1112");
         assertEq(nActors, 1, "one holder, who exits through the hatch");
         assertEq(nExits, 1, "one emergency exit");
         assertEq(lossInjected, 0, "a guardian emergency, no loss");
@@ -166,12 +172,13 @@ contract ResidueDecompositionTest is MonteCarloWalkTest {
         //    exactly the quote the hatch discarded (quote == execution)
         assertEq(settlePreviewPaid, forfeitEmission, "the settle pays what the hatch forfeited");
         // 2) the stale-weight excess a settle returns to the reserve (LOCK-STALE, P1-C): the hatch
-        //    does no reward maths, so it stays in distributed - paid as well
+        //    moves the same wei to the reserve itself (fix1112), so it leaves distributed - paid
         assertEq(settlePreviewDistDown, settlePreviewToReserve, "LOCK-STALE moves distributed to the reserve, nothing else");
         assertGt(settlePreviewToReserve, DUST, "the stale excess is a real amount here, not rounding");
+        assertEq(reserveReturned, settlePreviewToReserve, "the hatch returns exactly the excess a settle would have returned");
         // 3) the rest is rounding, under the dust
-        uint256 explained = forfeitEmission + settlePreviewToReserve + sumP;
-        assertLe(uint256(R) - explained, DUST, "R = forfeited emission + stale-weight excess + live pure yield, up to dust");
+        uint256 explained = forfeitEmission + sumP;
+        assertLe(uint256(R) - explained, DUST, "R = forfeited emission + live pure yield, up to dust");
         assertGe(uint256(R), explained, "rounding is pro-protocol: never below the explained sum");
         assertLe(staking.owed(), staking.backing() + DUST, "no breach: the pot holds the forfeit that owed() still counts");
         assertGe(staking.owed(), uint256(R), "owed() reads high by R: counted with no position to claim it");
