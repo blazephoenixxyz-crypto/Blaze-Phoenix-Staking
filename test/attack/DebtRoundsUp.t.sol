@@ -70,7 +70,11 @@ contract DebtRoundsUpTest is Base {
         h.unstake(2917, 12500);
     }
 
-    /// With floored debts the 15th call paid 1 wei above distributed (522543379 > 522543378).
+    /// Shrunk on the earlier 10-year curve, where floored debts made the 15th call pay 1 wei above
+    /// distributed (522543379 > 522543378). On the 8-year curve the same calls no longer reach a
+    /// checkpoint product that pays above, so this stays as a replay that must keep paying no more
+    /// than distributed; the one wei the round-up costs is measured by
+    /// test_I7_theWindowAfterACheckpointPaysTheFloorMinusTheCeiling.
     function test_I7_rewardDebt_shrunkSequencePaysNoMoreThanDistributed() public {
         _replay();
         _assertWhole("I7");
@@ -276,5 +280,73 @@ contract DebtRoundsUpTest is Base {
         assertEq(_word(alice, OFF_REWARD_DEBT), 0, "I7: rewardDebt rounded an exact product up");
         assertEq(_word(alice, OFF_PURE_DEBT), 0, "I7: pureYieldDebt rounded an exact product up");
         assertGt(_word(alice, OFF_BE), 0, "no weight, so nothing was measured");
+    }
+
+    // ── the round-up, measured where it pays: the window after a checkpoint ──────────────────
+
+    /// A deposit, a top-up `dt1` later (the checkpoint: debt = ceil(w·A0/WAD)), a claim `dt2`
+    /// after it. Returns what the claim paid, the weight w and the accumulator at both ends. The
+    /// position holds a 365-day lock throughout and has no debt, so the live weight is the tracked
+    /// one, the claim pays the whole window and the pure channel is empty.
+    function _windowAfterCheckpoint(uint256 first, uint256 topUp, uint256 dt1, uint256 dt2)
+        internal
+        returns (uint256 paid, uint256 w, uint256 a0, uint256 a1)
+    {
+        uint256 t0 = block.timestamp;
+        uint256 n0 = block.number;
+        vm.prank(admin);
+        staking.fundEmission(90_000_000e18);
+        vm.prank(alice);
+        staking.deposit(first, 365);
+        vm.warp(t0 + dt1);
+        vm.roll(n0 + 11);
+        vm.prank(alice);
+        staking.deposit(topUp, 365);
+        w = _word(alice, OFF_BE);
+        a0 = staking.accRewardPerShare();
+        vm.warp(t0 + dt1 + dt2);
+        vm.roll(n0 + 22);
+        uint256 b0 = token.balanceOf(alice);
+        vm.prank(alice);
+        staking.claimRewards();
+        paid = token.balanceOf(alice) - b0;
+        a1 = staking.accRewardPerShare();
+        assertEq(staking.accPureYieldPerShare(), 0, "fixture: the pure channel moved, so the claim is not one window");
+    }
+
+    /// floor(w·A1/WAD) − ceil(w·A0/WAD), clamped at 0, in plain checked arithmetic (not the
+    /// contract's mulDiv).
+    function _floorMinusCeil(uint256 w, uint256 a0, uint256 a1) internal pure returns (uint256) {
+        uint256 hi = (w * a1) / WAD;
+        uint256 lo = (w * a0) / WAD + ((w * a0) % WAD == 0 ? 0 : 1);
+        return hi > lo ? hi - lo : 0;
+    }
+
+    /// The round-up has a price in wei and this measures it: on a fractional checkpoint product
+    /// the window after it pays floor(w·A1) − ceil(w·A0), exactly one wei less than a floored
+    /// debt (floor(w·A1) − floor(w·A0)) would have paid.
+    function test_I7_theWindowAfterACheckpointPaysTheFloorMinusTheCeiling() public {
+        (uint256 paid, uint256 w, uint256 a0, uint256 a1) =
+            _windowAfterCheckpoint(10_000e18 + 7, 3, 10 days, 10 days);
+        assertGt(a0, 0, "fixture: the accumulator did not move before the checkpoint");
+        assertGt(mulmod(w, a0, WAD), 0, "fixture: the checkpoint product is exact, so the round-up is not observable");
+        assertGt(paid, 0, "fixture: the window paid nothing, so nothing was measured");
+        assertEq(paid, _floorMinusCeil(w, a0, a1), "I7: the window did not pay floor(w*A1) - ceil(w*A0)");
+        assertEq(paid + 1, (w * a1) / WAD - (w * a0) / WAD, "I7: the round-up is not the one wei a floored debt would have paid");
+    }
+
+    /// The same window over every weight (one wei to a million tokens on each deposit) and every
+    /// window length up to 180 days on each side of the checkpoint: the claim pays
+    /// floor(w·A1) − ceil(w·A0), never the floor-to-floor difference.
+    function testFuzz_I7_theWindowAfterACheckpointPaysTheFloorMinusTheCeiling(
+        uint256 first,
+        uint256 topUp,
+        uint256 dt1,
+        uint256 dt2
+    ) public {
+        (uint256 paid, uint256 w, uint256 a0, uint256 a1) = _windowAfterCheckpoint(
+            bound(first, 1, 1_000_000e18), bound(topUp, 1, 1_000_000e18), bound(dt1, 1, 180 days), bound(dt2, 1, 180 days)
+        );
+        assertEq(paid, _floorMinusCeil(w, a0, a1), "I7: the window did not pay floor(w*A1) - ceil(w*A0)");
     }
 }

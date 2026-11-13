@@ -1267,19 +1267,19 @@ dict(nome="claimPureYield: the sweep runs between the emission and the pure-yiel
       f=F,
       old='        rewardReserve = 0;\n        _pay(treasury, residue);',
       new='        rewardReserve = residue - residue / 2; // MUTANT\n        _pay(treasury, residue / 2);',
-      teste='test_RESIDUE_theAdminSweepsItWholeToTheTreasury|test_EmptyProgrammeSweepsTheWholeBudgetToTreasury'),
-# I-fix 1109 - assert "I7: paid above distributed" (both debts floored: the shrunk sequence pays one wei above the emission)
+      teste='test_RESIDUE_theAdminSweepsItWholeToTheTreasury'),
+# I-fix 1109 - assert "I7: the window did not pay floor(w*A1) - ceil(w*A0)" (both debts floored: the window after a fractional checkpoint pays one wei more)
  dict(nome='_wadUp: floors both debts (no round-up at the checkpoint)',
       f=F,
       old='        return ML.mulDiv(a, b, WAD) + (mulmod(a, b, WAD) == 0 ? 0 : 1);',
       new='        return ML.mulDiv(a, b, WAD); // MUTANT',
-      teste='test_I7_rewardDebt_shrunkSequencePaysNoMoreThanDistributed'),
-# I-fix 1109 - assert "I7 emission grind: paid above distributed" (only rewardDebt floored; the last exit also reverts TransferFailed on the short balance)
+      teste='test_I7_theWindowAfterACheckpointPaysTheFloorMinusTheCeiling'),
+# I-fix 1109 - assert "I7 emission grind: paid above distributed" (only rewardDebt floored: grinding sybils overdraw the emission channel)
  dict(nome='_checkpoint: floors rewardDebt only',
       f=F,
       old='        u.rewardDebt     = _wadUp(u.trackedBoostedEffective, accRewardPerShare);',
       new='        u.rewardDebt     = ML.mulDiv(u.trackedBoostedEffective, accRewardPerShare, WAD); // MUTANT',
-      teste='test_I7_lastExit_claimSweepWithdraw_everyPrincipalLeavesWhole|test_I7_rewardDebt_grindingSybilsCannotPayAboveDistributed'),
+      teste='test_I7_rewardDebt_grindingSybilsCannotPayAboveDistributed'),
 # I-fix 1109 - assert "I7 pure grind: paid above distributed" (only pureYieldDebt floored: grinding sybils overdraw the pure channel)
  dict(nome='_checkpoint: floors pureYieldDebt only',
       f=F,
