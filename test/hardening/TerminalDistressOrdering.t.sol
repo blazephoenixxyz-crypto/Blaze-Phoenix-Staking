@@ -103,7 +103,7 @@ contract TerminalDistressOrderingTest is Base {
     /// `stakedOverdraw`. Paused, so the maintenance window does not attribute carol in the same tx
     /// and the carried overdraw is observable. A saturating debit there drops the excess from the
     /// identity and `conserves` reverts the exit. The schedule closes at exactly the budget and
-    /// leaves no tail, so the residue is an empty first year's emission, 12M − 1 632 000 wei.
+    /// leaves no tail, so the residue is an empty first year's emission, 15.5M − 25 760 000 wei.
     function test_TERMDISTRESS_pureStakerWithdrawPastTotalStakedCarriesTheOverdraw() public {
         vm.prank(admin);
         staking.fundEmission(90_000_000e18);

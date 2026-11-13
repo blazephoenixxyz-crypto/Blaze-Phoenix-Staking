@@ -32,8 +32,9 @@ rules, scope and awards are in [`SECURITY.md`](../SECURITY.md) and at
   hatch reads the window through the same `_settleEmission` the settle uses and moves that excess
   to the reserve, where `sweepUndistributedEmission` reaches it; the hatch mirrors that move on the
   3326 anchor, so `cancelEmergency` stays reachable after solvent exits. Measured on the Monte Carlo
-  maximiser (1,21,104): 55,309,813.96 BZPX forfeited by the holder, 127,651.41 BZPX of stale-weight
-  excess returned to the reserve, 3.5e7 wei of rounding (`test/montecarlo/ResidueDecomposition.t.sol`).
+  maximiser (6,10,144): 54,900,704.53 BZPX forfeited by the one holder that exited, 3,697,561.14
+  BZPX of stale-weight excess returned to the reserve by the hatch, and 26,494,901 wei not
+  decomposed further (`test/montecarlo/ResidueDecomposition.t.sol`).
   The forfeited pure yield is read the same way: the hatch runs `_settlePure`, the helper the pure
   settle uses, so the lapsed-lock excess of the last pure-yield window returns to `protocolReserve`
   (`test/fix1112/HatchReturnsPureStaleExcess.t.sol`), and only the earned pure yield is forfeited. In a breached emergency the forfeit stays in the balance
@@ -120,18 +121,18 @@ rules, scope and awards are in [`SECURITY.md`](../SECURITY.md) and at
   no loss after the sweep has paid), or by the permissionless `pokeExpiredLock` and
   `pokeExpiredLocks`. Until then, positions whose lock is still running share each window with
   that weight and are paid slightly less; the difference stays in the reserve and is not paid to
-  the lapsed position. Measured with ten lapsing positions beside a seven-year staker: 84.74 BZPX
+  the lapsed position. Measured with ten lapsing positions beside a seven-year staker: 109.46 BZPX
   less for the staker with one transaction a day (every lapsed weight normalised within
-  43,200 s), 11,498.79 BZPX with no traffic at all.
+  43,200 s), 14,852.60 BZPX with no traffic at all.
   The split reads the curve, not the accumulator, so it is exact only where the flow inside the
   window followed the curve over an unchanged book. A book that shrank inside the window, a
   reserve that ran dry, an emergency halt (nothing flowed while the curve moved on) or a position
   that is a large part of its own denominator (normalising it would have shrunk the denominator
   too) moves the split. The payout stays between the 1.00x share and the lapsed share it replaces,
   and what is not paid stays in the reserve. Measured: a single 730-day position left untouched to
-  the end of the programme collects 76,800,000 of the 90,000,000 BZPX emitted, and the other
-  13,200,000 stay in `rewardReserve`; a 90-day lock that lapses inside a 30-day halt collects
-  2,620,806.35 BZPX instead of 2,630,136.99. Normalised at `unlockTime`, the same positions collect
+  the end of the programme collects 78,200,000 of the 90,000,000 BZPX emitted, and the other
+  11,800,000 stay in `rewardReserve`; a 90-day lock that lapses inside a 30-day halt collects
+  3,385,208.20 BZPX instead of 3,397,260.27. Normalised at `unlockTime`, the same positions collect
   everything. Removing the weight at the exact instant needs per-day expiry buckets, which do not
   fit the EIP-170 size limit. Documented in `src/BlazePhoenixStaking.sol` (`_postUnlockAtBase`,
   `_flowEnd`, `_resync`), `docs/INVARIANTS_AND_TIME.md` (section 2 and R3),
@@ -143,8 +144,8 @@ rules, scope and awards are in [`SECURITY.md`](../SECURITY.md) and at
   settle pays the live weight and returns the stale excess to `rewardReserve`; until the resync,
   debt-free positions share each window with the stale weight and are paid slightly less.
   Measured over one year with an idle 20M position at 9.9M of debt beside a 1M debt-free position:
-  the debt-free position collects 1,081,081.08 BZPX of emission when nothing else transacts and
-  1,097,587.96 BZPX when it claims daily. Documented in `src/BlazePhoenixStaking.sol`
+  the debt-free position collects 1,396,396.40 BZPX of emission when nothing else transacts and
+  1,417,717.78 BZPX when it claims daily. Documented in `src/BlazePhoenixStaking.sol`
   (`_autoMaintain`, `_atLiveWeight`) and `test/fix1102/InterestStaleWeight.t.sol`.
 - **Bit 4 of `auditInvariants` is an upper bound, not an equality.** A position's weight keeps
   the equity of its last resync, while interest is debited from `totalStaked` as it accrues, so

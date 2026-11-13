@@ -26,7 +26,7 @@ contract ConstantOraclesTest is Base {
     uint256 internal constant RESERVE_BPS_LITERAL = 300;      // 3 %, published
     uint256 internal constant NET_BPS_LITERAL     = 9_700;    // 10 000 − 300
     uint256 internal constant CAP_LITERAL         = 30_000_000e18;
-    uint256 internal constant BUDGET_LITERAL      = 90_000_000e18;   // 60M in years 1-5 + 30M in years 6-10
+    uint256 internal constant BUDGET_LITERAL      = 90_000_000e18;   // 60M linear base + 30M bonus (16M + 8M + 4M + 2M), 8 years
 
     /// A healthy book with a full pure-weight denominator (the damper does not bite).
     function _book() internal {

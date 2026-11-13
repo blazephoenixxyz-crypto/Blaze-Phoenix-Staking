@@ -17,7 +17,7 @@ cloud sandbox; **77 checks across 18 scenarios pass**.
 npm install
 node test/run.mjs        # full integrity + edge-case suite      (80 checks)
 node test/attack.mjs     # adversarial suite, 16 exploit vectors (76 checks)
-node test/boost.mjs      # stale-boost / lock-expiry, B1..B10   (174 checks)
+node test/boost.mjs      # stale-boost / lock-expiry, B1..B10   (178 checks)
 node test/smoke.mjs      # quick deploy/sanity check
 ```
 
@@ -103,13 +103,22 @@ the fuzzed state space rather than a case only the unit tests reach.
 
 `MonteCarloWalk.t.sol` draws random sequences of every public action (deposit, borrow, repay,
 withdraw, claims, lock, pokes, liquidate, donation, loss, breaker, emergency exits, time jumps
-over the ten-year programme and across the halving boundary) from seeds derived from the base
+over the 8-year programme and across the three bonus-halving boundaries) from seeds derived from the base
 commit, and asserts the pre-registered invariants of `docs/MONTE_CARLO.md` after every action.
 In the suite it runs batch 0, sequences 0..2; the campaign runs with `MC_BATCHES`, `MC_SEQS`,
 `MC_ACTIONS` and `--gas-limit 18446744073709551615` (the CI job `montecarlo`, 16 batches).
 `MC_BATCH=k MC_SEQ=j` replays one sequence. `Hypotheses.t.sol` is the named grid on top: one
 staker above the damping mark paid the closed form at every boundary, a dust staker damped by
-`weight / MIN_EMISSION_WEIGHT`, N stakers from dust to the cap, a window across the halving, the
+`weight / MIN_EMISSION_WEIGHT`, N stakers from dust to the cap, a window across a bonus-halving
+boundary, the
 pro-rata emergency haircut, and the reward-debt rebase. `node test/montecarlo/report.mjs <log>`
 regenerates the results section of `docs/MONTE_CARLO.md`.
+
+`EmissionCurveWalk.t.sol` is campaign 2 (`docs/MONTE_CARLO_EMISSION.md`): a blind walk over the
+emission alone, with no debt in the book, so every settle is compared wei for wei with the schedule
+written from literals (a linear base of 60M over 8 years plus a bonus of 16M, 8M, 4M and 2M over
+four 2-year periods). Its seeds derive from the commit that introduced the schedule; it asserts
+EC-1..EC-10 after every action. In the suite it runs batch 0, sequences 0..2, 60 actions; the
+campaign runs with `ECW_BATCHES`, `ECW_SEQS`, `ECW_ACTIONS`, and `ECW_BATCH=k ECW_SEQ=j` replays
+one sequence.
 

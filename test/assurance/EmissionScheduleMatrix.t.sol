@@ -2,25 +2,29 @@
 pragma solidity 0.8.28;
 
 // =============================================================================================
-//  EMISSION SCHEDULE MATRIX — the 90M / 10-year halving schedule, range x vector x dimension.
+//  EMISSION SCHEDULE MATRIX — the 90M / 8-year schedule (a linear base plus a bonus that halves
+//  every two years, biennial halving), range x vector x dimension.
 //
 //  Every literal below is derived independently of the contract, from the published numbers
-//  (12M a year in years 1-5, 6M a year in years 6-10, 90M in total), never from the contract's
-//  closed form or its private series:
-//    P = 5 * 365 days = 157 680 000 s (one period), T = 2 * P = 315 360 000 s (the close);
-//    each period pays its budget (60M, then 30M) at the floored rate floor(budget / P):
-//      R0 = floor(60M / P) = 380 517 503 805 175 038 wei/s,  R1 = floor(30M / P) = 190 258 751 902 587 519 wei/s;
-//    the floor leaves REM0 = 60M - R0 * P = 8 160 000 wei and REM1 = 30M - R1 * P = 4 080 000 wei,
-//    which the curve returns in the rollover second (at P) and in the closing second (at T), so the
-//    anchors are exact: E(P) = 60M and E(T) = 90M = TOTAL_REWARDS.
+//  (a 60M base, linear over 8 years; a 30M bonus paid 16M, 8M, 4M, 2M over four 2-year periods;
+//  90M in total), never from the contract's closed form or its private series:
+//    P = 2 * 365 days = 63 072 000 s (one period), T = 4 * P = 252 288 000 s (the close);
+//    the base pays RB = floor(60M / T) = 237 823 439 878 234 398 wei/s throughout;
+//    period q pays its bonus budget at the floored rate floor(budget_q / P), so the rate in force is
+//      R0 = RB + floor(16M / P) = 491 501 775 748 351 090 wei/s,  R1 = RB + floor(8M / P) = 364 662 607 813 292 744,
+//      R2 = RB + floor(4M / P)  = 301 243 023 845 763 571 wei/s,  R3 = RB + floor(2M / P) = 269 533 231 861 998 984;
+//    the bonus floor leaves REM0..REM3 = 2 176 000 / 1 088 000 / 544 000 / 31 808 000 wei and the base
+//    floor leaves REM_BASE = 60M - RB * T = 197 376 000 wei; each bonus remainder is paid in the
+//    turn second that closes its period (at P, 2P, 3P), and REM3 + REM_BASE in the closing second
+//    (at T), so the close is exact: E(T) = 90M = TOTAL_REWARDS.
 //
-//  Ranges:     dt = 0, 1 s, every year boundary k * 365 days (k = 1..10), P - 1 / P / P + 1,
-//              T - 1 / T / T + 1, long after the close; fuzz over dt.
+//  Ranges:     dt = 0, 1 s, every year boundary k * 365 days (k = 1..8), kP - 1 / kP / kP + 1 at each
+//              turn (k = 1, 2, 3), T - 1 / T / T + 1, long after the close; fuzz over dt.
 //  Vectors:    funding at TOTAL - 1 / TOTAL / TOTAL + 1 and in tranches; empty windows (the first
 //              year, the first period, the whole programme); a lone weight of 1 wei, MIN - 1, MIN,
 //              MIN + 1; an under-funded window; the sweep at T - 1, at T, and after a full pool.
 //  Dimensions: unit, fuzz (256 runs, the default), invariant (EmissionScheduleInvariantTest
-//              below) and gas (emittedAt is O(1) in the period index).
+//              below) and gas (emittedAt costs the same in all four periods: no loop over periods).
 //
 //  A lone position is normalised at its unlockTime (`pokeExpiredLock`, what any transaction's
 //  lock window does), so the whole window is paid at one weight and the delivery is exact.
@@ -33,16 +37,21 @@ import {Base} from "../BlazePhoenixStaking.t.sol";
 contract EmissionScheduleMatrixTest is Base {
     uint256 internal constant START = 1_900_000_000;                   // Base.setUp deploys here
     uint256 internal constant YEAR  = 31_536_000;                      // 365 days
-    uint256 internal constant P     = 157_680_000;                     // 5 * 365 days
-    uint256 internal constant T     = 315_360_000;                     // 2 * P
+    uint256 internal constant P     = 63_072_000;                      // 2 * 365 days
+    uint256 internal constant T     = 252_288_000;                     // 4 * P = 2920 days
     uint256 internal constant TOTAL = 90_000_000e18;
-    uint256 internal constant R0    = 380_517_503_805_175_038;         // floor(60M / P) wei/s
-    uint256 internal constant R1    = 190_258_751_902_587_519;         // floor(30M / P) wei/s
-    uint256 internal constant REM0  = 8_160_000;                       // 60M - R0 * P
-    uint256 internal constant REM1  = 4_080_000;                       // 30M - R1 * P
+    uint256 internal constant R0    = 491_501_775_748_351_090;         // floor(60M / T) + floor(16M / P) wei/s
+    uint256 internal constant R1    = 364_662_607_813_292_744;         // floor(60M / T) + floor(8M / P)
+    uint256 internal constant R2    = 301_243_023_845_763_571;         // floor(60M / T) + floor(4M / P)
+    uint256 internal constant R3    = 269_533_231_861_998_984;         // floor(60M / T) + floor(2M / P)
+    uint256 internal constant REM0  = 2_176_000;                       // 16M - floor(16M / P) * P
+    uint256 internal constant REM1  = 1_088_000;                       // 8M - floor(8M / P) * P
+    uint256 internal constant REM2  = 544_000;                         // 4M - floor(4M / P) * P
+    uint256 internal constant REM3  = 31_808_000;                      // 2M - floor(2M / P) * P
+    uint256 internal constant REM_BASE = 197_376_000;                  // 60M - floor(60M / T) * T
     uint256 internal constant MIN_W = 1_000e18;                        // MIN_EMISSION_WEIGHT
-    /// TOTAL - E(90 days): what the window from a 90-day unlock to the close schedules.
-    uint256 internal constant AFTER_90_DAYS = 87_041_095_890_410_958_904_512_000;
+    /// TOTAL - E(90 days) = TOTAL - R0 * 90 days: what the window from a 90-day unlock to the close schedules.
+    uint256 internal constant AFTER_90_DAYS = 86_178_082_191_780_821_924_160_000;
     /// Bound on what the per-share floor of the accumulator leaves accrued but unpaid.
     uint256 internal constant DUST_BOUND = 1e10;
 
@@ -73,6 +82,32 @@ contract EmissionScheduleMatrixTest is Base {
         return vm.lastCallGas().gasTotalUsed;
     }
 
+    /// @dev The rate in force in period q (base + floored bonus), from the literals above.
+    function _rate(uint256 q) internal pure returns (uint256) {
+        return q == 0 ? R0 : q == 1 ? R1 : q == 2 ? R2 : R3;
+    }
+
+    /// @dev The bonus floor remainder of period q, paid in the second that closes it.
+    function _rem(uint256 q) internal pure returns (uint256) {
+        return q == 0 ? REM0 : q == 1 ? REM1 : q == 2 ? REM2 : REM3;
+    }
+
+    /// @dev Test-side oracle of the scheduled emission over (a, b], START <= a <= b: a walk over the
+    ///      four periods at their rates, plus each remainder whose closing second lies in the window
+    ///      (REM_BASE rides with REM3 at the close). Not the contract's closed form.
+    function _scheduled(uint256 a, uint256 b) internal pure returns (uint256 s) {
+        if (b > START + T) b = START + T;
+        for (uint256 q; q < 4; ++q) {
+            uint256 lo = START + q * P;
+            uint256 hi = lo + P;
+            uint256 x = a > lo ? a : lo;
+            uint256 y = b < hi ? b : hi;
+            if (y > x) s += _rate(q) * (y - x);
+            if (a < hi && hi <= b) s += _rem(q);
+        }
+        if (a < START + T && START + T <= b) s += REM_BASE;
+    }
+
     // ── ranges: the curve, unit ──────────────────────────────────────────────────────────
 
     function test_EmittedAtIsZeroAtTheStartAndAtEveryEarlierTime() public view {
@@ -83,50 +118,69 @@ contract EmissionScheduleMatrixTest is Base {
     }
 
     function test_EmittedAtOneSecondInIsExactlyTheInitialRate() public view {
-        assertEq(staking.emittedAt(START + 1), R0, "one second at the period-0 rate");
+        assertEq(staking.emittedAt(START + 1), 491_501_775_748_351_090,
+                 "one second at the period-0 rate: floor(60M / 2920 days) + floor(16M / 730 days)");
     }
 
     function test_EmittedAtEachYearReleasesItsExactScheduledDelta() public view {
-        uint256[10] memory d = [
-            uint256(11_999_999_999_999_999_998_368_000),   // years 1-4: R0 * 365 days
-            11_999_999_999_999_999_998_368_000,
-            11_999_999_999_999_999_998_368_000,
-            11_999_999_999_999_999_998_368_000,
-            12_000_000_000_000_000_006_528_000,            // year 5: R0 * 365 days + REM0 (the rollover second)
-            5_999_999_999_999_999_999_184_000,             // years 6-9: R1 * 365 days
-            5_999_999_999_999_999_999_184_000,
-            5_999_999_999_999_999_999_184_000,
-            5_999_999_999_999_999_999_184_000,
-            6_000_000_000_000_000_003_264_000              // year 10: R1 * 365 days + REM1 (the closing second)
+        uint256[8] memory d = [
+            uint256(15_499_999_999_999_999_974_240_000),   // year 1: R0 * 365 days
+            15_499_999_999_999_999_976_416_000,            // year 2: R0 * 365 days + REM0 (the first turn second)
+            11_499_999_999_999_999_974_784_000,            // year 3: R1 * 365 days
+            11_499_999_999_999_999_975_872_000,            // year 4: R1 * 365 days + REM1 (the second turn)
+            9_499_999_999_999_999_975_056_000,             // year 5: R2 * 365 days
+            9_499_999_999_999_999_975_600_000,             // year 6: R2 * 365 days + REM2 (the third turn)
+            8_499_999_999_999_999_959_424_000,             // year 7: R3 * 365 days
+            8_500_000_000_000_000_188_608_000              // year 8: R3 * 365 days + REM3 + REM_BASE (the closing second)
         ];
         uint256 sum;
-        for (uint256 k = 1; k <= 10; ++k) {
+        for (uint256 k = 1; k <= 8; ++k) {
             uint256 delta = staking.emittedAt(START + k * YEAR) - staking.emittedAt(START + (k - 1) * YEAR);
             assertEq(delta, d[k - 1], string.concat("year ", vm.toString(k)));
             sum += d[k - 1];
         }
-        assertEq(sum, TOTAL, "oracle self-check: the ten years partition the budget");
-        assertEq(staking.emittedAt(START + 5 * YEAR), 60_000_000e18, "five years: exactly the first period");
+        assertEq(sum, TOTAL, "oracle self-check: the eight years partition the budget");
+        assertEq(staking.emittedAt(START + 2 * YEAR), 30_999_999_999_999_999_950_656_000,
+                 "two years: the first period's 31M less the 49 344 000 wei the base floor holds back to the close");
     }
 
-    function test_EmittedAtTheFiveYearRolloverJumpsByTheRatePlusTheFloorRemainder() public view {
-        uint256 before_ = staking.emittedAt(START + P - 1);
-        uint256 at      = staking.emittedAt(START + P);
-        uint256 after_  = staking.emittedAt(START + P + 1);
-        assertEq(before_, 59_999_999_619_482_496_186_664_962, "P - 1: still on the period-0 line");
-        assertEq(at,      60_000_000e18,                       "P: the anchor is the exact 60M");
-        assertEq(after_,  60_000_000_190_258_751_902_587_519,  "P + 1: one second at the halved rate");
-        assertEq(at - before_, 380_517_503_813_335_038, "the rollover second pays R0 plus the 8 160 000 wei the floor left");
-        assertEq(after_ - at, R1, "the next second pays R1");
+    /// Each of the three turns (2, 4 and 6 years): the second before is on the old period's line,
+    /// the turn second pays the old rate plus that period's bonus remainder, the next second the new rate.
+    function test_EmittedAtEachBiennialTurnJumpsByTheRatePlusTheFloorRemainder() public view {
+        uint256[3] memory before_ = [
+            uint256(30_999_999_508_498_224_200_128_910), 53_999_999_635_337_392_086_931_256, 72_999_999_698_756_976_005_660_429
+        ];
+        uint256[3] memory at_ = [
+            uint256(30_999_999_999_999_999_950_656_000), 53_999_999_999_999_999_901_312_000, 72_999_999_999_999_999_851_968_000
+        ];
+        uint256[3] memory after_ = [
+            uint256(31_000_000_364_662_607_763_948_744), 54_000_000_301_243_023_747_075_571, 73_000_000_269_533_231_713_966_984
+        ];
+        for (uint256 k = 1; k <= 3; ++k) {
+            string memory turn = string.concat("turn ", vm.toString(k), " (", vm.toString(2 * k), " years)");
+            uint256 b = staking.emittedAt(START + k * P - 1);
+            uint256 a = staking.emittedAt(START + k * P);
+            uint256 n = staking.emittedAt(START + k * P + 1);
+            assertEq(b, before_[k - 1], string.concat(turn, ": kP - 1, still on the old period's line"));
+            assertEq(a, at_[k - 1],     string.concat(turn, ": kP, the anchor"));
+            assertEq(n, after_[k - 1],  string.concat(turn, ": kP + 1, one second at the new rate"));
+            assertEq(a - b, _rate(k - 1) + _rem(k - 1), string.concat(turn, ": the turn second pays the old rate plus the bonus remainder"));
+            assertEq(n - a, _rate(k), string.concat(turn, ": the next second pays the new rate"));
+        }
+        assertEq(at_[0] - before_[0], 491_501_775_750_527_090, "turn 1 second: R0 + 2 176 000 wei");
+        assertEq(at_[1] - before_[1], 364_662_607_814_380_744, "turn 2 second: R1 + 1 088 000 wei");
+        assertEq(at_[2] - before_[2], 301_243_023_846_307_571, "turn 3 second: R2 + 544 000 wei");
     }
 
-    function test_EmittedAtTheTenYearCloseReadsExactlyTotalRewards() public view {
-        assertEq(staking.emissionEnd() - staking.emissionStart(), T, "fixture: the programme lasts ten 365-day years");
+    function test_EmittedAtTheEightYearCloseReadsExactlyTotalRewards() public view {
+        assertEq(staking.emissionEnd() - staking.emissionStart(), T, "fixture: the programme lasts eight 365-day years");
         uint256 before_ = staking.emittedAt(START + T - 1);
-        assertEq(before_, 89_999_999_809_741_248_093_332_481, "T - 1: still on the period-1 line");
+        assertEq(before_, 89_999_999_730_466_767_908_817_016, "T - 1: still on the period-3 line");
         assertEq(staking.emittedAt(START + T), TOTAL, "T: exactly TOTAL_REWARDS");
         assertEq(staking.emittedAt(START + T + 1), TOTAL, "T + 1: flat");
-        assertEq(TOTAL - before_, 190_258_751_906_667_519, "the closing second pays R1 plus the 4 080 000 wei the floor left");
+        assertEq(TOTAL - before_, 269_533_232_091_182_984,
+                 "the closing second pays R3 plus the 31 808 000 + 197 376 000 wei the two floors left");
+        assertEq(TOTAL - before_, R3 + REM3 + REM_BASE, "oracle self-check");
     }
 
     function test_EmittedAtStaysAtTotalRewardsForeverAfterTheClose() public view {
@@ -134,11 +188,15 @@ contract EmissionScheduleMatrixTest is Base {
         assertEq(staking.emittedAt(type(uint256).max), TOTAL, "the end of time");
     }
 
-    function test_CurrentRewardPerSecHalvesAtFiveYearsAndStopsAtTen() public {
+    function test_CurrentRewardPerSecHalvesTheBonusEveryTwoYearsAndStopsAtEight() public {
         assertEq(staking.currentRewardPerSec(), R0, "dt = 0");
-        vm.warp(START + P - 1); assertEq(staking.currentRewardPerSec(), R0, "P - 1");
-        vm.warp(START + P);     assertEq(staking.currentRewardPerSec(), R1, "P: halved");
-        vm.warp(START + T - 1); assertEq(staking.currentRewardPerSec(), R1, "T - 1");
+        for (uint256 k = 1; k <= 3; ++k) {
+            string memory turn = string.concat("turn ", vm.toString(k));
+            vm.warp(START + k * P - 1); assertEq(staking.currentRewardPerSec(), _rate(k - 1), string.concat(turn, ": kP - 1"));
+            vm.warp(START + k * P);     assertEq(staking.currentRewardPerSec(), _rate(k), string.concat(turn, ": kP, the bonus halved"));
+            vm.warp(START + k * P + 1); assertEq(staking.currentRewardPerSec(), _rate(k), string.concat(turn, ": kP + 1"));
+        }
+        vm.warp(START + T - 1); assertEq(staking.currentRewardPerSec(), R3, "T - 1");
         vm.warp(START + T);     assertEq(staking.currentRewardPerSec(), 0,  "T: closed");
         vm.warp(START + T + 1); assertEq(staking.currentRewardPerSec(), 0,  "T + 1");
     }
@@ -154,25 +212,28 @@ contract EmissionScheduleMatrixTest is Base {
         assertLe(eb, TOTAL, "never above TOTAL_REWARDS");
     }
 
-    function testFuzz_EmittedAtGrowsLinearlyAtThePeriodRateInsideEachPeriod(bool second, uint256 o1, uint256 o2) public view {
+    function testFuzz_EmittedAtGrowsLinearlyAtThePeriodRateInsideEachPeriod(uint256 q, uint256 o1, uint256 o2) public view {
+        q  = bound(q, 0, 3);
         o1 = bound(o1, 0, P - 1);
         o2 = bound(o2, 0, P - 1);
         if (o1 > o2) (o1, o2) = (o2, o1);
-        uint256 base = START + (second ? P : 0);
-        uint256 rate = second ? R1 : R0;
-        assertEq(staking.emittedAt(base + o2) - staking.emittedAt(base + o1), rate * (o2 - o1));
+        uint256 base = START + q * P;
+        assertEq(staking.emittedAt(base + o2) - staking.emittedAt(base + o1), _rate(q) * (o2 - o1));
     }
 
-    function testFuzz_AWindowAcrossTheRolloverPaysBothRatesAndTheFloorRemainder(uint256 a, uint256 b) public view {
-        a = bound(a, START, START + P - 1);
-        b = bound(b, START + P, START + T - 1);
-        assertEq(staking.emittedAt(b) - staking.emittedAt(a), R0 * (START + P - a) + REM0 + R1 * (b - START - P));
+    /// A window that crosses at least one turn: it pays each period's rate over its share of the
+    /// window plus the bonus remainder of every period it closes.
+    function testFuzz_AWindowAcrossTheTurnsPaysEachRateAndTheFloorRemainders(uint256 q, uint256 a, uint256 b) public view {
+        q = bound(q, 0, 2);
+        a = bound(a, START + q * P, START + (q + 1) * P - 1);
+        b = bound(b, START + (q + 1) * P, START + T - 1);
+        assertEq(staking.emittedAt(b) - staking.emittedAt(a), _scheduled(a, b));
     }
 
     function testFuzz_TheLastWindowClosesAtExactlyTotalRewards(uint256 a, uint256 b) public view {
-        a = bound(a, START + P, START + T - 1);
+        a = bound(a, START + 3 * P, START + T - 1);
         b = bound(b, START + T, type(uint256).max);
-        assertEq(staking.emittedAt(b) - staking.emittedAt(a), R1 * (START + T - a) + REM1);
+        assertEq(staking.emittedAt(b) - staking.emittedAt(a), R3 * (START + T - a) + REM3 + REM_BASE);
     }
 
     /// Two producers of "the rate in force": `currentRewardPerSec` and the one-second step of `emittedAt`.
@@ -180,10 +241,12 @@ contract EmissionScheduleMatrixTest is Base {
         dt = bound(dt, 0, T - 1);
         vm.warp(START + dt);
         uint256 rate = staking.currentRewardPerSec();
-        assertEq(rate, dt < P ? R0 : R1, "the rate in force is the period's floored rate");
+        assertEq(rate, _rate(dt / P), "the rate in force is the period's floored rate");
         uint256 step = staking.emittedAt(START + dt + 1) - staking.emittedAt(START + dt);
-        uint256 rem  = dt + 1 == P ? REM0 : (dt + 1 == T ? REM1 : 0);
-        assertEq(step, rate + rem, "one second of the curve pays the rate (and the remainder in the two rollover seconds)");
+        uint256 rem;
+        if (dt + 1 == T) rem = REM3 + REM_BASE;
+        else if ((dt + 1) % P == 0) rem = _rem((dt + 1) / P - 1);
+        assertEq(step, rate + rem, "one second of the curve pays the rate (and the remainders in the turn and closing seconds)");
     }
 
     /// The accumulator delivers the curve's delta: with one weight in the pool and a funded reserve,
@@ -199,11 +262,7 @@ contract EmissionScheduleMatrixTest is Base {
         uint256 d0 = staking.totalRewardDistributed();
         vm.warp(b); vm.roll(block.number + 2);
         vm.prank(alice); staking.claimRewards();
-        uint256 expected;
-        if (b < START + P)       expected = R0 * (b - a);
-        else if (a >= START + P) expected = R1 * (b - a);
-        else                     expected = R0 * (START + P - a) + REM0 + R1 * (b - START - P);
-        assertEq(staking.totalRewardDistributed() - d0, expected);
+        assertEq(staking.totalRewardDistributed() - d0, _scheduled(a, b));
     }
 
     // ── vectors: funding against the cap ─────────────────────────────────────────────────
@@ -271,20 +330,21 @@ contract EmissionScheduleMatrixTest is Base {
         vm.prank(alice); staking.deposit(1_000_000e18, 730);
         _normaliseAtUnlock(alice);
         _claimAtTheClose(alice);
-        assertEq(staking.totalRewardDistributed(), 78_000_000_000_000_000_001_632_000, "TOTAL - E(1 year)");
-        assertEq(staking.rewardReserve(), 11_999_999_999_999_999_998_368_000, "E(1 year) stays in the reserve");
-        assertEq(_sweep(), 11_999_999_999_999_999_998_368_000, "and the sweep sends exactly that to the treasury");
+        assertEq(staking.totalRewardDistributed(), 74_500_000_000_000_000_025_760_000, "TOTAL - E(1 year)");
+        assertEq(staking.rewardReserve(), 15_499_999_999_999_999_974_240_000, "E(1 year) = R0 * 365 days stays in the reserve");
+        assertEq(_sweep(), 15_499_999_999_999_999_974_240_000, "and the sweep sends exactly that to the treasury");
     }
 
-    function test_AnEmptyFirstPeriodLeavesExactlySixtyMillionForTheSweep() public {
+    function test_AnEmptyFirstPeriodLeavesExactlyItsScheduleForTheSweep() public {
         vm.prank(admin); staking.fundEmission(TOTAL);
-        vm.warp(START + P); vm.roll(block.number + 2);              // five years with nobody staked
+        vm.warp(START + P); vm.roll(block.number + 2);              // the first two years with nobody staked
         vm.prank(alice); staking.deposit(1_000_000e18, 730);
         _normaliseAtUnlock(alice);
         _claimAtTheClose(alice);
-        assertEq(staking.totalRewardDistributed(), 30_000_000e18, "the second period, exactly");
-        assertEq(staking.rewardReserve(), 60_000_000e18, "the first period, exactly");
-        assertEq(_sweep(), 60_000_000e18, "the sweep sends the whole empty period to the treasury");
+        assertEq(staking.totalRewardDistributed(), 59_000_000_000_000_000_049_344_000,
+                 "periods 1-3, exactly: 59M plus the 49 344 000 wei of base floor paid at the close");
+        assertEq(staking.rewardReserve(), 30_999_999_999_999_999_950_656_000, "the first period, exactly: E(2 years)");
+        assertEq(_sweep(), 30_999_999_999_999_999_950_656_000, "the sweep sends the whole empty period to the treasury");
         assertEq(staking.rewardReserve(), 0);
     }
 
@@ -311,11 +371,11 @@ contract EmissionScheduleMatrixTest is Base {
     }
 
     function test_OneWeiOfWeightIsPaidTheScheduleScaledByOneOverMinWeight() public {
-        assertEq(_deliveredAfterUnlock(1), 87_041, "floor(X * 1 / 1e21)");
+        assertEq(_deliveredAfterUnlock(1), 86_178, "floor(X * 1 / 1e21)");
     }
 
     function test_OneWeiBelowMinWeightIsStillThrottled() public {
-        assertEq(_deliveredAfterUnlock(MIN_W - 1), 87_041_095_890_410_958_904_424_958, "floor(X * (1e21 - 1) / 1e21)");
+        assertEq(_deliveredAfterUnlock(MIN_W - 1), 86_178_082_191_780_821_924_073_821, "floor(X * (1e21 - 1) / 1e21)");
     }
 
     function test_ExactlyMinWeightIsPaidTheFullSchedule() public {
@@ -329,15 +389,15 @@ contract EmissionScheduleMatrixTest is Base {
     function test_AnUnderfundedWindowPaysWhatTheReserveHeld_LaterFundingIsNeverRetroactive() public {
         vm.prank(admin); staking.fundEmission(10_000_000e18);
         vm.prank(alice); staking.deposit(1_000_000e18, 2555);
-        vm.warp(START + 2 * YEAR); vm.roll(block.number + 2);       // ~24M scheduled against a 10M reserve
+        vm.warp(START + 2 * YEAR); vm.roll(block.number + 2);       // ~31M scheduled against a 10M reserve
         vm.prank(admin); staking.fundEmission(80_000_000e18);       // settles the dry window first
         assertEq(staking.totalRewardDistributed(), 10_000_000e18, "the dry window paid what the reserve held");
         assertEq(staking.rewardReserve(), 80_000_000e18, "the new tranche is untouched by the past");
         _normaliseAtUnlock(alice);
         _claimAtTheClose(alice);
-        assertEq(staking.totalRewardDistributed(), 76_000_000_000_000_000_003_264_000, "10M + (TOTAL - E(2 years))");
-        assertEq(staking.rewardReserve(), 13_999_999_999_999_999_996_736_000, "80M - (TOTAL - E(2 years))");
-        assertEq(_sweep(), 13_999_999_999_999_999_996_736_000, "what the dry window could not pay goes to the treasury");
+        assertEq(staking.totalRewardDistributed(), 69_000_000_000_000_000_049_344_000, "10M + (TOTAL - E(2 years))");
+        assertEq(staking.rewardReserve(), 20_999_999_999_999_999_950_656_000, "80M - (TOTAL - E(2 years))");
+        assertEq(_sweep(), 20_999_999_999_999_999_950_656_000, "what the dry window could not pay goes to the treasury");
     }
 
     // ── vectors: the sweep ───────────────────────────────────────────────────────────────
@@ -373,12 +433,19 @@ contract EmissionScheduleMatrixTest is Base {
 
     // ── dimension: gas ───────────────────────────────────────────────────────────────────
 
-    function test_EmittedAtCostsTheSameGasAnywhereInEitherPeriod() public view {
+    function test_EmittedAtCostsTheSameGasAnywhereInAnyPeriod() public {
         staking.emittedAt(START + 1);                                // warm the account and its slots
         uint256 g = _calleeGasOfEmittedAt(START + 12_345);
-        assertEq(_calleeGasOfEmittedAt(START + P - 1),      g, "late in period 0");
-        assertEq(_calleeGasOfEmittedAt(START + P + 12_345), g, "early in period 1");
-        assertEq(_calleeGasOfEmittedAt(START + T - 1),      g, "late in period 1: O(1), no loop over periods");
+        emit log_named_uint("emittedAt callee gas, early in period 0", g);
+        assertEq(_calleeGasOfEmittedAt(START + P - 1), g, "late in period 0");
+        for (uint256 q = 1; q < 4; ++q) {
+            uint256 early = _calleeGasOfEmittedAt(START + q * P + 12_345);
+            uint256 late  = _calleeGasOfEmittedAt(START + (q + 1) * P - 1);
+            emit log_named_uint(string.concat("emittedAt callee gas, early in period ", vm.toString(q)), early);
+            emit log_named_uint(string.concat("emittedAt callee gas, late in period ", vm.toString(q)), late);
+            assertEq(early, g, string.concat("early in period ", vm.toString(q), ": O(1), no loop over periods"));
+            assertEq(late,  g, string.concat("late in period ", vm.toString(q), ": O(1), no loop over periods"));
+        }
     }
 }
 

@@ -18,7 +18,7 @@ pragma solidity 0.8.28;
 // utilisation: `_ltvCap = (staked - debt) / 2` caps every borrower's debt at half their own
 // stake, borrowers cannot withdraw (Staking__HasDebt), and a fresh depositor adds twice as
 // much stake as they may borrow. Interest erosion is the one lever left — and it needs ~20
-// years at the sub-kink rate, far past the 10-year emission close. `deposit()` reverts
+// years at the sub-kink rate, far past the 8-year emission close. `deposit()` reverts
 // Staking__EmissionEnded there, so the borrower who will probe the cap CANNOT enter after
 // the erosion; `borrow()` carries no emission gate, so she pre-positions collateral at
 // genesis instead and sizes it so her private LTV headroom still crosses the aggregate

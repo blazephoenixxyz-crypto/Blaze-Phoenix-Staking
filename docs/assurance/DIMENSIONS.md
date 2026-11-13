@@ -1,7 +1,9 @@
 # Dimensional census — src/BlazePhoenixStaking.sol
 
 Axis D. Every state variable gets a unit; every arithmetic expression that combines units gets its
-derivation and a verdict. Line numbers refer to `src/BlazePhoenixStaking.sol` at `cedd80d`.
+derivation and a verdict. Line numbers refer to `src/BlazePhoenixStaking.sol` at `cedd80d`,
+except the rows of the 8-year emission (the emission constants and rows 30-33), which refer to the
+source that carries that schedule.
 Every row is tagged `[conferido]`: the expression was read at that line.
 
 ## Vocabulary
@@ -27,11 +29,14 @@ Every row is tagged `[conferido]`: the expression was read at that line.
 |---|---|---|
 | 118 | WAD | WAD (scale) |
 | 119 | SECONDS_PER_YEAR | s/yr |
-| 137 | TOTAL_REWARDS | wei |
-| 138 | HALVING_PERIOD | s |
-| 139 | EMISSION_PERIODS | n |
-| 140 | EMISSION_LENGTH = PERIODS · PERIOD | s |
-| 141 | INITIAL_REWARD_PER_SEC = (SERIES/2) / PERIOD | wei/s |
+| 207 | TOTAL_REWARDS | wei |
+| 208-209 | BASE_REWARDS, HALVING_SERIES | wei |
+| 210 | HALVING_PERIOD | s |
+| 211 | EMISSION_PERIODS | n |
+| 212 | EMISSION_LENGTH = PERIODS · PERIOD | s |
+| 213 | BASE_REWARD_PER_SEC = BASE_REWARDS / LENGTH | wei/s |
+| 214 | BONUS_REWARD_PER_SEC = (SERIES/2) / PERIOD | wei/s |
+| 216 | INITIAL_REWARD_PER_SEC = BASE_REWARD_PER_SEC + BONUS_REWARD_PER_SEC | wei/s |
 | 143 | MAX_STAKE_PER_WALLET | wei |
 | 153 | MIN_EMISSION_WEIGHT | W |
 | 155 | MAX_LTV | pct |
@@ -125,10 +130,10 @@ Every row is tagged `[conferido]`: the expression was read at that line.
 | 27 | 1294, 1889 | `mulDiv(reward, tbe, MIN_EMISSION_WEIGHT)` | `wei · W / W` → wei | consistent [conferido] |
 | 28 | 1295, 1890 | `min(reward, rewardReserve)` | wei | consistent [conferido] |
 | 29 | 1297, 1891 | `acc += mulDiv(reward, WAD, tbe)` | `wei · WAD / W` → WAD/W | consistent [conferido] |
-| 30 | 1313 | `SERIES − (SERIES >> EMISSION_PERIODS)` | wei | consistent [conferido] |
-| 31 | 1316 | `p = dt / HALVING_PERIOD` | s / s → n | consistent [conferido] |
-| 32 | 1317-1318 | `(SERIES − SERIES>>p) + (R0 >> p) · (dt − p · PERIOD)` | `wei + (wei/s) · (s − n · s)` → wei | consistent [conferido] |
-| 33 | 1333 | `R0 >> ((now − start) / PERIOD)` | wei/s shifted by n | consistent [conferido] |
+| 30 | 1626 | `BASE_REWARDS + SERIES − (SERIES >> EMISSION_PERIODS)` | wei | consistent [conferido] |
+| 31 | 1629 | `p = dt / HALVING_PERIOD` | s / s → n | consistent [conferido] |
+| 32 | 1630-1632 | `RB · dt + (SERIES − SERIES>>p) + (R0 >> p) · (dt − p · PERIOD)` | `(wei/s) · s + wei + (wei/s) · (s − n · s)` → wei | consistent [conferido] |
+| 33 | 1651 | `RB + (R0 >> ((now − start) / PERIOD))` | wei/s + wei/s shifted by n → wei/s | consistent [conferido] |
 | 34 | 1340, 1352, 1566-1567 | `mulDiv(tracked, acc, WAD)` | `W · (WAD/W) / WAD` → wei, compared with rewardDebt / pureYieldDebt (wei) | consistent [conferido] |
 | 35 | 1391 | `elapsed = now − lastInterestTime` | s | consistent [conferido] |
 | 36 | 1433 | `delta = mulDivSafe(mulDivSafe(WAD, rate, 10_000), elapsed, SECONDS_PER_YEAR)` | `WAD · (bps/yr) / bps` → WAD/yr; `· s / (s/yr)` → WAD (per unit debt) | consistent [conferido] |

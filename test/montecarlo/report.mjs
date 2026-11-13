@@ -43,7 +43,7 @@ const seedsTable = batches.map(k => {
   const q = Q.find(x => x.k === k);
   return `| ${k} | \`${q.seed}\` (sequence 0 of the batch) |`;
 }).join("\n");
-const span10y = Q.filter(q => q.span >= 10 * 365 * 86400).length;
+const span8y = Q.filter(q => q.span >= 252_288_000).length;   // 8 years = 2920 days
 
 let head = "", gitRev = "";
 try { gitRev = execSync("git rev-parse --short HEAD", { encoding: "utf8" }).trim(); } catch {}
@@ -57,7 +57,7 @@ Logs read: ${logs.map(l => `\`${l.split("/").pop()}\``).join(", ")}. Batches ${b
 | measure | value |
 |---|---|
 | stakers per sequence | min ${actors.min}, median ${actors.med}, max ${actors.max} |
-| simulated span per sequence (s) | min ${spans.min}, median ${spans.med}, max ${spans.max}; ${span10y} sequences reached the end of the 10-year programme |
+| simulated span per sequence (s) | min ${spans.min}, median ${spans.med}, max ${spans.max}; ${span8y} sequences reached the end of the 8-year programme |
 | sequences with a loss event | ${loss} |
 | sequences that opened the emergency | ${emg} |
 | actions where bit 0 of auditInvariants was raised (only after an injected loss) | ${bit0} of ${S.length} |

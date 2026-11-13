@@ -20,20 +20,30 @@ import { ethers } from 'ethers';
 const DAY = 86400n, YEAR = 365n * DAY;
 const MAX_UINT = (1n << 256n) - 1n;
 const WAD = 10n ** 18n;
-// Five-year-halving schedule: series S = 120M, period p (0-indexed, 5 years each) emits
-// (S/2) >> p, closing after 2 periods (60M + 30M = 90M) with no tail. R0 is the period-0
-// rate; every empty-window arm below sits inside period 0, where the curve is linear at R0.
+// 8-year emission, written from the design literals (never from the contract's constants):
+// a linear base of 60M over 8 years plus a bonus that halves every two years (biennial
+// halving), 16M / 8M / 4M / 2M per 2-year period; 60M + 30M = 90M, then the rate is 0.
+// Each segment streams at floor(amount / length); a closed bonus period counts its full
+// literal amount and the programme closes on exactly 90M. R0 is the period-0 total rate
+// (base + first bonus); every empty-window arm below sits inside period 0, linear at R0.
 const TOTAL_EMISSION   = 90_000_000n * WAD;      // TOTAL_REWARDS, the fundEmission cap
-const HALVING_SERIES   = 120_000_000n * WAD;     // the series S (private in the contract)
-const HALVING_PERIOD   = 5n * YEAR;
-const EMISSION_PERIODS = 2n;
-const R0 = (HALVING_SERIES / 2n) / HALVING_PERIOD;
+const BASE_EMISSION    = 60_000_000n * WAD;      // linear over the whole programme
+const BONUS_BY_PERIOD  = [16_000_000n, 8_000_000n, 4_000_000n, 2_000_000n].map((m) => m * WAD);
+const HALVING_PERIOD   = 2n * YEAR;
+const EMISSION_LENGTH  = 8n * YEAR;
+if (BASE_EMISSION + BONUS_BY_PERIOD.reduce((a, b) => a + b, 0n) !== TOTAL_EMISSION ||
+    BigInt(BONUS_BY_PERIOD.length) * HALVING_PERIOD !== EMISSION_LENGTH)
+  throw new Error('oracle literals do not close on 90M over 8 years');
+const BASE_RATE = BASE_EMISSION / EMISSION_LENGTH;
+const R0 = BASE_RATE + BONUS_BY_PERIOD[0] / HALVING_PERIOD;
 const emittedAt = (dt) => {                       // dt: seconds since emissionStart
   if (dt <= 0n) return 0n;
-  if (dt >= EMISSION_PERIODS * HALVING_PERIOD)
-    return HALVING_SERIES - (HALVING_SERIES >> EMISSION_PERIODS);
-  const p = dt / HALVING_PERIOD;
-  return (HALVING_SERIES - (HALVING_SERIES >> p)) + (R0 >> p) * (dt - p * HALVING_PERIOD);
+  if (dt >= EMISSION_LENGTH) return TOTAL_EMISSION;
+  const p = Number(dt / HALVING_PERIOD);
+  let bonus = 0n;
+  for (let k = 0; k < p; k++) bonus += BONUS_BY_PERIOD[k];
+  bonus += (BONUS_BY_PERIOD[p] / HALVING_PERIOD) * (dt - BigInt(p) * HALVING_PERIOD);
+  return BASE_RATE * dt + bonus;
 };
 const DUST = 10n ** 10n;
 
@@ -675,14 +685,34 @@ async function MR_emission() {
   const err = p.stranded > predicted ? p.stranded - predicted : predicted - p.stranded;
   console.log(`     predicted     : ${fmt(predicted)}   |model error| = ${fmt(err)}`);
 
-  // Run the programme to completion (10 years) with the pool CONTINUOUSLY populated, then
+  // Run the programme to completion (8 years) with stake CONTINUOUSLY present, then
   // ask whether any route can still move the residue. The pool stays full for the whole
   // remaining window, so what is left over is the empty window at the start (the schedule
   // closes at exactly TOTAL_REWARDS, with no tail).
+  // The contract against the literal schedule (the checks above compare the oracle with itself:
+  // nothing had been released yet). While the lock runs and the stake is in place, a settle releases
+  // exactly the schedule's window since the deposit, so `funded - rewardReserve` must equal the
+  // oracle at the settle's own clock, to the wei. Six yearly settles cross all three turns.
+  const start = BigInt(await staking.call('emissionStart'));
+  const from  = BigInt(await staking.call('lastRewardTime'));          // the deposit's settle
+  const funded = BigInt(await staking.call('totalEmissionFunded'));
+  let offCurve = 0n, yearsRead = 0, turnsCrossed = 0;
   for (let k = 0; k < 11; k++) {
     chain.warp(YEAR); chain.mine(11);
     await staking.send(users[0], 'claimRewards', []);
+    if (k < 6) {
+      const at = BigInt(await staking.call('lastRewardTime'));
+      const released = funded - BigInt(await staking.call('rewardReserve'));
+      const expected = emittedAt(at - start) - emittedAt(from - start);
+      const gap = released > expected ? released - expected : expected - released;
+      if (gap > offCurve) offCurve = gap;
+      turnsCrossed = Number((at - start) / HALVING_PERIOD);
+      yearsRead++;
+    }
   }
+  check(yearsRead === 6 && turnsCrossed === 3 && from > start && offCurve === 0n,
+        'MR-EMISSION: six yearly settles across the three turns release the literal schedule to the wei',
+        `settles ${yearsRead}, turns crossed ${turnsCrossed}, worst |released - schedule| = ${offCurve} wei`);
   const residue = BigInt(await staking.call('rewardReserve'));
   console.log(`     after emissionEnd — rewardReserve still holds: ${fmt(residue)}`);
 
@@ -1218,11 +1248,11 @@ async function mockScenarios() {
     check(!tooShort.ok && tooShort.revert === 'Staking__LockTooShort', 'MOCK: lock below MIN reverts',
           `got ${tooShort.revert}`);
 
-    // The 10-year programme leaves maxLockDaysAvailable pinned at the 2555-day policy cap until
-    // fewer than 2555 days remain (day 1095). Warp to day 2000: 3650 − 2000 = 1650 days left.
+    // The 8-year programme leaves maxLockDaysAvailable pinned at the 2555-day policy cap until
+    // fewer than 2555 days remain (day 365). Warp to day 2000: 2920 − 2000 = 920 days left.
     chain.warp(2000n * DAY); chain.mine(11);
     const maxNow = BigInt(await staking.call('maxLockDaysAvailable'));
-    check(maxNow === 1650n, 'MOCK: available lock length counts down with the emission clock',
+    check(maxNow === 920n, 'MOCK: available lock length counts down with the emission clock',
           `got ${maxNow}`);
     const past = await staking.send(users[0], 'deposit', [E18(1_000), maxNow + 1n]);
     check(!past.ok && past.revert === 'Staking__LockExceedsEmissionEnd',

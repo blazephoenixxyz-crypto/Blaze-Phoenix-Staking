@@ -8,7 +8,7 @@ proves on every transaction instead of claiming after the fact.**
 ![licence](https://img.shields.io/badge/licence-BUSL--1.1-444?style=flat-square)
 ![oracle](https://img.shields.io/badge/price%20oracle-none%20by%20construction-1B6B52?style=flat-square)
 ![keepers](https://img.shields.io/badge/keepers%20required-zero-1B6B52?style=flat-square)
-![emission](https://img.shields.io/badge/emission-90M%20five--year%20halving-C2521B?style=flat-square)
+![emission](https://img.shields.io/badge/emission-90M%20over%208%20years-C2521B?style=flat-square)
 ![stage](https://img.shields.io/badge/stage-pre--launch%20preview-C9A227?style=flat-square)
 
 Collateral, borrowed asset, and reward token are **all the same token (BZPX)**. Because there is
@@ -22,8 +22,9 @@ Three properties the protocol is designed around:
    least everything it owes. No indexer, no trust, no off-chain watcher.
 2. **100% autonomous maintenance.** The book cleans itself from ordinary user traffic — no keeper
    bot, no admin button, gas bounded unconditionally.
-3. **Deterministic emission.** 90,000,000 BZPX on a five-year-halving curve evaluated in closed
-   form: a pure function of time with no loop, no oracle, and no admin knob.
+3. **Deterministic emission.** 90,000,000 BZPX over 8 years, a linear base plus a bonus that
+   halves every two years (biennial halving), evaluated in closed form: a pure function of time
+   with no loop, no oracle, and no admin knob.
 
 ```mermaid
 flowchart LR
@@ -213,8 +214,8 @@ There is no liquid staking — **every deposit is a locked commitment** measured
 
 - `deposit(uint256 amount, uint256 lockDays)` — `lockDays` is **min 90, max 2555 (7 years)**.
 - A **decreasing countdown** caps every lock at the days remaining until the emission programme
-  closes (`maxLockDaysAvailable()`, 10 years after the emission start), so **no lock can ever
-  outlast emission**. The cap is the full 7 years until 2555 days remain (year 3); with, say, 2 years
+  closes (`maxLockDaysAvailable()`, 8 years after the emission start), so **no lock can ever
+  outlast emission**. The cap is the full 7 years until 2555 days remain (the end of year 1); with, say, 2 years
   left, the max is ~730 days; in the final 90 days new deposits/locks are unavailable (the
   90-day floor would cross the end).
 - **Top-ups can only extend, never shorten.** If the chosen duration would land *before* your
@@ -281,8 +282,8 @@ any fork against a different asset.
 
 | Parameter | Value |
 |---|---|
-| Total emission (per contract) | 90,000,000 BZPX — five-year halving, `60M >> p` per 5-year period, 2 periods (see below) |
-| Deployments | two independent deployments of this contract, each capped at 90,000,000 BZPX: 2 × 90M = 180M allocated to staking |
+| Total emission (per contract) | 90,000,000 BZPX over 8 years — a linear base (60M) plus a bonus (30M) that halves every two years, 4 periods (see below) |
+| Deployments | two independent deployments of this contract, each capped at 90,000,000 BZPX |
 | Max stake / wallet | 30,000,000 BZPX |
 | Max LTV (on effective stake) | 50% |
 | Max protocol utilisation (`totalDebt / totalStaked`, checked at borrow) | 75% |
@@ -296,31 +297,41 @@ any fork against a different asset.
 
 ---
 
-## Emission — 90M BZPX per contract, halving every five years
+## Emission — 90M BZPX per contract over 8 years: a linear base plus a biennial-halving bonus
 
-**Two deployments, one cap each.** Staking is allocated 2 × 90M = 180,000,000 BZPX, delivered as
-two independent deployments of this same contract, 90,000,000 BZPX each. Each deployment has its
+**Two deployments, one cap each.** Staking is delivered as two independent deployments of this
+same contract, 90,000,000 BZPX each. Each deployment has its
 own `TOTAL_REWARDS` cap on `fundEmission`, its own `emissionStart` (set when it is deployed) and its
 own state, so neither contract can emit more than 90,000,000 BZPX. Everything below describes one
 deployment.
 
-Period `p` (0-indexed, five years each) emits `60M >> p`, and the programme runs 2 periods
-(10 years). The total is exact by construction, not by calibration: `60M + 30M = 90M`.
+8-year emission: a linear base plus a bonus that halves every two years (biennial halving).
 
-| Years | Emitted in period | Per year | Cumulative | % of budget |
-|---|--:|--:|--:|--:|
-| 1–5 | 60,000,000 | 12,000,000 | 60,000,000 | 66.7% |
-| 6–10 | 30,000,000 | 6,000,000 | 90,000,000 | 100% |
+- **Base:** `BASE_REWARDS` = 60,000,000 BZPX, spread linearly over the 8 years (7.5M a year, flat).
+- **Bonus:** 30,000,000 BZPX in four 2-year periods, cut from one geometric series
+  `S = HALVING_SERIES` = 32M. Period `p` (0-indexed) emits `(S/2) >> p`: 16M, 8M, 4M, 2M
+  (8M, 4M, 2M, 1M a year). Only the bonus halves; the base does not, so the total rate never does.
+- The total is exact by construction, not by calibration: `60M + (S − (S >> 4)) = 60M + 30M = 90M`.
 
-Cumulative emission is a **closed form** — one division, two shifts, one multiplication; no loop,
+| Years | Base + bonus per year | Emitted in the 2-year period | Cumulative at the end of the period |
+|---|--:|--:|--:|
+| 1–2 | 7.5M + 8M = 15.5M | 31M | 31M |
+| 3–4 | 7.5M + 4M = 11.5M | 23M | 54M |
+| 5–6 | 7.5M + 2M = 9.5M | 19M | 73M |
+| 7–8 | 7.5M + 1M = 8.5M | 17M | 90M |
+
+Cumulative at the end of each year: 15.5M, 31M, 42.5M, 54M, 63.5M, 73M, 81.5M, 90M.
+
+Cumulative emission is a **closed form** — one division, two shifts, three multiplications; no loop,
 no oracle, no `exp`/`log`:
 
 ```
-emitted(t) = (S − (S >> p)) + (R0 >> p)·(t − start − p·PERIOD),   p = ⌊(t − start)/PERIOD⌋
+emitted(t) = RB·dt + (S − (S >> p)) + (R0 >> p)·(dt − p·PERIOD),   dt = t − start,   p = ⌊dt/PERIOD⌋
 ```
 
-with series `S = 120M`, `R0 = (S/2)/PERIOD`, and the curve clamped at `S − (S >> 2) = 90M` from the
-end of period 2 on.
+with `RB = BASE_REWARDS / EMISSION_LENGTH` (the base rate), `S = 32M`, `R0 = (S/2)/PERIOD` (the
+opening bonus rate) and `PERIOD` = 2 years; from the end of period 4 on the curve is clamped at
+`60M + S − (S >> 4) = 90M`.
 
 Three things about how it is used matter more than the formula itself:
 
@@ -335,17 +346,16 @@ Three things about how it is used matter more than the formula itself:
 - **Anyone can read the whole curve.** `emittedAt(timestamp)` is public, so the schedule is
   independently verifiable rather than merely documented.
 
-The programme closes after 2 periods (10 years) at exactly `TOTAL_REWARDS` = 90M, with no tail:
-the rate steps from 12M/year to 6M/year at year 5 and from 6M/year to zero at year 10, and from
-there real yield (borrow interest) carries on. Anything stranded by empty or throttled windows is
+The programme closes after 4 periods (8 years) at exactly `TOTAL_REWARDS` = 90M, with no tail:
+the rate steps from 15.5M/year to 11.5M/year at year 2, to 9.5M/year at year 4, to 8.5M/year at
+year 6, and from 8.5M/year to zero at year 8, and from there real yield (borrow interest) carries on. Anything stranded by empty or throttled windows is
 recoverable **only** to the immutable treasury, only after the close, and only through the admin's
 `sweepUndistributedEmission()`, which is refused when the book would read a hard breach after it.
 
-Why halving rather than the linear schedule it replaces: a flat curve ends on a date at its full
-rate, and the capital that came for emission leaves on that date, all at once. Over the same ten
-years a flat schedule would close on a 9M/year step; the two five-year periods close on 6M/year,
-two thirds of it, and they are the least front-loaded halving that fits 90M in ten years (five
-two-year periods would open at 23.2M/year).
+Why a bonus that halves on top of a flat base: a flat curve ends on a date at its full rate, and
+the capital that came for emission leaves on that date, all at once. Over the same 8 years a flat
+schedule would close on an 11.25M/year step; here the last period runs at 8.5M/year, and the
+opening rate is 15.5M/year, so the first period pays about 1.82 times the last.
 
 ---
 
@@ -409,6 +419,7 @@ The design rules drawn from the time axis are in
 | [docs/INVARIANTS_AND_TIME.md](./docs/INVARIANTS_AND_TIME.md) | Engineering report on the time axis: why a balanced ledger is not enough, and the design rules that follow |
 | [docs/VERSION_HISTORY.md](./docs/VERSION_HISTORY.md) | Version-by-version change map, including what each release deliberately did **not** move |
 | [docs/MONTE_CARLO.md](./docs/MONTE_CARLO.md) | Pre-registered Monte Carlo campaign: blind seeds derived from the base commit, the invariants and tolerances fixed before the first run, and the measured distributions |
+| [docs/MONTE_CARLO_EMISSION.md](./docs/MONTE_CARLO_EMISSION.md) | Pre-registered Monte Carlo campaign 2: a blind walk over the 8-year emission alone, every settle compared wei for wei with the schedule written from literals |
 | [SECURITY.md](./SECURITY.md) | Disclosure policy, scope, and where reports land hardest |
 | [docs/KNOWN_ISSUES.md](./docs/KNOWN_ISSUES.md) | Known issues, out-of-scope classes and behaviour that is by design |
 | [llms.txt](./llms.txt) | Machine-readable summary for AI agents and crawlers |

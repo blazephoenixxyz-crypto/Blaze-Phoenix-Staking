@@ -11,9 +11,14 @@ import {BlazePhoenixStaking} from "../../src/BlazePhoenixStaking.sol";
 ///         during it (weights move only inside a call, and the ghost integrates before each call),
 ///         with the MIN_EMISSION_WEIGHT floor in the denominator.
 contract EmissionShareHandler is Test {
-    uint256 internal constant S = 120_000_000e18;
-    uint256 internal constant P = 5 * 365 days;
-    uint256 internal constant R0 = (S / 2) / P;
+    // 8-year emission from literals: a 60M linear base plus a bonus that halves every two years
+    // (16M, 8M, 4M, 2M; series S with S - (S >> 4) = 30M).
+    uint256 internal constant BASE = 60_000_000e18;
+    uint256 internal constant S = 32_000_000e18;
+    uint256 internal constant P = 2 * 365 days;
+    uint256 internal constant L = 4 * P;
+    uint256 internal constant RB = BASE / L;
+    uint256 internal constant RX = (S / 2) / P;
     uint256 internal constant MINW = 1_000e18;
 
     BlazePhoenixStaking public staking;
@@ -40,9 +45,9 @@ contract EmissionShareHandler is Test {
     function curve(uint256 x) public view returns (uint256) {
         if (x <= t0) return 0;
         uint256 dt = x - t0;
-        if (dt >= 2 * P) return S - (S >> 2);
+        if (dt >= L) return BASE + S - (S >> 4);
         uint256 p = dt / P;
-        return (S - (S >> p)) + (R0 >> p) * (dt - p * P);
+        return RB * dt + (S - (S >> p)) + (RX >> p) * (dt - p * P);
     }
 
     function _weight(address a) internal view returns (uint256) {

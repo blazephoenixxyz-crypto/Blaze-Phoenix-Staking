@@ -199,13 +199,15 @@ contract BoundaryEqualityTest is Base {
 
     /// The emission rate is the period's rate one second before the close and zero AT the close.
     /// (`block.timestamp >= emissionEnd` in currentRewardPerSec)
-    /// The last period is period 1: R0 >> 1 with R0 = ⌊60 000 000e18 / (5·365 days)⌋, derived apart
-    /// from the contract (380 517 503 805 175 038 >> 1).
+    /// The last period is period 3: the base rate RB = ⌊60 000 000e18 / (8·365 days)⌋ plus the
+    /// bonus rate halved three times, RX >> 3 with RX = ⌊16 000 000e18 / (2·365 days)⌋, derived
+    /// apart from the contract: 237 823 439 878 234 398 + (253 678 335 870 116 692 >> 3)
+    /// = 237 823 439 878 234 398 + 31 709 791 983 764 586.
     function test_RewardRateIsLiveOneSecondBeforeTheCloseAndZeroAtIt() public {
         uint256 end = staking.emissionEnd();
-        uint256 r1 = 190_258_751_902_587_519;
+        uint256 r3 = 269_533_231_861_998_984;
         vm.warp(end - 1);
-        assertEq(staking.currentRewardPerSec(), r1, "last second of period 1 pays R0 >> 1");
+        assertEq(staking.currentRewardPerSec(), r3, "last second of period 3 pays RB + (RX >> 3)");
         vm.warp(end);
         assertEq(this.rateNow(), 0, "the programme is closed at emissionEnd");
     }

@@ -6,13 +6,15 @@ pragma solidity 0.8.28;
 //
 //  Delivery = `totalRewardDistributed`; whatever is not delivered stays in `rewardReserve`
 //  (and reaches the treasury through `sweepUndistributedEmission`). The literals below are
-//  derived independently of the contract, from the published schedule (the closed form restated
-//  from the specification and evaluated in Python, not read back from the contract):
-//    S = 120 000 000e18 (the halving series), PERIOD = 5·365 days = 157 680 000 s, 2 periods,
-//    R0 = ⌊(S / 2) / PERIOD⌋ = 380 517 503 805 175 038 wei/s,
-//    end-of-programme emission E_end = S − (S >> 2) = 90 000 000e18 = the whole budget: no tail,
-//    one year at R0 = R0 · 365 days = 12M − 1 632 000 wei (the floor of R0, not a round 12M),
-//    E(start + 730 days) = R0 · 730 days = 24M − 3 264 000 wei (still inside period 0).
+//  derived independently of the contract, from the published schedule (a 60M base, linear over
+//  8 years, plus a 30M bonus paid 16M, 8M, 4M, 2M over four 2-year periods), evaluated in Python
+//  as a walk over the periods at their floored rates, not read back from the contract:
+//    PERIOD = 2·365 days = 63 072 000 s, 4 periods, the close at 2920 days,
+//    R0 = ⌊60M / 2920 days⌋ + ⌊16M / PERIOD⌋ = 491 501 775 748 351 090 wei/s (the period-0 rate),
+//    end-of-programme emission E_end = 90 000 000e18 = the whole budget: no tail,
+//    one year at R0 = R0 · 365 days = 15.5M − 25 760 000 wei (the floor of R0, not a round 15.5M),
+//    E(start + 730 days) = R0 · 730 days + 2 176 000 wei (the period-0 bonus remainder, paid in the
+//    first turn second) = 31M − 49 344 000 wei.
 //
 //  What each test measures:
 //    full pool, start to end         -> delivery = E_end; the reserve ends at zero and the sweep
@@ -33,11 +35,11 @@ import {Base} from "../BlazePhoenixStaking.t.sol";
 import {BlazePhoenixStaking} from "../../src/BlazePhoenixStaking.sol";
 
 contract EmissionDeliveryIndexTest is Base {
-    uint256 internal constant E_END             = 90_000_000e18;                           // S − (S >> 2)
-    uint256 internal constant ONE_YEAR_AT_R0    = 11_999_999_999_999_999_998_368_000;      // 12M − 1 632 000 wei
-    uint256 internal constant AFTER_EMPTY_YEAR  = 78_000_000_000_000_000_001_632_000;      // E_END − ONE_YEAR_AT_R0
+    uint256 internal constant E_END             = 90_000_000e18;                           // 60M + 16M + 8M + 4M + 2M
+    uint256 internal constant ONE_YEAR_AT_R0    = 15_499_999_999_999_999_974_240_000;      // 15.5M − 25 760 000 wei
+    uint256 internal constant AFTER_EMPTY_YEAR  = 74_500_000_000_000_000_025_760_000;      // E_END − ONE_YEAR_AT_R0
     uint256 internal constant ONE_WEI_DELIVERED = 90_000;                                  // ⌊E_END / 1e21⌋
-    uint256 internal constant E_AT_UNLOCK       = 23_999_999_999_999_999_996_736_000;      // E(start + 730 days)
+    uint256 internal constant E_AT_UNLOCK       = 30_999_999_999_999_999_950_656_000;      // E(start + 730 days), the first turn
     uint256 internal constant DUST              = 1e10;                                    // CONSERVATION_DUST
 
     /// @dev What any transaction's lock window does once `who`'s commitment has elapsed.
@@ -99,11 +101,11 @@ contract EmissionDeliveryIndexTest is Base {
     }
 
     /// LOCK-STALE, the split at unlockTime (`_postUnlockAtBase`) with nobody to normalise the lock:
-    /// alice is the whole book, so the emission up to unlockTime (two years inside period 0,
+    /// alice is the whole book, so the emission up to unlockTime (period 0 up to its turn second,
     /// E_AT_UNLOCK) is hers at 1.25x and the rest of the programme is priced at 1.00x of the 1.25x
     /// weight that still sits in the denominator. Delivery = E_AT_UNLOCK + (E_END − E_AT_UNLOCK) ·
-    /// 10 000 / 12 500 = 76 800 000e18 − 652 800 wei; the accumulator's per-share dust moves it by a
-    /// few wei. The other 0.25/1.25 of the second part (13 200 000e18 + 652 800 wei) is not paid to
+    /// 10 000 / 12 500 = 78 200 000e18 − 9 868 800 wei; the accumulator's per-share dust moves it by a
+    /// few wei. The other 0.25/1.25 of the second part (11 800 000e18 + 9 868 800 wei) is not paid to
     /// anyone: it stays in the reserve for the sweep. Normalised at unlockTime (the first test) the
     /// same book takes the whole schedule.
     function test_LOCKSTALE_documents_aLoneLapsedLockLeftUntouchedLeavesItsBoostInTheReserve() public {
@@ -114,7 +116,7 @@ contract EmissionDeliveryIndexTest is Base {
         vm.prank(alice); staking.claimRewards();
 
         uint256 delivered = E_AT_UNLOCK + (E_END - E_AT_UNLOCK) * 10_000 / 12_500;
-        assertEq(delivered, 76_799_999_999_999_999_999_347_200, "derivation");
+        assertEq(delivered, 78_199_999_999_999_999_990_131_200, "derivation");
         assertApproxEqAbs(staking.totalRewardDistributed(), delivered, DUST,
                           "the boost is paid up to unlockTime and the base after it");
         assertEq(staking.rewardReserve(), 90_000_000e18 - staking.totalRewardDistributed(),

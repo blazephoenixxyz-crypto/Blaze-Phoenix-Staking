@@ -11,7 +11,7 @@ between them.
 | v2 | `2.1.0` | `2.0.0-staking` | Security core: on-chain conservation guard, permissionless liquidation, no backdoor |
 | v3 | `3.0.0` | `3.0.0-staking` | v2 core **+** fully autonomous maintenance **+** public solvency proofs |
 | v3.1 | `3.1.0` | `3.0.0-staking` | v3 **+** lock expiry priced against the clock **+** the locker maintenance window |
-| **v4 (final)** | **`4.0.0`** | **`3.0.0-staking`** | v3.1 **+** final tokenomics: 90M five-year-halving emission, closed-form O(1) |
+| **v4 (final)** | **`4.0.0`** | **`3.0.0-staking`** | v3.1 **+** final tokenomics: 90M 8-year emission (linear base plus a biennial-halving bonus), closed-form O(1) |
 | **v4 hardened** | **`4.0.0`** | **`3.0.0-staking`** | v4 **+** terminal-distress round: floor-free `conserves`, index-coupled clamp, 75% aggregate util cap, pro-rata emergency haircut, honest telemetry |
 
 v3 = **v2 base**, with the two requested additions and the useful UX views that v2 had dropped
@@ -253,45 +253,59 @@ for the rounding-dust path. Foundry 57/57 across 10 suites; Node harness 9/9 sui
 
 ---
 
-## v4 — final tokenomics: the five-year-halving emission curve
+## v4 — final tokenomics: the 8-year emission (linear base plus a biennial-halving bonus)
 
-The only economic change: the schedule moves from **180M linear over 7 years** to **90M on a
-five-year-halving curve** — period `p` (0-indexed, 5 years each) emits `60M >> p` over 2 periods:
-12M/year in years 1–5 (60M), 6M/year in years 6–10 (30M), 90M exactly. The curve is cut from the
-series S = 120M, and `S − (S >> 2) = 90M = TOTAL_REWARDS` by construction. Chosen over the
-linear schedule because a flat curve ends in a cliff at its full rate (documented
-mercenary-capital exodus at linear ends): over the same ten years a flat schedule would close on
-a 9M/year step, the two five-year periods close on 6M/year, and from there the real-yield regime
+The only economic change: the schedule moves from **180M linear over 7 years** to **90M over
+8 years: a linear base plus a bonus that halves every two years (biennial halving)**. The base is
+60M, flat over the 8 years (7.5M/year). The bonus is 30M in four 2-year periods of 16M, 8M, 4M
+and 2M (8M, 4M, 2M and 1M per year), cut from the series S = 32M, and
+`S − (S >> 4) = 30M` by construction, so `BASE_REWARDS + S − (S >> 4) = 90M = TOTAL_REWARDS`.
+Base plus bonus is 15.5M/year in years 1–2, 11.5M in years 3–4, 9.5M in years 5–6 and 8.5M in
+years 7–8: 31M, 23M, 19M and 17M per 2-year period. Only the bonus halves; the total does not.
+Chosen over the linear schedule because a flat curve ends in a cliff at its full rate
+(documented mercenary-capital exodus at linear ends), and over a pure halving because that would
+put 48M of the 90M in the first two years and 6M in the last two; the linear base holds the first
+period at 31M and the last at 17M (31/17 ≈ 1.82x). From the close, the real-yield regime
 (borrow interest + DEX fee-share) carries on.
 
 Revised 2026-11-06, before launch and with `VERSION` unchanged: the first v4 cut emitted 180M on
 a biennial halving (8 two-year periods, 16 years, a 180M >> 8 = 703,125 BZPX tail the schedule
-never emitted). The budget moved to 90M over 10 years; the closed form now reads a series
-constant of its own (`HALVING_SERIES` = 120M) instead of the budget, and the accumulator and the
-sweep are unchanged.
+never emitted). The budget moved to 90M; the closed form now reads a series constant of its own
+(`HALVING_SERIES`) instead of the budget, and the accumulator and the sweep are unchanged.
+
+Revised 2026-11-12, before any deployment and with `VERSION` unchanged: the v4 schedule moved
+from "10 years, two 5-year halving periods" to "8 years: linear base plus a bonus that halves
+every two years". The budget (90M per contract) and the Master Conservation Identity are
+unchanged.
 
 Mechanics:
 
-- Cumulative emission is **closed-form O(1)** — one division, two shifts, one multiplication;
+- Cumulative emission is **closed-form O(1)** — one division, two shifts, three multiplications;
   no loop, no oracle, no exp/log:
-  `emitted(t) = (S − (S >> p)) + (R0 >> p)·(t − start − p·PERIOD)`, `p = ⌊(t−start)/PERIOD⌋`.
+  `emitted(t) = RB·dt + (S − (S >> p)) + (R0 >> p)·(dt − p·PERIOD)`, `dt = t − start`,
+  `p = ⌊dt/PERIOD⌋`, `RB = BASE_REWARDS / EMISSION_LENGTH`, `R0 = (S/2) / PERIOD`.
 - `_updateGlobal` integrates the **delta** of that curve per window, replacing the flat
   `REWARD_PER_SEC × elapsed` term. Everything else in the accumulator is untouched.
-- The programme **hard-closes after 2 periods (10 years)** at exactly `TOTAL_REWARDS` = 90M,
+- The programme **hard-closes after 4 periods (8 years)** at exactly `TOTAL_REWARDS` = 90M,
   with no tail; anything stranded by empty windows is recoverable via the pre-existing
   `sweepUndistributedEmission`, pro-protocol.
-- Rounding is always pro-protocol: the floored rate's sub-wei remainder (< 1e-10 BZPX per
-  rollover) folds into the `S − (S >> p)` term, keeping the curve on the exact series.
+- Rounding is always pro-protocol: the curve never reads above the exact rational line. The
+  remainders the floored per-second rates leave (2,176,000 / 1,088,000 / 544,000
+  wei of bonus at the three turns; 31,808,000 wei of bonus and 197,376,000 wei of base at the
+  close) fold into the curve as upward steps of dust, keeping the bonus on the exact series and
+  the total exactly `TOTAL_REWARDS` at the close.
 
 Surface changes:
 
-- Constants: `EMISSION_PERIOD` / `REWARD_PER_SEC` → `HALVING_PERIOD`, `EMISSION_PERIODS`,
-  `EMISSION_LENGTH`, `INITIAL_REWARD_PER_SEC`.
+- Constants: `EMISSION_PERIOD` / `REWARD_PER_SEC` → `BASE_REWARDS`, `HALVING_SERIES`,
+  `HALVING_PERIOD`, `EMISSION_PERIODS`, `EMISSION_LENGTH`, `INITIAL_REWARD_PER_SEC` (the opening
+  rate: base plus first-period bonus).
 - New view `emittedAt(timestamp)` exposes the curve for free on-chain verification (same ethos
   as `solvency()`); `emissionProgress()` now reports emitted/TOTAL (the curve, not the clock).
 - `MAX_LOCK_DAYS` stays 2555 — now a policy cap (the boost curve and its overflow proof are
   calibrated on d ≤ 2555), no longer equal to the programme length. `maxLockDaysAvailable()`
-  stays pinned at 2555 until fewer than 2555 days remain to the 10-year close.
+  stays pinned at 2555 until fewer than 2555 days remain to the 8-year close, that is, from the
+  end of the first year.
 
 **Untouched, verified by the existing suites:** the Master Conservation Identity and the
 `conserves` guard, deterministic no-backlog-capture emission (empty windows advance the clock;

@@ -36,10 +36,10 @@ contract SweepResyncsIdleBorrowerTest is Base {
 ///         A debt-free 1M position and an idle 20M borrower at 9.9M of debt, both on 2555-day locks,
 ///         over one year: settled once at the end ("idle") or by a daily claim of the debt-free
 ///         position ("daily"), whose transactions carry the sweep that resyncs the borrower.
-///         Measured on the 90M schedule: the idle book charges 331,650.00 BZPX of interest against
-///         333,730.36 BZPX daily (the same as on 82febb5), and pays the debt-free position
-///         1,081,081.08 BZPX of emission against 1,097,587.96 daily (16,506.88 less); the
-///         borrower's own settle returns 358,540.54 BZPX of the window to the reserve.
+///         Measured on the 8-year 90M schedule: the idle book charges 331,650.00 BZPX of interest
+///         against 333,730.36 BZPX daily (the same as on 82febb5), and pays the debt-free position
+///         1,396,396.40 BZPX of emission against 1,417,717.78 daily (21,321.38 less); the
+///         borrower's own settle returns 463,114.86 BZPX of the window to the reserve.
 contract InterestStaleWeightTest is Base {
     address internal honest = address(0xA0);
     address internal borrower = address(0xB0);

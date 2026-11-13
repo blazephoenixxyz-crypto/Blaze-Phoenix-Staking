@@ -16,7 +16,7 @@ remappings = ["@openzeppelin/=node_modules/@openzeppelin/"]
 
 [lint]
 # `block-timestamp` is inherent to the design, not an oversight: this is a staking protocol whose
-# locks run 90..2555 days and whose emission is a 10-year clock, so reading time IS the requirement.
+# locks run 90..2555 days and whose emission is an 8-year clock, so reading time IS the requirement.
 # The drift a validator can introduce is seconds against windows of months. Excluded globally
 # rather than silenced 16 times inline.
 exclude_lints = ["block-timestamp"]

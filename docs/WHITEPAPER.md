@@ -354,7 +354,9 @@ deposit(uint256 amount, uint256 lockDays)
 - **Minimum:** 90 days
 - **Maximum:** 2555 days (7 years)
 - **Countdown cap:** `min(MAX_LOCK_DAYS, daysUntilEmissionEnd)` — no lock can
-  outlast the 10-year emission window
+  outlast the 8-year emission window. The programme runs 8 years and the maximum lock is 7, so
+  the countdown starts to bind at the end of the first year; the full 2555 days is available
+  only during year 1
 - **Extends-only:** a top-up may only push the unlock later, never earlier
 
 There is no liquid staking mode.
@@ -546,32 +548,45 @@ remainder recorded as `totalBadDebt`.
 
 ## 6. Emission
 
-### 6.1 Schedule — five-year halving, closed-form O(1)
+### 6.1 Schedule — 8-year emission: a linear base plus a biennial-halving bonus, closed-form O(1)
 
-**Two deployments, one cap each.** Staking is allocated 2 × 90M = 180,000,000 BZPX, delivered as
-two independent deployments of this same contract, 90,000,000 BZPX each. Each deployment has its
+**Two deployments, one cap each.** Staking is delivered as two independent deployments of this
+same contract, 90,000,000 BZPX each. Each deployment has its
 own `TOTAL_REWARDS` cap on `fundEmission`, its own `emissionStart` (set when it is deployed) and its
 own state, so neither contract can emit more than 90,000,000 BZPX. Everything in this section describes
 one deployment.
 
 ```
 TOTAL_REWARDS          = 90,000,000 BZPX                     (the fundEmission cap)
-HALVING_SERIES         = 120,000,000 BZPX                    (the series S the curve is cut from)
-HALVING_PERIOD         = 5 × 365 days
-EMISSION_PERIODS       = 2                                   (programme closes after 10 years)
-INITIAL_REWARD_PER_SEC = (HALVING_SERIES / 2) / HALVING_PERIOD ≈ 0.3805 BZPX/s
+BASE_REWARDS           = 60,000,000 BZPX                     (the linear base, flat over the programme)
+HALVING_SERIES         = 32,000,000 BZPX                     (the series S the bonus is cut from)
+HALVING_PERIOD         = 2 × 365 days
+EMISSION_PERIODS       = 4
+EMISSION_LENGTH        = EMISSION_PERIODS × HALVING_PERIOD   (2,920 days: the programme closes after 8 years)
+INITIAL_REWARD_PER_SEC = base rate + first-period bonus rate ≈ 0.4915 BZPX/s   (15.5M per year)
 ```
 
-Period `p` (0-indexed, 5 years each) emits `60M >> p` — 60M in years 1–5 (12M per year) and
-30M in years 6–10 (6M per year). The two periods sum to 90M **exactly by construction**:
-`S − (S >> 2) = 120M − 30M = 90M = TOTAL_REWARDS`.
+The emission has two parts. The **base** is 60M spread evenly over the 8 years, 7.5M per year,
+and it never changes. The **bonus** is 30M cut into four 2-year periods; period `p` (0-indexed)
+emits `(S / 2) >> p`, so the bonus is 16M, 8M, 4M and 2M (8M, 4M, 2M and 1M per year): it halves
+every two years (biennial halving). Only the bonus halves; the total rate does not. The bonus
+periods sum to 30M **exactly by construction**: `S − (S >> 4) = 32M − 2M = 30M`, and with the base
+`BASE_REWARDS + S − (S >> 4) = 60M + 32M − 2M = 90M = TOTAL_REWARDS`.
 
-Cumulative emission is a closed form — one division, two shifts, one
-multiplication; no loop, no oracle, no exp/log:
+| Years | Base per year | Bonus per year | Total per year | Per 2-year period | Cumulative at the end |
+|---|---|---|---|---|---|
+| 1–2 | 7.5M | 8M | 15.5M | 31M | 31M |
+| 3–4 | 7.5M | 4M | 11.5M | 23M | 54M |
+| 5–6 | 7.5M | 2M | 9.5M | 19M | 73M |
+| 7–8 | 7.5M | 1M | 8.5M | 17M | 90M |
+
+Cumulative emission is a closed form — one division, two shifts, three
+multiplications; no loop, no oracle, no exp/log:
 
 ```
-emitted(t) = (S − (S >> p)) + (R0 >> p) · (t − start − p·PERIOD),
-p = ⌊(t − start) / PERIOD⌋     (clamped at S − (S >> 2) = 90M from year 10 on)
+emitted(t) = RB · dt + (S − (S >> p)) + (R0 >> p) · (dt − p·PERIOD),
+dt = t − start,     p = ⌊dt / PERIOD⌋,     RB = BASE_REWARDS / EMISSION_LENGTH,
+R0 = (S / 2) / PERIOD     (clamped at BASE_REWARDS + S − (S >> 4) = 90M from year 8 on)
 ```
 
 The accumulator integrates the **delta** of this curve per window, so every
@@ -579,19 +594,24 @@ property of the previous linear schedule (determinism, no backlog capture,
 skipped windows staying in reserve) carries over unchanged. The curve is
 exposed on-chain as `emittedAt(timestamp)` so anyone can verify it for free.
 
-The programme hard-closes after 2 full periods at exactly `TOTAL_REWARDS`, with no tail: the
-rate steps from 12M to 6M per year at year 5 and from 6M per year to zero at year 10, and from
-there real yield (borrow interest) carries on. What the schedule could not
+The programme hard-closes after 4 full periods (8 years) at exactly `TOTAL_REWARDS`, with no
+tail: the bonus steps down at the end of years 2, 4 and 6, and the rate steps from 8.5M per year
+to zero at year 8, and from there real yield (borrow interest) carries on. The per-second rates
+are floored, and the remainders are folded into the curve as upward steps of dust: 2,176,000,
+1,088,000 and 544,000 wei of bonus at the three turns, then 31,808,000 wei of bonus and
+197,376,000 wei of base at the close, so the curve is strictly increasing inside the programme and
+reads exactly `TOTAL_REWARDS` at the close, to the wei. What the schedule could not
 distribute (windows with an empty or throttled pool, or frozen by an emergency) is recoverable to
 the treasury via `sweepUndistributedEmission`, pro-protocol, never pro-user, and only
 while the contract still reads solvent after the sweep: a residue the pot needs to cover what it
 owes stays in the pot.
 
-Why halving instead of linear: a flat schedule ends abruptly at its full rate, and the
-mercenary-capital exodus at linear cliffs is well documented. Over the same ten years a flat
-schedule would close on a 9M-a-year step; the two five-year periods close on 6M a year, two
-thirds of it, and they are the least front-loaded halving that fits 90M in ten years (five
-two-year periods would open at 23.2M a year).
+Why a base plus a halving bonus: a flat schedule ends abruptly at its full rate, and the
+mercenary-capital exodus at linear cliffs is well documented. A pure halving in four 2-year
+periods would put 48M of the 90M in the first two years and 6M in the last two. The linear base
+holds the first period at 31M and the last at 17M (31/17 ≈ 1.82x), so the schedule is front-loaded
+without being starved at the end, and the close steps down from 8.5M a year, against 15.5M a year
+at the opening.
 
 Rewards are distributed pro-rata to `totalBoostedEffective` (stake × boost,
 net of debt) via the standard accumulator pattern.

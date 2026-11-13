@@ -16,7 +16,8 @@ abstract: >-
   conservation identity rather than audited after the fact, and is publicly
   verifiable on-chain. Maintenance is fully autonomous, carried by ordinary user
   traffic with bounded gas and no keeper requirement. Emission follows a
-  180,000,000-token biennial-halving schedule evaluated in closed form.
+  8-year emission of 90,000,000 tokens per contract, a linear base plus a bonus that
+  halves every two years (biennial halving), evaluated in closed form.
 keywords:
   - defi
   - staking

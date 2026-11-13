@@ -32,7 +32,7 @@ contract AdminSurfaceCoverageTest is Base {
 
     /// `emptyPoolFor` seconds run with no position before alice's deposit. The schedule closes at
     /// exactly the budget and leaves no tail, so their scheduled emission is the only residue the
-    /// sweep can find: 365 days of it are 12M − 1 632 000 wei.
+    /// sweep can find: 365 days of it are 15.5M − 25 760 000 wei.
     function _seed(uint256 emptyPoolFor) internal {
         vm.prank(admin);
         staking.fundEmission(90_000_000e18);
