@@ -83,18 +83,28 @@ contract PureYieldNeverFromUncollectedTest is Base {
         assertLe(paid, _poolShareOfCollected() + DUST, "a later tx paid pure yield from uncollected interest");
     }
 
+    /// What `user_` is owed and a claim in this block would settle: the pure-yield quote plus the
+    /// reward quote, which carries the credit deferred under a breach.
+    function _entitlement(address user_) internal view returns (uint256) {
+        return staking.pendingPureYield(user_) + staking.pendingRewards(user_);
+    }
+
     /// The first transaction after the gap is a pure staker's own claim: the slice is credited
     /// before its own maintenance window reaches carol and books the loss. At the clamp the
     /// credited pot already exceeds backing, so the settle-time check closes the payment.
     function test_PUREUNCOLL_firstMoverAtTheClampIsClosed() public {
         _openBook();
         uint256 before = _pureHolders();
+        uint256 owed = _entitlement(alice);
+        assertGt(owed, 0, "setup: the first mover is owed something to withhold");
+        // The claim must SUCCEED and credit: closing the payment is not closing the door.
         vm.prank(alice);
-        try staking.claimPureYield() {} catch {}
+        staking.claimPureYield();
         uint256 paid = _pureHolders() - before;
         emit log_named_decimal_uint("pure yield paid to the first mover", paid, 18);
         emit log_named_decimal_uint("pool share of collected interest  ", _poolShareOfCollected(), 18);
         assertLe(paid, _poolShareOfCollected() + DUST, "first mover paid pure yield from uncollected interest");
+        assertEq(_entitlement(alice) + paid, owed, "the withheld pure yield was not credited");
     }
 
     /// Below the clamp the pre-discovery book still reads solvent: the slice moved from
