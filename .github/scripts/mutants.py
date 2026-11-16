@@ -2008,6 +2008,13 @@ dict(nome="claimPureYield: the sweep runs between the emission and the pure-yiel
       old="        totalDebt = _sub0(totalDebt, debt);\n        _removeBorrower(user_);",
       new="        totalDebt = _sub0(totalDebt, debt);\n        // MUTANT",
       teste="test_writeOff_recordsTheWholeLoss"),
+ # The attribution debits half of what it books: the stake no longer follows the interest charged
+ # to it, and the stateful campaign sees the stake sum run away from totalStaked past totalDebt.
+ dict(nome="_accrueInterestFor: the attribution debits u.staked by half the interest it books",
+      f=F,
+      old="        u.staked -= interest;\n",
+      new="        u.staked -= interest / 2; // MUTANT\n",
+      teste="invariant_totalStakedShortfallIsExplainedByUncollectedInterest"),
 ]# (source file under out/, contract): a mutant in script/ moves Deploy, not the staking contract
 CONTRACTS = (("BlazePhoenixStaking.sol", "BlazePhoenixStaking"), ("Deploy.s.sol", "Deploy"))
 
