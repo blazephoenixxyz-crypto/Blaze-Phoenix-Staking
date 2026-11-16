@@ -185,7 +185,7 @@ rules, scope and awards are in [`SECURITY.md`](../SECURITY.md) and at
   never above the real one. Until the borrower window's next sweep reaches the position (each user
   transaction outside a pause scans `_maintBudget()` borrowers from a rotating cursor, at most
   `MAINT_MAX_SCAN`, skipping its caller), or a keeper liquidates it, or the borrower exits in an
-  emergency, withdrawals and claims are paid at par in arrival order. Documented in
+  emergency, or anyone calls `syncEquity` on it in an emergency, withdrawals and claims are paid at par in arrival order. Documented in
   `src/BlazePhoenixStaking.sol` (`_owed`, `owed`, `isSolvent`, `solvency`) and
   `test/hardening/UnbookedLossReadIsALowerBound.t.sol` (the read deficit is bounded by the real one;
   `test_OWEDREAD_documents_anUnbookedLossReadsSolventUntilTheSweepBooksIt`: the loss reads solvent

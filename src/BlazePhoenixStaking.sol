@@ -652,8 +652,9 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
     ///         raise the balance. So this can fire only on a genuine shortfall (a real bug, a
     ///         theft, or recorded bad debt the reserve could not cover), never on healthy state. It
     ///         is also REVERSIBLE: if the reading was transient, the admin calls
-    ///         `cancelEmergency()` once `_hardBreach()` clears (for recorded bad debt, after
-    ///         `absorbBadDebt` recapitalises it) and the protocol resumes — so the worst a spurious
+    ///         `cancelEmergency()` once `_hardBreach()` clears (for bad debt, after `syncEquity`
+    ///         records the loss of each underwater position and `absorbBadDebt` recapitalises
+    ///         it) and the protocol resumes — so the worst a spurious
     ///         trip can do is a temporary, admin-undoable pause, not a permanent freeze. Cannot
     ///         move funds. Reverts with `Staking__NoBreach` on a solvent book.
     function tripBreaker() external {
@@ -699,8 +700,10 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
     ///         up to `amount_` BZPX is pulled from the caller, capped at what is still uncovered.
     ///         Each covered token lowers `totalBadDebt` and raises the balance (or lowers
     ///         `protocolReserve`) by the same amount, so the identity is unchanged and `conserves`
-    ///         proves it. It moves nothing out and pays the caller nothing. Once the uncovered
-    ///         loss is back within the dust, `isSolvent()` reads true and `cancelEmergency` passes.
+    ///         proves it. It moves nothing out and pays the caller nothing. It reaches only
+    ///         RECORDED loss: the loss of an underwater position is recorded first by `syncEquity`
+    ///         (or by that position's own exit or liquidation). Once the uncovered loss is back
+    ///         within the dust, `isSolvent()` reads true and `cancelEmergency` passes.
     ///         Reverts with `Staking__ZeroAmount` when nothing would be absorbed.
     /// @param amount_ the most BZPX the caller is willing to contribute after the reserve
     function absorbBadDebt(uint256 amount_) external nonReentrant conserves {
@@ -717,11 +720,42 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
     /// @notice Emergency only, permissionless, moves no tokens: attributes the frozen interest of
     ///         `user_` and refreshes its tracked equity (weights unchanged), so once every borrower
     ///         is synced `totalPositiveEquity` is exact and the breached haircut can run (3236).
-    ///         Harmless on any other address (a debt-free position only re-checkpoints).
+    ///         A position whose stake no longer exceeds its debt is written off in the same call:
+    ///         its equity is zero, interest is frozen and repay is closed, so its own
+    ///         `emergencyWithdraw` would pay 0 and book the same loss. The write-off closes it as
+    ///         that exit does: the shortfall `debt - staked` goes to `protocolReserve` first and the
+    ///         rest to `totalBadDebt`, where `absorbBadDebt` can cover it. Without it the shortfall
+    ///         stays inside the floored `owed()` and no recapitalisation reaches it. A position
+    ///         above water, or without debt, is only re-checkpointed.
     /// @param user_ the position to sync
     function syncEquity(address user_) external {
         if (!emergencyMode) revert Staking__EmergencyNotActive();
         _attribute(user_);
+        UserInfo storage u = _users[user_];
+        uint256 debt = u.debt;
+        uint256 principal = u.staked;
+        if (debt == 0 || principal > debt) return;
+        // As `emergencyWithdraw`: equity 0 earns nothing at the live weight, so only the
+        // stale-weight excess moves, mirrored on the 3326 anchor.
+        uint256 d0 = totalRewardDistributed;
+        _settleEmission(u);
+        _settlePure(u);
+        uint256 moved = d0 - totalRewardDistributed;
+        if (moved != 0) _distributedAtTrip -= moved;
+        // Δ(lhs) = −debt + (badDebt − covered) = −principal − covered = Δ(rhs).
+        uint256 badDebt = debt - principal;
+        uint256 covered = _min(badDebt, protocolReserve);
+        protocolReserve -= covered;
+        unchecked { totalBadDebt += badDebt - covered; }
+        _debitStaked(principal);
+        totalDebt = _sub0(totalDebt, debt);
+        _removeBorrower(user_);
+        u.staked = 0; u.debt = 0;
+        _applyBoost(u, 0, 0);
+        _removeLocker(user_);
+        delete _users[user_];   // `_rewardDeferred` stays: emission earned before, still hers
+        unchecked { ++totalLiquidations; }
+        emit Liquidated(user_, msg.sender, principal, debt, 0, 0, badDebt - covered);
     }
 
     /// @notice During emergency, pull your OWN net equity (staked - debt). Debt is netted
@@ -2094,8 +2128,9 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
     /// @dev The emission window of `u` since its last checkpoint, read once: what the position
     ///      earned at the live weight is returned as `due`; the stale-weight excess (P1-C) was never
     ///      earned, so it leaves the distributed side and returns to the reserve (conservation
-    ///      unchanged). Two callers, one question: the settle pays `due`, the emergency hatch
-    ///      forfeits it and keeps only the move of the excess (docs/KNOWN_ISSUES.md).
+    ///      unchanged). Two kinds of caller, one question: the settle pays `due`; the emergency
+    ///      hatch and the `syncEquity` write-off forfeit it and keep only the move of the excess
+    ///      (docs/KNOWN_ISSUES.md).
     function _settleEmission(UserInfo storage u) internal returns (uint256 due) {
         uint256 gross = ML.mulDiv(u.trackedBoostedEffective, accRewardPerShare, WAD);
         if (gross > u.rewardDebt) {
@@ -2118,9 +2153,10 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
     ///      part of the window after `unlockTime` priced at the boost) was never earned, so it
     ///      leaves the distributed side for `protocolReserve`, where every undistributed slice of
     ///      the flow lands (conservation unchanged). `window` says whether the accumulator moved
-    ///      past the debt at all: the settle keeps its event shape on it. Two callers, one
-    ///      question: the settle pays `due`, the emergency hatch forfeits it and keeps only the
-    ///      move of the excess (docs/KNOWN_ISSUES.md). Clamped as `_settleEmission` (I4).
+    ///      past the debt at all: the settle keeps its event shape on it. Two kinds of caller,
+    ///      one question: the settle pays `due`; the emergency hatch and the `syncEquity` write-off
+    ///      forfeit it and keep only the move of the excess (docs/KNOWN_ISSUES.md). Clamped as
+    ///      `_settleEmission` (I4).
     function _settlePure(UserInfo storage u) internal returns (uint256 due, bool window) {
         uint256 bp = u.trackedBoostedPure;
         if (bp == 0) return (0, false);
