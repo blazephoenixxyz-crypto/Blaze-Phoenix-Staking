@@ -365,6 +365,38 @@ contract InvariantsFullSurfaceTest is StdInvariant, Base {
         );
     }
 
+    // ── STAKE-ATTRIBUTION — the exact ledger behind the envelope above ───────
+    //
+    // The envelope bounds the attribution gap by the debt outstanding, so it only catches a
+    // drift as large as the debt. Measured: `u.staked -= interest - 1;` and `interest + 1` at the
+    // attribution debit left the whole suite green. The books carry the exact identity, with no
+    // dust and no subtraction:
+    //
+    //   Σ u.staked + stakedOverdraw + _interestAttributed == totalStaked + totalInterestAccruedGlobal
+    //
+    // Derived from every writer of the five terms: a deposit adds to Σ and totalStaked alike; an
+    // index step moves `slice` from totalStaked to the global accrual; an attribution moves
+    // `interest` from Σ to `_interestAttributed`, and its clamp restores `shortfall − overdrawn`
+    // to totalStaked against the same amount on the left; an exit debits Σ by what
+    // `_debitStaked` takes from totalStaked plus what it carries in `stakedOverdraw`.
+    // `_interestAttributed` is private and read from its slot; a wrong slot reads a value that
+    // breaks the equality on the first attribution, so a stale constant fails loud, not silent.
+    uint256 internal constant ATTRIBUTED_SLOT = 38;   // `forge inspect BlazePhoenixStaking storageLayout`
+
+    function invariant_STAKEATTR_stakeLedgerIsExact() public view {
+        uint256 sum;
+        for (uint256 i = 0; i < who.length; i++) {
+            (uint256 staked,,,,,,,,,,,,,) = staking.getUserInfo(who[i]);
+            sum += staked;
+        }
+        uint256 attributed = uint256(vm.load(address(staking), bytes32(ATTRIBUTED_SLOT)));
+        assertEq(
+            sum + staking.stakedOverdraw() + attributed,
+            staking.totalStaked() + staking.totalInterestAccruedGlobal(),
+            "STAKE-ATTR: stake ledger does not close"
+        );
+    }
+
     // ── INV-18 — a lapsed lock is paid at 1.00x from the instant of expiry ───
     function invariant_INV18_lapsedLockPaysBaseBoost() public view {
         for (uint256 i = 0; i < who.length; i++) {

@@ -2015,6 +2015,19 @@ dict(nome="claimPureYield: the sweep runs between the emission and the pure-yiel
       old="        u.staked -= interest;\n",
       new="        u.staked -= interest / 2; // MUTANT\n",
       teste="invariant_totalStakedShortfallIsExplainedByUncollectedInterest"),
+ # The envelope above cannot see a one-wei drift (both left the suite green): the exact
+ # stake ledger, sum(u.staked) + stakedOverdraw + _interestAttributed == totalStaked +
+ # totalInterestAccruedGlobal, closes to the wei.
+ dict(nome="_accrueInterestFor: the attribution debits u.staked one wei less than it books",
+      f=F,
+      old="        u.staked -= interest;\n",
+      new="        u.staked -= interest - 1; // MUTANT\n",
+      teste="invariant_STAKEATTR_stakeLedgerIsExact"),
+ dict(nome="_accrueInterestFor: the attribution debits u.staked one wei more than it books",
+      f=F,
+      old="        u.staked -= interest;\n",
+      new="        u.staked -= interest + 1; // MUTANT\n",
+      teste="invariant_STAKEATTR_stakeLedgerIsExact"),
 ]# (source file under out/, contract): a mutant in script/ moves Deploy, not the staking contract
 CONTRACTS = (("BlazePhoenixStaking.sol", "BlazePhoenixStaking"), ("Deploy.s.sol", "Deploy"))
 
