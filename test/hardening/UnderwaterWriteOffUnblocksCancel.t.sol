@@ -6,7 +6,7 @@ import {Base} from "../BlazePhoenixStaking.t.sol";
 import {BlazePhoenixStaking} from "../../src/BlazePhoenixStaking.sol";
 
 /// @notice An unrecorded loss must be recordable inside an emergency, or `absorbBadDebt` cannot
-///         reach it and `cancelEmergency` stays blocked.
+///         reach it and `cancelEmergency` keeps reverting.
 ///
 ///         The book: a borrower whose interest has outgrown her stake while no liquidation or sweep
 ///         ran, so `_owed()` floors the ledger (totalStaked + rewardReserve + protocolReserve <
@@ -37,6 +37,7 @@ contract UnderwaterWriteOffUnblocksCancelTest is Base {
     uint256 internal constant BRW = 4_000e18;
     uint256 internal constant B = 1_000e18;
     uint256 internal constant YRS = 150;
+    uint256 internal constant EMISSION = 1_000_000e18;
 
     address internal dave = address(0x5);
 
@@ -136,6 +137,37 @@ contract UnderwaterWriteOffUnblocksCancelTest is Base {
     ///         emergency exit leaves it (both book the same loss, neither pays her anything).
     function test_writeOff_equalsBorrowerOwnExit() public {
         _dormantBook(YRS, false);
+        _assertWriteOffEqualsOwnExit();
+    }
+
+    /// @notice The same comparison with emission funded and a dormancy (60 years) that leaves the
+    ///         stake below the debt but not eroded: attribution takes nothing from the protocol
+    ///         reserve, so the reserve is there at the write-off and covers the shortfall first,
+    ///         as in the borrower's own exit.
+    function test_writeOff_reserveCovers_equalsBorrowerOwnExit() public {
+        vm.prank(admin); staking.fundEmission(EMISSION);
+        _dormantBook(60, false);
+        uint256 r0 = staking.protocolReserve();
+        assertGt(r0, 0, "no protocol reserve to cover with");
+        _assertWriteOffEqualsOwnExit();
+        assertLt(staking.protocolReserve(), r0, "the reserve covered nothing at the write-off");
+    }
+
+    /// @notice With emission funded, the write-off moves the closed position's stale-weight excess
+    ///         back to the reserve; the trip anchor follows that move, so the cancel still passes.
+    function test_writeOff_withEmission_absorbAll_cancelPasses() public {
+        vm.prank(admin); staking.fundEmission(EMISSION);
+        _dormantBook(YRS, false);
+        staking.syncEquity(bob);
+        uint256 d0 = staking.totalRewardDistributed();
+        staking.syncEquity(alice);
+        assertLt(staking.totalRewardDistributed(), d0, "the write-off moved no stale-weight excess");
+        _absorbAll();
+        _cancelPasses();
+        assertTrue(staking.isSolvent(), "breached after the cancel");
+    }
+
+    function _assertWriteOffEqualsOwnExit() internal {
         staking.syncEquity(bob);
         uint256 snap = vm.snapshotState();
         vm.prank(alice); staking.emergencyWithdraw();
@@ -169,7 +201,7 @@ contract UnderwaterWriteOffUnblocksCancelTest is Base {
     }
 
     /// @notice Two underwater borrowers: recording one leaves the other's loss hidden and the cancel
-    ///         blocked; recording both lets it pass.
+    ///         reverting; recording both lets it pass.
     function test_writeOff_twoBorrowers_eachMustBeRecorded() public {
         _dormantBook(YRS, true);
         staking.syncEquity(bob);
