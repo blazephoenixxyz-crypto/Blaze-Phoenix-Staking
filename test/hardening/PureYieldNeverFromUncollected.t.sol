@@ -54,33 +54,54 @@ contract PureYieldNeverFromUncollectedTest is Base {
         assertLe(paid, _poolShareOfCollected() + DUST, "booking tx pays pure yield from uncollected interest");
     }
 
-    /// Once the loss is booked, no later transaction (own claim, lock, third-party pokes)
-    /// pays pure yield at par while the loss stays uncovered.
+    /// Once the loss is booked, no later transaction pays pure yield at par while the loss stays
+    /// uncovered. The loss is booked by a keeper's liquidation of carol, which carries no lock
+    /// window, so alice's and bob's elapsed locks are still on record afterwards: each poke below
+    /// has a commitment to normalise, and its `lockStep` settles the pure yield into the breach.
+    /// The staker's own claim is closed under a breach and is pinned as such.
     function test_PUREUNCOLL_noLaterTxPaysPureYieldOnceTheLossIsBooked() public {
         _openBook();
         vm.prank(keeper);
-        staking.claimRewards();
-        // Give the pot enough cash to pay bob at par, but not enough to cover the booked loss:
-        // what is measured is the rule, not an empty balance.
+        staking.liquidate(carol);
+        // Give the pot enough cash to pay the pure stakers at par, but not enough to cover the
+        // booked loss: what is measured is the rule, not an empty balance.
         deal(address(token), address(staking), token.balanceOf(address(staking)) + 1_500_000e18);
         assertFalse(staking.isSolvent(), "setup: the loss must still be uncovered");
+        assertGt(_lockDays(alice), 0, "setup: alice's elapsed lock is still on record");
+        assertGt(_lockDays(bob), 0, "setup: bob's elapsed lock is still on record");
         uint256 before = _pureHolders();
+        uint256 aliceOwed = _entitlement(alice);
+        uint256 bobOwed = _entitlement(bob);
+        assertGt(aliceOwed, 0, "setup: alice is owed something to withhold");
+        assertGt(bobOwed, 0, "setup: bob is owed something to withhold");
 
-        vm.prank(keeper);
-        try staking.pokeExpiredLock(bob) {} catch {}
-        address[] memory both = new address[](2);
-        both[0] = alice;
-        both[1] = bob;
-        vm.prank(keeper);
-        try staking.pokeExpiredLocks(both) {} catch {}
-        vm.prank(alice);
-        try staking.lock(30) {} catch {}
         vm.prank(bob);
-        try staking.claimPureYield() {} catch {}
+        vm.expectRevert(BlazePhoenixStaking.Staking__InvariantBreached.selector);
+        staking.claimPureYield();
+
+        // A third-party batch normalises alice by name; it reverts if it normalised nothing.
+        address[] memory onlyAlice = new address[](1);
+        onlyAlice[0] = alice;
+        vm.prank(keeper);
+        staking.pokeExpiredLocks(onlyAlice);
+        assertEq(_lockDays(alice), 0, "the batch did not normalise alice");
+        assertGt(_lockDays(bob), 0, "the batch reached past its list");
+        assertEq(_entitlement(alice) + _pureHolders() - before, aliceOwed, "the batch did not credit alice");
+
+        // A keeper's single poke normalises bob.
+        vm.prank(keeper);
+        staking.pokeExpiredLock(bob);
+        assertEq(_lockDays(bob), 0, "the poke did not normalise bob");
 
         uint256 paid = _pureHolders() - before;
         emit log_named_decimal_uint("pure yield paid after the booking", paid, 18);
         assertLe(paid, _poolShareOfCollected() + DUST, "a later tx paid pure yield from uncollected interest");
+        // Withheld is not forfeited: what was not paid is still owed, as a credit.
+        assertEq(_entitlement(alice) + _entitlement(bob) + paid, aliceOwed + bobOwed, "the withheld pure yield was not credited");
+    }
+
+    function _lockDays(address user_) internal view returns (uint256 lockDays) {
+        (,,,,,,,,, lockDays,,,,) = staking.getUserInfo(user_);
     }
 
     /// What `user_` is owed and a claim in this block would settle: the pure-yield quote plus the
