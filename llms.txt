@@ -138,7 +138,7 @@ What runs: Foundry unit, fuzz and structural invariant tests (including `invaria
 - [Security Hall of Fame](https://github.com/blazephoenixxyz-crypto/Blaze-Phoenix-Staking/blob/main/SECURITY_HALL_OF_FAME.md): credited researchers
 - [Citation metadata](https://github.com/blazephoenixxyz-crypto/Blaze-Phoenix-Staking/blob/main/CITATION.cff): how to cite this work
 - [License (BUSL-1.1)](https://github.com/blazephoenixxyz-crypto/Blaze-Phoenix-Staking/blob/main/LICENSE): Licensed Work: BlazePhoenix Staking & Lending Protocol; Change Date 1 June 2030, converting to GPL-2.0-or-later
-- [Notice](https://github.com/blazephoenixxyz-crypto/Blaze-Phoenix-Staking/blob/main/NOTICE): all rights reserved on documentation, except the texts deposited on Zenodo under their own licences: Technical Whitepaper v2.3 (DOI 10.5281/zenodo.23084091, CC BY 4.0), v2.3.1 (DOI 10.5281/zenodo.24372939, CC BY-NC-ND 4.0) and the research papers v1.0 (DOI 10.5281/zenodo.24372935, CC BY-NC-ND 4.0)
+- [Notice](https://github.com/blazephoenixxyz-crypto/Blaze-Phoenix-Staking/blob/main/NOTICE) and [Licence & authorship](https://github.com/blazephoenixxyz-crypto/Blaze-Phoenix-Staking/blob/main/README.md#licence--authorship): all rights reserved on documentation, except the texts deposited on Zenodo under their own licences: Technical Whitepaper v2.3 (DOI 10.5281/zenodo.23084091, CC BY 4.0), v2.3.1 (DOI 10.5281/zenodo.24372939, CC BY-NC-ND 4.0) and the research papers v1.0 (DOI 10.5281/zenodo.24372935, CC BY-NC-ND 4.0)
 
 ## Attribution
 
