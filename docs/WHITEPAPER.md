@@ -5,7 +5,11 @@
 > **Scope of this document.** This is the design write-up of the 3.2 line. The current source
 > is `VERSION = "4.0.0"`, and where this text and the source differ the source wins; the V4 design
 > is also described in the Technical Whitepaper v2.3, section 25 (equations E27-E42, invariants
-> INV-23 to INV-31). The staking contract is not deployed yet, and no address is published.
+> INV-23 to INV-31). The emission design at commit c0366cf is the staking line of the section 20 allocation table in the
+> Technical Whitepaper v2.3.1 (DOI [10.5281/zenodo.24372939](https://doi.org/10.5281/zenodo.24372939)), and the solvency guard is the
+> subject of *Oracle-Free Solvency by Conservation*, paper 2 of the research papers v1.0
+> (DOI [10.5281/zenodo.24372935](https://doi.org/10.5281/zenodo.24372935)), which describes the contract at commit 82febb5.
+> The staking contract is not deployed yet, and no address is published.
 
 > **Security credit — BP-2026-001.** §3.3 and §4.2.1 exist because of a finding disclosed on
 > 28 July 2026 by **[NetGakarot](https://github.com/NetGakarot)** ("Gakarot"): the maintenance
