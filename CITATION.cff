@@ -29,6 +29,10 @@ keywords:
   - solvency
   - invariants
   - tokenomics
+identifiers:
+  - type: doi
+    value: 10.5281/zenodo.24372935
+    description: "Research papers v1.0 (2026-11-19); paper 2, Oracle-Free Solvency by Conservation, describes this contract at commit 82febb5b4aecdc38f146b58aea619da8824b84f9"
 license: BUSL-1.1
 version: 4.0.0
 date-released: "2026-08-12"
