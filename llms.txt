@@ -118,6 +118,8 @@ Metrological Design is the house discipline: each guarantee is a measured quanti
 - [Source: BlazePhoenixStaking.sol](https://github.com/blazephoenixxyz-crypto/Blaze-Phoenix-Staking/blob/main/src/BlazePhoenixStaking.sol): the single contract; the constants block holds the emission schedule and `_emittedAt` is the closed form
 - [README](https://github.com/blazephoenixxyz-crypto/Blaze-Phoenix-Staking/blob/main/README.md): human-facing overview, economic parameters, emission table, build and verify commands
 - [Whitepaper](https://github.com/blazephoenixxyz-crypto/Blaze-Phoenix-Staking/blob/main/docs/WHITEPAPER.md): design, equations and invariants
+- [Technical Whitepaper v2.3.1](https://doi.org/10.5281/zenodo.24372939): DOI 10.5281/zenodo.24372939 (2026-11-16); the staking line of its section 20 allocation table states this contract's emission design at commit c0366cf; v2.3 stays at DOI 10.5281/zenodo.23084091
+- [Research papers v1.0](https://doi.org/10.5281/zenodo.24372935): DOI 10.5281/zenodo.24372935 (2026-11-19); paper 2, Oracle-Free Solvency by Conservation, describes this contract at commit 82febb5
 - [Monte Carlo campaign](https://github.com/blazephoenixxyz-crypto/Blaze-Phoenix-Staking/blob/main/docs/MONTE_CARLO.md): blind, pre-registered random walks over the whole surface; seeds derived from the base commit, invariants and tolerances fixed before the first run
 - [Monte Carlo campaign 2: the emission curve](https://github.com/blazephoenixxyz-crypto/Blaze-Phoenix-Staking/blob/main/docs/MONTE_CARLO_EMISSION.md): blind, pre-registered random walk over the 8-year emission alone; every settle compared wei for wei with the schedule written from literals
 - [Audit method](https://github.com/blazephoenixxyz-crypto/Blaze-Phoenix-Staking/blob/main/docs/AUDIT_METHOD.md): threat, property, guard, test, mutant, register; what the suite can and cannot say
@@ -136,7 +138,7 @@ What runs: Foundry unit, fuzz and structural invariant tests (including `invaria
 - [Security Hall of Fame](https://github.com/blazephoenixxyz-crypto/Blaze-Phoenix-Staking/blob/main/SECURITY_HALL_OF_FAME.md): credited researchers
 - [Citation metadata](https://github.com/blazephoenixxyz-crypto/Blaze-Phoenix-Staking/blob/main/CITATION.cff): how to cite this work
 - [License (BUSL-1.1)](https://github.com/blazephoenixxyz-crypto/Blaze-Phoenix-Staking/blob/main/LICENSE): Licensed Work: BlazePhoenix Staking & Lending Protocol; Change Date 1 June 2030, converting to GPL-2.0-or-later
-- [Notice](https://github.com/blazephoenixxyz-crypto/Blaze-Phoenix-Staking/blob/main/NOTICE): all rights reserved on documentation, except the Technical Whitepaper text deposited on Zenodo (DOI 10.5281/zenodo.23084091), which is CC BY 4.0
+- [Notice](https://github.com/blazephoenixxyz-crypto/Blaze-Phoenix-Staking/blob/main/NOTICE) and [Licence & authorship](https://github.com/blazephoenixxyz-crypto/Blaze-Phoenix-Staking/blob/main/README.md#licence--authorship): all rights reserved on documentation, except the texts deposited on Zenodo under their own licences: Technical Whitepaper v2.3 (DOI 10.5281/zenodo.23084091, CC BY 4.0), v2.3.1 (DOI 10.5281/zenodo.24372939, CC BY-NC-ND 4.0) and the research papers v1.0 (DOI 10.5281/zenodo.24372935, CC BY-NC-ND 4.0)
 
 ## Attribution
 
