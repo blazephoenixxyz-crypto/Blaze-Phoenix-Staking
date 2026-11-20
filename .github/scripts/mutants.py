@@ -326,6 +326,47 @@ M = [
       old="        if (_hardBreach()) { _rewardDeferred[user_] += due; return; }\n",
       new="        // MUTANT\n",
       teste="test_PUREUNCOLL_firstMoverBelowTheClampIsCreditedByItsOwnSweep"),
+ # The clamp first mover once swallowed its claim in try/catch, so all three of these passed it
+ # mutated: a revert was swallowed, a payment into the breach was swallowed, and a dropped credit
+ # was never read. It now calls the claim directly and reads the credit.
+ dict(nome="pure-yield settle: the breach credit branch is deleted (clamp first mover)",
+      f=F,
+      old="        if (_hardBreach()) { _rewardDeferred[user_] += due; return; }\n",
+      new="        // MUTANT\n",
+      teste="test_PUREUNCOLL_firstMoverAtTheClampIsClosed"),
+ dict(nome="pure-yield settle: the breach reverts instead of crediting (clamp first mover)",
+      f=F,
+      old="        if (_hardBreach()) { _rewardDeferred[user_] += due; return; }\n",
+      new="        if (_hardBreach()) revert Staking__NoBreach(); // MUTANT\n",
+      teste="test_PUREUNCOLL_firstMoverAtTheClampIsClosed"),
+ dict(nome="pure-yield settle: the breach withholds without crediting (clamp first mover)",
+      f=F,
+      old="        if (_hardBreach()) { _rewardDeferred[user_] += due; return; }\n",
+      new="        if (_hardBreach()) { return; } // MUTANT\n",
+      teste="test_PUREUNCOLL_firstMoverAtTheClampIsClosed"),
+ # The later-tx test once swallowed four doors that were all no-ops or reverts; the booking is now a
+ # liquidation (no lock window), so each poke has a lapsed lock to normalise and settles into the breach.
+ dict(nome="pure-yield settle: the breach credit branch is deleted (pokes after the booking)",
+      f=F,
+      old="        if (_hardBreach()) { _rewardDeferred[user_] += due; return; }\n",
+      new="        // MUTANT\n",
+      teste="test_PUREUNCOLL_noLaterTxPaysPureYieldOnceTheLossIsBooked"),
+ dict(nome="pure-yield settle: the breach reverts instead of crediting (pokes after the booking)",
+      f=F,
+      old="        if (_hardBreach()) { _rewardDeferred[user_] += due; return; }\n",
+      new="        if (_hardBreach()) revert Staking__NoBreach(); // MUTANT\n",
+      teste="test_PUREUNCOLL_noLaterTxPaysPureYieldOnceTheLossIsBooked"),
+ dict(nome="pure-yield settle: the breach withholds without crediting (pokes after the booking)",
+      f=F,
+      old="        if (_hardBreach()) { _rewardDeferred[user_] += due; return; }\n",
+      new="        if (_hardBreach()) { return; } // MUTANT\n",
+      teste="test_PUREUNCOLL_noLaterTxPaysPureYieldOnceTheLossIsBooked"),
+ # A one-wei leak keeps paid + credit == owed and stays under the DUST bound; only paid == 0 sees it.
+ dict(nome="pure-yield settle: the breach credits all but one wei and pays that wei (pokes after the booking)",
+      f=F,
+      old="        if (_hardBreach()) { _rewardDeferred[user_] += due; return; }\n",
+      new="        if (_hardBreach()) { uint256 leak = due == 0 ? 0 : 1; _rewardDeferred[user_] += due - leak; _pay(user_, leak); return; } // MUTANT\n",
+      teste="test_PUREUNCOLL_noLaterTxPaysPureYieldOnceTheLossIsBooked"),
  dict(nome="getLockers: the page end overflows again for limit = max",
       f=F,
       old="        end = offset < total ? offset + _min(limit, total - offset) : offset;",
@@ -1973,6 +2014,26 @@ dict(nome="claimPureYield: the sweep runs between the emission and the pure-yiel
       old="        totalDebt = _sub0(totalDebt, debt);\n        _removeBorrower(user_);",
       new="        totalDebt = _sub0(totalDebt, debt);\n        // MUTANT",
       teste="test_writeOff_recordsTheWholeLoss"),
+ # The attribution debits half of what it books: the stake no longer follows the interest charged
+ # to it, and the stateful campaign sees the stake sum run away from totalStaked past totalDebt.
+ dict(nome="_accrueInterestFor: the attribution debits u.staked by half the interest it books",
+      f=F,
+      old="        u.staked -= interest;\n",
+      new="        u.staked -= interest / 2; // MUTANT\n",
+      teste="invariant_totalStakedShortfallIsExplainedByUncollectedInterest"),
+ # The envelope above cannot see a one-wei drift (both left the suite green): the exact
+ # stake ledger, sum(u.staked) + stakedOverdraw + _interestAttributed == totalStaked +
+ # totalInterestAccruedGlobal, closes to the wei.
+ dict(nome="_accrueInterestFor: the attribution debits u.staked one wei less than it books",
+      f=F,
+      old="        u.staked -= interest;\n",
+      new="        u.staked -= interest - 1; // MUTANT\n",
+      teste="invariant_STAKEATTR_stakeLedgerIsExact"),
+ dict(nome="_accrueInterestFor: the attribution debits u.staked one wei more than it books",
+      f=F,
+      old="        u.staked -= interest;\n",
+      new="        u.staked -= interest + 1; // MUTANT\n",
+      teste="invariant_STAKEATTR_stakeLedgerIsExact"),
 ]# (source file under out/, contract): a mutant in script/ moves Deploy, not the staking contract
 CONTRACTS = (("BlazePhoenixStaking.sol", "BlazePhoenixStaking"), ("Deploy.s.sol", "Deploy"))
 
