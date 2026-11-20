@@ -95,6 +95,9 @@ contract PureYieldNeverFromUncollectedTest is Base {
 
         uint256 paid = _pureHolders() - before;
         emit log_named_decimal_uint("pure yield paid after the booking", paid, 18);
+        // The breach has not cleared, so each settle credits all of `due` and pays nothing: a
+        // one-wei payment passes the DUST bound below and keeps the credit equality, but not this.
+        assertEq(paid, 0, "a later tx paid pure yield while the breach is open");
         assertLe(paid, _poolShareOfCollected() + DUST, "a later tx paid pure yield from uncollected interest");
         // Withheld is not forfeited: what was not paid is still owed, as a credit.
         assertEq(_entitlement(alice) + _entitlement(bob) + paid, aliceOwed + bobOwed, "the withheld pure yield was not credited");

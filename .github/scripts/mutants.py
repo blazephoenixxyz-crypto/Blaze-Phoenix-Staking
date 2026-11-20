@@ -361,6 +361,12 @@ M = [
       old="        if (_hardBreach()) { _rewardDeferred[user_] += due; return; }\n",
       new="        if (_hardBreach()) { return; } // MUTANT\n",
       teste="test_PUREUNCOLL_noLaterTxPaysPureYieldOnceTheLossIsBooked"),
+ # A one-wei leak keeps paid + credit == owed and stays under the DUST bound; only paid == 0 sees it.
+ dict(nome="pure-yield settle: the breach credits all but one wei and pays that wei (pokes after the booking)",
+      f=F,
+      old="        if (_hardBreach()) { _rewardDeferred[user_] += due; return; }\n",
+      new="        if (_hardBreach()) { uint256 leak = due == 0 ? 0 : 1; _rewardDeferred[user_] += due - leak; _pay(user_, leak); return; } // MUTANT\n",
+      teste="test_PUREUNCOLL_noLaterTxPaysPureYieldOnceTheLossIsBooked"),
  dict(nome="getLockers: the page end overflows again for limit = max",
       f=F,
       old="        end = offset < total ? offset + _min(limit, total - offset) : offset;",
