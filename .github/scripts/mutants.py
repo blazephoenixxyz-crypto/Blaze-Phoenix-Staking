@@ -1874,7 +1874,7 @@ dict(nome="claimPureYield: the sweep runs between the emission and the pure-yiel
        f=F,
        old="            uint256 eCorr = totalPositiveEquity - u.trackedEquity + payout;",
        new="            uint256 eCorr = totalPositiveEquity - u.trackedEquity + payout * 2; // MUTANT",
-       teste="test_RD_conserveDiff_5_21_138_isTheHaircutOfOneExitAgainstAOneWeiPot"),
+       teste="test_RD_conserveDiff_0_21_141_isTheHaircutOfOneExitAgainstABreachedPot"),
  dict(nome="emission: the damping below MIN_EMISSION_WEIGHT is skipped (the walk mirrors every window as _windowReward prices it; a doubled booking is masked by `conserves` itself, so the walk pins what the guard cannot see)",
       f=F,
       old="        if (tbe < MIN_EMISSION_WEIGHT) reward = ML.mulDiv(reward, tbe, MIN_EMISSION_WEIGHT);",
