@@ -31,7 +31,9 @@ for (const f of logs) {
       qRun = Q.length;
     }
   }
+  if (Q.length > qRun) { console.error(`${f}: ${Q.length - qRun} sequences with no closing T line (interrupted run?)`); process.exit(2); }
 }
+if (bounds.size === 0) { console.error("no complete run in the logs"); process.exit(2); }
 if (bounds.size > 1) { console.error(`logs ran with different MC_ACTIONS (${[...bounds].join(", ")}); pass the logs of one run`); process.exit(2); }
 
 const dist = (arr, key) => {
