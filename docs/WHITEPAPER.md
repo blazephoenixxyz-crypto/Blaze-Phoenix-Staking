@@ -441,6 +441,9 @@ maxBorrow = (staked − currentDebt) × MAX_LTV / 100
 ```
 
 `MAX_LTV = 50%`. Borrowing is on *effective* stake (net of existing debt).
+The cap is measured on the net stake before the borrow (staked − debt), so the
+total a position reaches depends on how the borrowing is sliced; a single
+borrow from zero debt reaches the most.
 
 ### 5.2 Interest rate model
 
@@ -670,7 +673,9 @@ is written to storage before the token transfer.
 
 A minimum of `MIN_DEPOSIT_BLOCKS = 10` blocks must pass between a deposit (or
 a repayment that clears debt) and a withdrawal, claim, or lock operation. This
-prevents same-transaction or same-block flash-loan attacks.
+prevents same-transaction or same-block flash-loan attacks. The flash-loan
+delay restarts whenever a position's debt returns to zero: on a full `repay`
+and on a liquidation that leaves a remainder.
 
 ### 7.5 Single-writer boost accounting
 

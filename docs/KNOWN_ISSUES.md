@@ -51,7 +51,9 @@ rules, scope and awards are in [`SECURITY.md`](../SECURITY.md) and at
   (`Staking__StaleEquity`) while interest already debited from the book has not reached its
   positions. `syncEquity(user)`, permissionless and callable only in an emergency, attributes one
   position; the exit attributes the exiter's own. Once every borrower is attributed the exits go
-  through, and what each is paid does not depend on the order of the exits. On a sound book the
+  through, and what each is paid does not depend on the order of the exits on a book that is not
+  recapitalised between them: `absorbBadDebt` stays open in an emergency, and a contribution from
+  its caller raises the pot that later exits divide. On a sound book the
   exit pays net equity in full and does not wait. Documented in `src/BlazePhoenixStaking.sol`
   (`emergencyWithdraw`, `syncEquity`, `_attribute`) and
   `test/hardening/AttributionRefreshesEquity.t.sol`
@@ -84,8 +86,11 @@ rules, scope and awards are in [`SECURITY.md`](../SECURITY.md) and at
 - **`effectiveStakeOf` reads stored state.** It returns net stake as last written and does not
   project interest accrued since the position was last touched; `maxBorrowOf` is the projected
   limit that `borrow` accepts, and it reads 0 while `borrow` is closed (paused, in an
-  emergency, or under a hard breach). Documented in `src/BlazePhoenixStaking.sol` (NatSpec of
-  `effectiveStakeOf` and `maxBorrowOf`).
+  emergency, or under a hard breach). `utilizationRate`, `currentInterestRateBps` and
+  `getGlobalStats` read the book's totals the same way: as last written, without the interest
+  accrued since the last transaction. Documented in `src/BlazePhoenixStaking.sol` (NatSpec of
+  `effectiveStakeOf`, `maxBorrowOf`, `utilizationRate`, `currentInterestRateBps` and
+  `getGlobalStats`).
 - **Interest is priced at the rate its window starts with.** The interest index accrues in O(1):
   the window since the last update of the book is charged at the rate its starting utilisation
   reads, with no integral of the curve across the window. A book that transacts often follows the

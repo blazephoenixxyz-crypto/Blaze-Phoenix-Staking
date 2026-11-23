@@ -704,6 +704,8 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
     ///         RECORDED loss: the loss of an underwater position is recorded first by `syncEquity`
     ///         (or by that position's own exit or liquidation). Once the uncovered loss is back
     ///         within the dust, `isSolvent()` reads true and `cancelEmergency` passes.
+    ///         Applies the protocol reserve as last written; the reserve share of interest not
+    ///         yet accrued by a transaction is not in it.
     ///         Reverts with `Staking__ZeroAmount` when nothing would be absorbed.
     /// @param amount_ the most BZPX the caller is willing to contribute after the reserve
     function absorbBadDebt(uint256 amount_) external nonReentrant conserves {
@@ -812,7 +814,9 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
         // attributed interest. The haircut runs only with U within dust (else
         // `Staking__StaleEquity`, cleared by `syncEquity`); then E is the true Σ of
         // positive equity, pot/E is constant across exits up to the floor, and no payout depends
-        // on the exit order. Σ payouts ≤ pot in every order.
+        // on the exit order on a book that is not recapitalised between them: `absorbBadDebt`
+        // stays open in an emergency, and a contribution from its caller raises the pot that
+        // later exits divide. Σ payouts ≤ pot in every order.
         // When solvent (pot ≥ eCorr) the branch never engages and full net equity is paid, as before.
         if (payout > 0) {
             uint256 pot   = _balance();
@@ -949,6 +953,9 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
     ///         total debt may not exceed MAX_LTV % of your net stake (staked − debt), and the book
     ///         may not exceed MAX_PROTOCOL_UTIL_WAD utilisation. While any debt is open the
     ///         position earns no pure yield and cannot withdraw. Closed under a hard breach.
+    ///         The cap is measured on the net stake before the borrow (staked − debt), so the
+    ///         total a position reaches depends on how the borrowing is sliced; a single borrow
+    ///         from zero debt reaches the most.
     /// @param amount_ BZPX sent to the caller and added to its debt
     function borrow(uint256 amount_)
         external nonReentrant whenNotPaused whenNotEmergency conserves
@@ -2375,14 +2382,18 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
     /// @notice Linear estimate, at the current rate, of whole days until the position becomes
     ///         liquidatable.
     /// @param  user_ any position
-    /// @return d 0 if already liquidatable; type(uint256).max if debt-free or if the daily
+    /// @return d 0 if already liquidatable or if less than one whole day of interest separates
+    ///           the position from the threshold; type(uint256).max if debt-free or if the daily
     ///           charge rounds to 0
     function daysToLiquidation(address user_) external view returns (uint256 d) { (, , d) = _risk(_users[user_]); }
-    /// @notice Annual borrow rate (bps) at the current utilisation.
+    /// @notice Annual borrow rate (bps) at the current utilisation. Reads the totals as last
+    ///         written; interest accrued since the last transaction is not projected
+    ///         (docs/KNOWN_ISSUES.md).
     /// @return annual rate in bps
     function currentInterestRateBps() external view returns (uint256) { return _interestRate(); }
     /// @notice totalDebt / totalStaked in WAD (not capped); type(uint256).max while debt remains
-    ///         and the stake is zero.
+    ///         and the stake is zero. Reads the totals as last written; interest accrued since the
+    ///         last transaction is not projected (docs/KNOWN_ISSUES.md).
     /// @return utilisation in WAD
     function utilizationRate() external view returns (uint256) {
         // Terminal state: debt outstanding with the stake pool consumed to zero is
@@ -2539,7 +2550,7 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
     /// @return effectiveStake     max(staked − debt, 0)
     /// @return maxBorrowAvailable same as `maxBorrowOf`
     /// @return health             same as `healthFactor`
-    /// @return daysLeft           same as `daysToLiquidation`
+    /// @return daysLeft           same as `daysToLiquidation` (whole days, rounded down)
     /// @return stakingRewards     same as `pendingRewards`
     /// @return pureYield          same as `pendingPureYield`
     /// @return rateBps            current annual borrow rate
@@ -2569,7 +2580,8 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
         stakingRewards = _pendingReward(user_);
         pureYield      = _pendingPure(u);
     }
-    /// @notice The global book in one call.
+    /// @notice The global book in one call. Reads the totals as last written; interest accrued
+    ///         since the last transaction is not projected (docs/KNOWN_ISSUES.md).
     /// @return totalStaked_               global stake, net of all interest charged so far
     /// @return totalDebt_                 Σ debt
     /// @return totalBoostedEffective_     emission denominator

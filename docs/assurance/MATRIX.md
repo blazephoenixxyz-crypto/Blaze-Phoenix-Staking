@@ -15,8 +15,9 @@ empty and live), and after the reward debts were made to round up at the checkpo
 made to refresh the position's equity summand (`test/hardening/AttributionRefreshesEquity.t.sol`,
 with the campaign invariants in `test/InvariantsFullSurface.t.sol`), and after the batch poke and
 the direct seizure were made to book their caller's own loss before the bonus they pay (the
-LOSS-FIRST carrier tests in `test/hardening/MaintenanceBeforePayment.t.sol`), and after bit 4 of `auditInvariants` was made to read the boost bound that holds on every clock (`test/hardening/AuditBit4Clock.t.sol`), and after the deferred credit was pinned to its one quote (`test/hardening/DeferredPureYieldQuote.t.sol`), and after `syncEquity` was made to write off a position whose stake no longer exceeds its debt (`test/hardening/UnderwaterWriteOffUnblocksCancel.t.sol`): **594 tests in 78 `.t.sol`
-files** by the counting rule below, which also counts the report-only `check_*` specs.
+LOSS-FIRST carrier tests in `test/hardening/MaintenanceBeforePayment.t.sol`), and after bit 4 of `auditInvariants` was made to read the boost bound that holds on every clock (`test/hardening/AuditBit4Clock.t.sol`), and after the deferred credit was pinned to its one quote (`test/hardening/DeferredPureYieldQuote.t.sol`), and after `syncEquity` was made to write off a position whose stake no longer exceeds its debt (`test/hardening/UnderwaterWriteOffUnblocksCancel.t.sol`). The counting rule below also counts
+the report-only `check_*` specs; the script prints the totals (`tests counted: N in M files`), and
+counts move with every change, so measure them rather than trusting a number written here.
 Regenerate with:
 
 ```bash
