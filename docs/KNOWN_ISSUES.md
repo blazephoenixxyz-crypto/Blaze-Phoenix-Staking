@@ -79,7 +79,8 @@ rules, scope and awards are in [`SECURITY.md`](../SECURITY.md) and at
   `cancelEmergency`).
 - **`effectiveStakeOf` reads stored state.** It returns net stake as last written and does not
   project interest accrued since the position was last touched; `maxBorrowOf` is the projected
-  limit that `borrow` accepts. Documented in `src/BlazePhoenixStaking.sol` (NatSpec of
+  limit that `borrow` accepts, and it reads 0 while `borrow` is closed (paused, in an
+  emergency, or under a hard breach). Documented in `src/BlazePhoenixStaking.sol` (NatSpec of
   `effectiveStakeOf` and `maxBorrowOf`).
 - **Interest is priced at the rate its window starts with.** The interest index accrues in O(1):
   the window since the last update of the book is charged at the rate its starting utilisation

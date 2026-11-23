@@ -2320,8 +2320,11 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
     ///      (`_projected`): every entry point, `liquidate` included, accrues before it acts, so a
     ///      reading off the stored stake overstates the position after any idle interval. One body
     ///      for the three getters and `getUserInfo`, so they cannot drift apart.
-    ///      `maxB` is what `borrow` would accept right now: the smaller of the LTV room on the
-    ///      post-accrual stake and the aggregate utilisation room (H-04). borrow reverts iff
+    ///      `maxB` is what `borrow` would accept right now: 0 while `borrow` is closed (paused,
+    ///      in an emergency, or under a hard breach), otherwise the smaller of the LTV room on the
+    ///      post-accrual stake and the aggregate utilisation room (H-04). A loss of another
+    ///      position that `borrow`'s own maintenance sweep records first is not visible to a view
+    ///      (docs/KNOWN_ISSUES.md). borrow reverts iff
     ///      ⌊(D + a)·WAD / S⌋ > MAX_PROTOCOL_UTIL_WAD, and D + a ≤ ⌊S·MAX/WAD⌋ implies
     ///      (D + a)·WAD ≤ S·MAX, so a = ⌊S·MAX/WAD⌋ − D is always accepted.
     ///      Only a debt-free position is unconditionally healthy and never liquidatable. A position
@@ -2333,7 +2336,7 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
     function _risk(UserInfo storage u) internal view returns (uint256 maxB, uint256 h, uint256 d) {
         (uint256 s, uint256 ts) = _projected(u);
         uint256 debt = u.debt;
-        maxB = _min(
+        maxB = (paused() || emergencyMode || _hardBreach()) ? 0 : _min(
             _sub0(ML.mulDiv(_sub0(s, debt), MAX_LTV, 100), debt),
             _sub0(ML.mulDiv(ts, MAX_PROTOCOL_UTIL_WAD, WAD), totalDebt));
         if (debt == 0) return (maxB, WAD, type(uint256).max);
@@ -2391,7 +2394,8 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
         if (totalStaked == 0) return totalDebt > 0 ? type(uint256).max : 0;
         return ML.mulDiv(totalDebt, WAD, totalStaked);
     }
-    /// @notice The largest amount `borrow` would accept from `user_` right now.
+    /// @notice The largest amount `borrow` would accept from `user_` right now; 0 while `borrow`
+    ///         is closed: paused, in an emergency, or under a hard breach.
     /// @param  user_ any position
     /// @return m min(LTV room on the projected stake, protocol utilisation room)
     function maxBorrowOf(address user_) external view returns (uint256 m) {
