@@ -11,7 +11,9 @@ const logs = process.argv.slice(2);
 if (logs.length === 0) { console.error("usage: report.mjs <forge -vv log>..."); process.exit(2); }
 
 const S = [], R = [], Q = [], F = []; let total = 0, fails = 0;
+const bounds = new Set();   // MC_ACTIONS of each log: the replay line below names one bound
 for (const f of logs) {
+  const q0 = Q.length, t0 = total;
   for (const raw of readFileSync(f, "utf8").split("\n")) {
     const line = raw.trim();
     const c = line.split("\t");
@@ -21,7 +23,13 @@ for (const f of logs) {
     else if (c[0] === "F") F.push(line);
     else if (c[0] === "T") { total += +c[1]; fails += +c[2]; }
   }
+  const n = Q.length - q0, a = total - t0;
+  if (n > 0) {
+    if (a % n !== 0) { console.error(`${f}: ${a} actions over ${n} sequences is not one MC_ACTIONS bound`); process.exit(2); }
+    bounds.add(a / n);
+  }
 }
+if (bounds.size > 1) { console.error(`logs ran with different MC_ACTIONS (${[...bounds].join(", ")}); pass the logs of one run`); process.exit(2); }
 
 const dist = (arr, key) => {
   if (arr.length === 0) return { n: 0 };
@@ -38,7 +46,7 @@ const bit1 = S.filter(x => x.bits & 2).length, bit0 = S.filter(x => x.bits & 1).
 const seqs = Q.length, emg = Q.filter(q => q.emg).length, loss = Q.filter(q => q.loss > 0n).length;
 const batches = [...new Set(Q.map(q => q.k))].sort((a, b) => a - b);
 const perBatch = Math.max(...batches.map(k => Q.filter(q => q.k === k).length));   // MC_SEQS of the run
-const actionsPer = Math.round(total / seqs);                                       // MC_ACTIONS of the run
+const actionsPer = [...bounds][0];                                                 // MC_ACTIONS of the run, one per log (checked above)
 const actors = dist(Q, "n"), spans = dist(Q, "span");
 const settledTotal = Q.reduce((a, q) => a + q.settled, 0);
 const seedsTable = batches.map(k => {

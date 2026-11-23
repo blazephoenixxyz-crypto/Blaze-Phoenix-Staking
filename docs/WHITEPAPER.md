@@ -737,11 +737,11 @@ payout = equity × pot / claims        (iff pot < claims)
 ```
 
 where `pot` is the contract's raw balance and `claims` is the sum of remaining net
-equities. The fraction is **exit-order invariant** on a book that is not recapitalised
-between exits: each exit removes `payout` from the pot and `equity` from the claims, so
+equities. The fraction is **exit-order invariant** on a book whose pot does not increase
+between exits (neither `absorbBadDebt` nor `fundEmission`): each exit removes `payout` from the pot and `equity` from the claims, so
 `pot/claims` is unchanged for everyone who follows — no advantage to racing the exit queue.
-`absorbBadDebt` stays open in an emergency, and a contribution from its caller raises the
-pot that later exits divide, so a recapitalisation between two exits pays the later one more. In solvent operation `pot ≥ claims`,
+`absorbBadDebt` and `fundEmission` both stay open in an emergency, and either raises the
+pot that later exits divide, so a pot increase between two exits pays the later one more. In solvent operation `pot ≥ claims`,
 the scale factor is ≥ 1, and every exit pays full equity exactly as before.
 
 Accrued-but-unpaid rewards, including any emission deferred under a breach, are
