@@ -20,8 +20,9 @@ rules, scope and awards are in [`SECURITY.md`](../SECURITY.md) and at
   `pendingRewards`, whichever channel it came from; `pendingPureYield` quotes the un-settled
   share only, and the two sum to what a claim pays when the settle does not defer. The settle
   defers instead of paying under a hard breach, while the position's own loss (the debt its stake
-  and the reserve cannot cover) is uncovered, and when a loss the claim's own maintenance sweep
-  records first leaves the book short; the quote does not say which, and the credit stays owed to
+  and the reserve cannot cover) is uncovered, when a loss the claim's own maintenance sweep
+  records first leaves the book short, and always when the settle runs inside a borrower sweep
+  (`maintStep`), whoever called it; the quote does not say which, and the credit stays owed to
   the position. Documented in `README.md` (section 1),
   `docs/WHITEPAPER.md` (section 2.1) and `src/BlazePhoenixStaking.sol` (contract header and the
   EMIS-DEFER comment in `_settlePendingRewards`).

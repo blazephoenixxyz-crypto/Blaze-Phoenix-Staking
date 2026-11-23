@@ -2492,8 +2492,9 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
     ///         (`_rewardDeferred`: emission or pure yield, paid by the reward settle). A settle in
     ///         this block pays it unless the settle defers: under a hard breach, while the
     ///         position's own loss (the debt its stake and the reserve cannot cover) is uncovered,
-    ///         or when a loss this transaction's own maintenance sweep records first leaves the
-    ///         book short (docs/KNOWN_ISSUES.md). A deferred credit stays owed and stays quoted here.
+    ///         when a loss this transaction's own maintenance sweep records first leaves the book
+    ///         short, or always when the settle runs inside a borrower sweep (`maintStep`), whoever
+    ///         called it (docs/KNOWN_ISSUES.md). A deferred credit stays owed and stays quoted here.
     /// @param user_ any position
     /// @return emission and deferred credit in BZPX
     function pendingRewards(address user_) external view returns (uint256) {
