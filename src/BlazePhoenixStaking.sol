@@ -2454,11 +2454,13 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
     }
     /// @notice The longest lock (in days) that may be opened right now — the decreasing countdown:
     ///         min(MAX_LOCK_DAYS, days remaining until the emission programme closes).
-    /// @return whole days; 0 after the close
+    /// @return whole days; 0 when fewer than MIN_LOCK_DAYS whole days remain or after the close.
+    ///         `lock` and `deposit` are also closed while paused or in an emergency.
     function maxLockDaysAvailable() public view returns (uint256) {
         if (block.timestamp >= emissionEnd) return 0;
         uint256 d = (emissionEnd - block.timestamp) / 1 days;
         d = _min(d, MAX_LOCK_DAYS);
+        if (d < MIN_LOCK_DAYS) return 0;
         return d;
     }
     /// @notice Indicative pure-staker APR (bps) for a given lock duration, from current interest flow.

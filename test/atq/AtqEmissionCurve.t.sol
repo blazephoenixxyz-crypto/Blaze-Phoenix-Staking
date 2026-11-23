@@ -256,7 +256,7 @@ contract AtqEmissionCurveTest is Base {
         vm.expectRevert(BlazePhoenixStaking.Staking__LockExceedsEmissionEnd.selector);
         staking.deposit(1e18, 91);
         vm.warp(end - 90 days + 1);
-        assertEq(staking.maxLockDaysAvailable(), 89, "eighty-nine days left");
+        assertEq(staking.maxLockDaysAvailable(), 0, "eighty-nine days left: below MIN_LOCK_DAYS no lock fits");
         vm.prank(carol);
         vm.expectRevert(BlazePhoenixStaking.Staking__LockExceedsEmissionEnd.selector);
         staking.deposit(1e18, 90);
