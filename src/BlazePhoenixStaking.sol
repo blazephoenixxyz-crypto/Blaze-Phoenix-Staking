@@ -2477,8 +2477,12 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
         // Execution damps a residual denominator; the published rate must too.
         aprBps = ML.mulDiv(_dampPure(base, tbp), 10_000 - RESERVE_FACTOR_BPS, 10_000);
     }
-    /// @notice Emission a claim in this block would pay `user_`, plus any credit deferred under
-    ///         a breach (`_rewardDeferred`: emission or pure yield, paid by the reward settle).
+    /// @notice Emission credit of `user_`: the un-settled window plus any credit deferred
+    ///         (`_rewardDeferred`: emission or pure yield, paid by the reward settle). A settle in
+    ///         this block pays it unless the settle defers: under a hard breach, while the
+    ///         position's own loss (the debt its stake and the reserve cannot cover) is uncovered,
+    ///         or when a loss this transaction's own maintenance sweep records first leaves the
+    ///         book short (docs/KNOWN_ISSUES.md). A deferred credit stays owed and stays quoted here.
     /// @param user_ any position
     /// @return emission and deferred credit in BZPX
     function pendingRewards(address user_) external view returns (uint256) {
@@ -2487,7 +2491,7 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
     /// @dev SINGLE SOURCE. Every view that publishes an entitlement routes through these two, so
     ///      the aggregate report and the standalone getters are structurally unable to disagree.
     ///      Both project the un-settled slice, so a quote read in a block equals what a claim in
-    ///      that same block pays.
+    ///      that same block pays when the settle does not defer (see `pendingRewards`).
     function _pendingReward(address user_) internal view returns (uint256) {
         UserInfo storage u = _users[user_];
         uint256 deferred = _rewardDeferred[user_];   // EMIS-DEFER credit, paid by the same settle

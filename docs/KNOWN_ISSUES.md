@@ -18,7 +18,11 @@ rules, scope and awards are in [`SECURITY.md`](../SECURITY.md) and at
   Emission and pure yield deferred under a breach stay owed to their position and are paid by
   that position's first settlement after the breach clears. The deferred credit has one quote,
   `pendingRewards`, whichever channel it came from; `pendingPureYield` quotes the un-settled
-  share only, and the two sum to what a claim pays. Documented in `README.md` (section 1),
+  share only, and the two sum to what a claim pays when the settle does not defer. The settle
+  defers instead of paying under a hard breach, while the position's own loss (the debt its stake
+  and the reserve cannot cover) is uncovered, and when a loss the claim's own maintenance sweep
+  records first leaves the book short; the quote does not say which, and the credit stays owed to
+  the position. Documented in `README.md` (section 1),
   `docs/WHITEPAPER.md` (section 2.1) and `src/BlazePhoenixStaking.sol` (contract header and the
   EMIS-DEFER comment in `_settlePendingRewards`).
 - **An emergency exit forfeits unpaid rewards.** `emergencyWithdraw` returns net equity, closes the
