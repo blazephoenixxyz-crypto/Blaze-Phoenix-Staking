@@ -13,7 +13,7 @@ if (logs.length === 0) { console.error("usage: report.mjs <forge -vv log>..."); 
 const S = [], R = [], Q = [], F = []; let total = 0, fails = 0;
 const bounds = new Set();   // MC_ACTIONS of each log: the replay line below names one bound
 for (const f of logs) {
-  const q0 = Q.length, t0 = total;
+  let qRun = Q.length;   // each T line closes one run; check its bound on its own
   for (const raw of readFileSync(f, "utf8").split("\n")) {
     const line = raw.trim();
     const c = line.split("\t");
@@ -21,12 +21,15 @@ for (const f of logs) {
     else if (c[0] === "R") R.push({ k: +c[1], j: +c[2], i: +c[3], r: BigInt(c[4]) });
     else if (c[0] === "Q") Q.push({ k: +c[1], j: +c[2], seed: c[3], n: +c[4], settled: +c[5], maxDiff: BigInt(c[6]), maxDiffAt: +c[7], maxD: BigInt(c[8]), maxDAt: +c[9], bit1: +c[10], maxR: BigInt(c[11]), maxRAt: +c[12], minR: BigInt(c[13]), loss: BigInt(c[14]), emg: +c[15], span: +c[16] });
     else if (c[0] === "F") F.push(line);
-    else if (c[0] === "T") { total += +c[1]; fails += +c[2]; }
-  }
-  const n = Q.length - q0, a = total - t0;
-  if (n > 0) {
-    if (a % n !== 0) { console.error(`${f}: ${a} actions over ${n} sequences is not one MC_ACTIONS bound`); process.exit(2); }
-    bounds.add(a / n);
+    else if (c[0] === "T") {
+      total += +c[1]; fails += +c[2];
+      const n = Q.length - qRun, a = +c[1];
+      if (n > 0) {
+        if (a % n !== 0) { console.error(`${f}: ${a} actions over ${n} sequences is not one MC_ACTIONS bound`); process.exit(2); }
+        bounds.add(a / n);
+      }
+      qRun = Q.length;
+    }
   }
 }
 if (bounds.size > 1) { console.error(`logs ran with different MC_ACTIONS (${[...bounds].join(", ")}); pass the logs of one run`); process.exit(2); }
@@ -45,7 +48,7 @@ const aboveDust = S.filter(x => BigInt(x.diff) > 10_000_000_000n).length;
 const bit1 = S.filter(x => x.bits & 2).length, bit0 = S.filter(x => x.bits & 1).length;
 const seqs = Q.length, emg = Q.filter(q => q.emg).length, loss = Q.filter(q => q.loss > 0n).length;
 const batches = [...new Set(Q.map(q => q.k))].sort((a, b) => a - b);
-const perBatch = Math.max(...batches.map(k => Q.filter(q => q.k === k).length));   // MC_SEQS of the run
+const perBatch = Math.max(...batches.map(k => Q.filter(q => q.k === k).length), ...Q.map(q => q.j + 1));   // MC_SEQS of the run; a filtered replay still reaches its j
 const actionsPer = [...bounds][0];                                                 // MC_ACTIONS of the run, one per log (checked above)
 const actors = dist(Q, "n"), spans = dist(Q, "span");
 const settledTotal = Q.reduce((a, q) => a + q.settled, 0);
