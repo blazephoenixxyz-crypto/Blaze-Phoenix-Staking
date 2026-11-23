@@ -2246,13 +2246,13 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
         r.owed                = o;
         r.surplus             = _sub0(bal, o);
         r.deficit             = _sub0(o, bal);
-        r.solvent             = bal + CONSERVATION_DUST >= o;
+        r.solvent             = !_hardBreach();
         r.collateralRatioWad  = collateralRatio();
         r.totalStaked         = totalStaked;
         r.totalDebt           = totalDebt;
         r.rewardReserve       = rewardReserve;
         r.protocolReserve     = protocolReserve;
-        r.pendingDistribution = _sub0(totalRewardDistributed, totalRewardsPaid);
+        r.pendingDistribution = _pendingDistribution();
         r.totalBadDebt              = totalBadDebt;
         r.totalUncollectedInterest  = totalUncollectedInterest;
     }
@@ -2329,7 +2329,9 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
     ///      for the three getters and `getUserInfo`, so they cannot drift apart.
     ///      `maxB` is what `borrow` would accept right now: 0 while `borrow` is closed (paused,
     ///      in an emergency, or under a hard breach), otherwise the smaller of the LTV room on the
-    ///      post-accrual stake and the aggregate utilisation room (H-04). A loss of another
+    ///      post-accrual stake and the aggregate utilisation room (H-04). The emergency is read
+    ///      through the pause: `_enterEmergency` pauses and `unpause` is closed during one, so an
+    ///      emergency is always paused; `borrow` keeps both modifiers. A loss of another
     ///      position that `borrow`'s own maintenance sweep records first is not visible to a view
     ///      (docs/KNOWN_ISSUES.md). borrow reverts iff
     ///      ⌊(D + a)·WAD / S⌋ > MAX_PROTOCOL_UTIL_WAD, and D + a ≤ ⌊S·MAX/WAD⌋ implies
@@ -2343,7 +2345,7 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
     function _risk(UserInfo storage u) internal view returns (uint256 maxB, uint256 h, uint256 d) {
         (uint256 s, uint256 ts) = _projected(u);
         uint256 debt = u.debt;
-        maxB = (paused() || emergencyMode || _hardBreach()) ? 0 : _min(
+        maxB = (paused() || _hardBreach()) ? 0 : _min(
             _sub0(ML.mulDiv(_sub0(s, debt), MAX_LTV, 100), debt),
             _sub0(ML.mulDiv(ts, MAX_PROTOCOL_UTIL_WAD, WAD), totalDebt));
         if (debt == 0) return (maxB, WAD, type(uint256).max);
