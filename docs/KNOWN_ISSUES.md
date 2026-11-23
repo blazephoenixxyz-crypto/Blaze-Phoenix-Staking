@@ -67,9 +67,10 @@ rules, scope and awards are in [`SECURITY.md`](../SECURITY.md) and at
   settles every position it reaches, a seized one included, and credits the emission to the
   position instead of paying it: a later step of the same window can still book a loss, and
   LOSS-FIRST puts every loss on the books before anything leaves at par in that transaction. The
-  credit stays owed (a term of `owed()`), `pendingRewards` quotes it, and the position's next
-  settlement outside that window pays it, `claimRewards` included; a position seized in full keeps
-  its credit. Like any unpaid emission, `emergencyWithdraw` forfeits it. Documented in
+  credit stays owed (a term of `owed()`), `pendingRewards` quotes it, and the position's first
+  settlement outside that window that does not defer pays it, `claimRewards` included: under a
+  hard breach, or while the position's own loss is uncovered, that settlement defers again (the
+  deferral conditions above). A position seized in full keeps its credit. Like any unpaid emission, `emergencyWithdraw` forfeits it. Documented in
   `docs/WHITEPAPER.md` (sections 3.1 and 3.2), `src/BlazePhoenixStaking.sol`
   (`_settlePendingRewards`, `maintStep`) and `test/hardening/MaintenanceBeforePayment.t.sol`.
 - **Batch lock pokes take a list of any length.** `pokeExpiredLocks` takes a list that the caller
@@ -87,7 +88,10 @@ rules, scope and awards are in [`SECURITY.md`](../SECURITY.md) and at
 - **`effectiveStakeOf` reads stored state.** It returns net stake as last written and does not
   project interest accrued since the position was last touched; `maxBorrowOf` is the projected
   limit that `borrow` accepts, and it reads 0 while `borrow` is closed (paused, in an
-  emergency, or under a hard breach). `utilizationRate`, `currentInterestRateBps` and
+  emergency, or under a hard breach). It does not model the maintenance sweep that `borrow`
+  runs first (`_autoMaintain`, LOSS-FIRST): when that sweep books another position's loss and
+  leaves the book short, a `borrow` in the same block reverts with `Staking__InvariantBreached`
+  although `maxBorrowOf` read a positive amount. `utilizationRate`, `currentInterestRateBps` and
   `getGlobalStats` read the book's totals the same way: as last written, without the interest
   accrued since the last transaction. Documented in `src/BlazePhoenixStaking.sol` (NatSpec of
   `effectiveStakeOf`, `maxBorrowOf`, `utilizationRate`, `currentInterestRateBps` and

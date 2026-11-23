@@ -99,7 +99,9 @@ Logs read: `mc1-0.log`, `mc1-1.log`, `mc1-10.log`, `mc1-11.log`, `mc1-12.log`, `
 | actions where bit 0 of auditInvariants was raised (only after an injected loss) | 7014 of 61440 |
 | actions where bit 1 (soft solvency signal) was raised | 0 of 61440 |
 
-### Distributions (wei; the maximiser's case replays with `MC_BATCH=k MC_SEQ=j`)
+### Distributions (wei)
+
+The maximiser's case `(k, j, i)` replays with the run's loop bounds set, since the in-suite defaults run batch 0 only, with 3 sequences: `MC_FIRST_BATCH=k MC_BATCHES=1 MC_SEQS=24 MC_ACTIONS=160 MC_BATCH=k MC_SEQ=j forge test --match-contract MonteCarloWalk -vv` (this run: k = 0..15, 24 sequences x 160 actions).
 
 | invariant | distribution |
 |---|---|

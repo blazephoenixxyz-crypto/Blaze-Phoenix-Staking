@@ -37,6 +37,8 @@ const aboveDust = S.filter(x => BigInt(x.diff) > 10_000_000_000n).length;
 const bit1 = S.filter(x => x.bits & 2).length, bit0 = S.filter(x => x.bits & 1).length;
 const seqs = Q.length, emg = Q.filter(q => q.emg).length, loss = Q.filter(q => q.loss > 0n).length;
 const batches = [...new Set(Q.map(q => q.k))].sort((a, b) => a - b);
+const perBatch = Math.max(...batches.map(k => Q.filter(q => q.k === k).length));   // MC_SEQS of the run
+const actionsPer = Math.round(total / seqs);                                       // MC_ACTIONS of the run
 const actors = dist(Q, "n"), spans = dist(Q, "span");
 const settledTotal = Q.reduce((a, q) => a + q.settled, 0);
 const seedsTable = batches.map(k => {
@@ -63,7 +65,9 @@ Logs read: ${logs.map(l => `\`${l.split("/").pop()}\``).join(", ")}. Batches ${b
 | actions where bit 0 of auditInvariants was raised (only after an injected loss) | ${bit0} of ${S.length} |
 | actions where bit 1 (soft solvency signal) was raised | ${bit1} of ${S.length} |
 
-### Distributions (wei; the maximiser's case replays with \`MC_BATCH=k MC_SEQ=j\`)
+### Distributions (wei)
+
+The maximiser's case \`(k, j, i)\` replays with the run's loop bounds set, since the in-suite defaults run batch 0 only, with 3 sequences: \`MC_FIRST_BATCH=k MC_BATCHES=1 MC_SEQS=${perBatch} MC_ACTIONS=${actionsPer} MC_BATCH=k MC_SEQ=j forge test --match-contract MonteCarloWalk -vv\` (this run: k = ${batches[0]}..${batches[batches.length - 1]}, ${perBatch} sequences x ${actionsPer} actions).
 
 | invariant | distribution |
 |---|---|
