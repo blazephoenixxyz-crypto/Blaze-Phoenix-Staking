@@ -14,6 +14,7 @@ const S = [], R = [], Q = [], F = []; let total = 0, fails = 0;
 const bounds = new Set();   // MC_ACTIONS of each log: the replay line below names one bound
 for (const f of logs) {
   let qRun = Q.length;   // each T line closes one run; check its bound on its own
+  let tail = [S.length, R.length, F.length];   // records seen since the last T line
   for (const raw of readFileSync(f, "utf8").split("\n")) {
     const line = raw.trim();
     const c = line.split("\t");
@@ -28,10 +29,11 @@ for (const f of logs) {
         if (a % n !== 0) { console.error(`${f}: ${a} actions over ${n} sequences is not one MC_ACTIONS bound`); process.exit(2); }
         bounds.add(a / n);
       }
-      qRun = Q.length;
+      qRun = Q.length; tail = [S.length, R.length, F.length];
     }
   }
-  if (Q.length > qRun) { console.error(`${f}: ${Q.length - qRun} sequences with no closing T line (interrupted run?)`); process.exit(2); }
+  const open = Q.length - qRun + S.length - tail[0] + R.length - tail[1] + F.length - tail[2];
+  if (open > 0) { console.error(`${f}: ${open} records (S/R/Q/F) with no closing T line (interrupted run?)`); process.exit(2); }
 }
 if (bounds.size === 0) { console.error("no complete run in the logs"); process.exit(2); }
 if (bounds.size > 1) { console.error(`logs ran with different MC_ACTIONS (${[...bounds].join(", ")}); pass the logs of one run`); process.exit(2); }
