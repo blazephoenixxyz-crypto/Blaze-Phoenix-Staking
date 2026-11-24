@@ -246,12 +246,13 @@ contract ResidueDecompositionTest is MonteCarloWalkTest {
         assertGe(staking.owed(), uint256(R), "owed() reads high by R: counted with no position to claim it");
     }
 
-    /// The maximiser of MC-CONSERVE in docs/MONTE_CARLO.md: (k=5, j=21, i=138).
-    /// One holder, one exit inside a breached emergency whose injected loss left one wei in the
-    /// pot: the hatch pays that wei and the book debits the whole net equity. diff is the H-05
-    /// haircut of that exit, payout - mulDiv(payout, pot, eCorr), wei for wei.
-    function test_RD_conserveDiff_5_21_138_isTheHaircutOfOneExitAgainstAOneWeiPot() public {
-        _runTo(5, 21, 138);
+    /// The maximiser of MC-CONSERVE in docs/MONTE_CARLO.md: (k=0, j=21, i=141).
+    /// Six stakers drawn, one exit inside a breached emergency: the loss was injected before the
+    /// emergency opened, so the exit found the backing the emergency opened with, paid its scaled
+    /// share of it and left the rest in the pot, while the book debited the whole net equity.
+    /// diff is the H-05 haircut of that exit, payout - mulDiv(payout, pot, eCorr), wei for wei.
+    function test_RD_conserveDiff_0_21_141_isTheHaircutOfOneExitAgainstABreachedPot() public {
+        _runTo(0, 21, 141);
         (uint256 diff, bool lhsHigh) = _diffNow();
         console2.log("diff lhsHigh", diff, lhsHigh);
         console2.log("exits haircutExits underwater", nExits, nHaircutExits, underwaterExits);
@@ -260,17 +261,17 @@ contract ResidueDecompositionTest is MonteCarloWalkTest {
         console2.log("potAtExit lossInjected backingAtEmg", potSum, lossInjected, backingAtEmergency);
         console2.log("owed backing badDebt", staking.owed(), staking.backing(), staking.totalBadDebt());
 
-        assertEq(diff, 26445994592660851827356800, "MC-CONSERVE diff of (5,21,138) as the campaign logged it");
+        assertEq(diff, 23775701658628813887160763, "MC-CONSERVE diff of (0,21,141) as the campaign logged it");
         assertTrue(lhsHigh, "the pot (with the loss ghost) reads above the book: the book debited more than it paid");
-        assertEq(nActors, 1, "one holder");
+        assertEq(nActors, 6, "six stakers drawn");
         assertEq(nExits, 1, "one exit");
         assertEq(nHaircutExits, 1, "the one exit was scaled: pot < eCorr");
         assertEq(underwaterExits, 0, "the exit was above water");
-        // the pot the exit found: the walk's boundary loss cut (pot - 1) left one wei of the
-        // backing the emergency opened with
-        assertEq(potSum, 1, "one wei in the pot at the exit");
-        assertEq(backingAtEmergency - lossInjected, potSum, "the injected loss took all but one wei of the backing at entry");
-        assertEq(paidSum, 1, "the hatch paid the one wei the pot held");
+        assertGt(lossInjected, 0, "a breached emergency: the injected loss stands");
+        // the pot the exit found: no exit ran before it, so it is the backing the emergency opened with
+        assertEq(potSum, backingAtEmergency, "the exit found the backing at entry");
+        assertLt(paidSum, potSum, "the hatch paid a scaled share of the pot, not the pot");
+        assertEq(staking.backing(), potSum - paidSum, "what the hatch did not pay stays in the pot");
         assertEq(payoutPostSum, principalSum, "the book debited the net equity getUserInfo quoted before the exit");
         // the whole difference is the H-05 haircut, principal * (1 - pot / eCorr), wei for wei:
         // the quoted net equity minus the wei paid, the equity the book debited minus what the
@@ -281,6 +282,5 @@ contract ResidueDecompositionTest is MonteCarloWalkTest {
         assertEq(diff, haircutFormula, "diff == payout - mulDiv(payout, pot, eCorr)");
         assertEq(diff, haircutRetained, "diff == the walk's own A3 ghost");
         assertEq(staking.totalBadDebt(), 0, "no bad debt booked: the exit was above water");
-        assertEq(staking.backing(), 0, "the pot is empty after the exit");
     }
 }

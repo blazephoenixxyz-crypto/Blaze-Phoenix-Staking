@@ -704,6 +704,8 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
     ///         RECORDED loss: the loss of an underwater position is recorded first by `syncEquity`
     ///         (or by that position's own exit or liquidation). Once the uncovered loss is back
     ///         within the dust, `isSolvent()` reads true and `cancelEmergency` passes.
+    ///         Applies the protocol reserve as last written; the reserve share of interest not
+    ///         yet accrued by a transaction is not in it.
     ///         Reverts with `Staking__ZeroAmount` when nothing would be absorbed.
     /// @param amount_ the most BZPX the caller is willing to contribute after the reserve
     function absorbBadDebt(uint256 amount_) external nonReentrant conserves {
@@ -812,7 +814,9 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
         // attributed interest. The haircut runs only with U within dust (else
         // `Staking__StaleEquity`, cleared by `syncEquity`); then E is the true Σ of
         // positive equity, pot/E is constant across exits up to the floor, and no payout depends
-        // on the exit order. Σ payouts ≤ pot in every order.
+        // on the exit order on a book that is not recapitalised between them: `absorbBadDebt`
+        // stays open in an emergency, and a contribution from its caller raises the pot that
+        // later exits divide. Σ payouts ≤ pot in every order.
         // When solvent (pot ≥ eCorr) the branch never engages and full net equity is paid, as before.
         if (payout > 0) {
             uint256 pot   = _balance();
@@ -949,6 +953,9 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
     ///         total debt may not exceed MAX_LTV % of your net stake (staked − debt), and the book
     ///         may not exceed MAX_PROTOCOL_UTIL_WAD utilisation. While any debt is open the
     ///         position earns no pure yield and cannot withdraw. Closed under a hard breach.
+    ///         The cap is measured on the net stake before the borrow (staked − debt), so the
+    ///         total a position reaches depends on how the borrowing is sliced; a single borrow
+    ///         from zero debt reaches the most.
     /// @param amount_ BZPX sent to the caller and added to its debt
     function borrow(uint256 amount_)
         external nonReentrant whenNotPaused whenNotEmergency conserves
@@ -2239,13 +2246,13 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
         r.owed                = o;
         r.surplus             = _sub0(bal, o);
         r.deficit             = _sub0(o, bal);
-        r.solvent             = bal + CONSERVATION_DUST >= o;
+        r.solvent             = !_hardBreach();
         r.collateralRatioWad  = collateralRatio();
         r.totalStaked         = totalStaked;
         r.totalDebt           = totalDebt;
         r.rewardReserve       = rewardReserve;
         r.protocolReserve     = protocolReserve;
-        r.pendingDistribution = _sub0(totalRewardDistributed, totalRewardsPaid);
+        r.pendingDistribution = _pendingDistribution();
         r.totalBadDebt              = totalBadDebt;
         r.totalUncollectedInterest  = totalUncollectedInterest;
     }
@@ -2320,8 +2327,13 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
     ///      (`_projected`): every entry point, `liquidate` included, accrues before it acts, so a
     ///      reading off the stored stake overstates the position after any idle interval. One body
     ///      for the three getters and `getUserInfo`, so they cannot drift apart.
-    ///      `maxB` is what `borrow` would accept right now: the smaller of the LTV room on the
-    ///      post-accrual stake and the aggregate utilisation room (H-04). borrow reverts iff
+    ///      `maxB` is what `borrow` would accept right now: 0 while `borrow` is closed (paused,
+    ///      in an emergency, or under a hard breach), otherwise the smaller of the LTV room on the
+    ///      post-accrual stake and the aggregate utilisation room (H-04). The emergency is read
+    ///      through the pause: `_enterEmergency` pauses and `unpause` is closed during one, so an
+    ///      emergency is always paused; `borrow` keeps both modifiers. A loss of another
+    ///      position that `borrow`'s own maintenance sweep records first is not visible to a view
+    ///      (docs/KNOWN_ISSUES.md). borrow reverts iff
     ///      ⌊(D + a)·WAD / S⌋ > MAX_PROTOCOL_UTIL_WAD, and D + a ≤ ⌊S·MAX/WAD⌋ implies
     ///      (D + a)·WAD ≤ S·MAX, so a = ⌊S·MAX/WAD⌋ − D is always accepted.
     ///      Only a debt-free position is unconditionally healthy and never liquidatable. A position
@@ -2333,7 +2345,7 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
     function _risk(UserInfo storage u) internal view returns (uint256 maxB, uint256 h, uint256 d) {
         (uint256 s, uint256 ts) = _projected(u);
         uint256 debt = u.debt;
-        maxB = _min(
+        maxB = (paused() || _hardBreach()) ? 0 : _min(
             _sub0(ML.mulDiv(_sub0(s, debt), MAX_LTV, 100), debt),
             _sub0(ML.mulDiv(ts, MAX_PROTOCOL_UTIL_WAD, WAD), totalDebt));
         if (debt == 0) return (maxB, WAD, type(uint256).max);
@@ -2372,14 +2384,18 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
     /// @notice Linear estimate, at the current rate, of whole days until the position becomes
     ///         liquidatable.
     /// @param  user_ any position
-    /// @return d 0 if already liquidatable; type(uint256).max if debt-free or if the daily
+    /// @return d 0 if already liquidatable or if less than one whole day of interest separates
+    ///           the position from the threshold; type(uint256).max if debt-free or if the daily
     ///           charge rounds to 0
     function daysToLiquidation(address user_) external view returns (uint256 d) { (, , d) = _risk(_users[user_]); }
-    /// @notice Annual borrow rate (bps) at the current utilisation.
+    /// @notice Annual borrow rate (bps) at the current utilisation. Reads the totals as last
+    ///         written; interest accrued since the last transaction is not projected
+    ///         (docs/KNOWN_ISSUES.md).
     /// @return annual rate in bps
     function currentInterestRateBps() external view returns (uint256) { return _interestRate(); }
     /// @notice totalDebt / totalStaked in WAD (not capped); type(uint256).max while debt remains
-    ///         and the stake is zero.
+    ///         and the stake is zero. Reads the totals as last written; interest accrued since the
+    ///         last transaction is not projected (docs/KNOWN_ISSUES.md).
     /// @return utilisation in WAD
     function utilizationRate() external view returns (uint256) {
         // Terminal state: debt outstanding with the stake pool consumed to zero is
@@ -2391,7 +2407,8 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
         if (totalStaked == 0) return totalDebt > 0 ? type(uint256).max : 0;
         return ML.mulDiv(totalDebt, WAD, totalStaked);
     }
-    /// @notice The largest amount `borrow` would accept from `user_` right now.
+    /// @notice The largest amount `borrow` would accept from `user_` right now; 0 while `borrow`
+    ///         is closed: paused, in an emergency, or under a hard breach.
     /// @param  user_ any position
     /// @return m min(LTV room on the projected stake, protocol utilisation room)
     function maxBorrowOf(address user_) external view returns (uint256 m) {
@@ -2450,11 +2467,13 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
     }
     /// @notice The longest lock (in days) that may be opened right now — the decreasing countdown:
     ///         min(MAX_LOCK_DAYS, days remaining until the emission programme closes).
-    /// @return whole days; 0 after the close
+    /// @return whole days; 0 when fewer than MIN_LOCK_DAYS whole days remain or after the close.
+    ///         `lock` and `deposit` are also closed while paused or in an emergency.
     function maxLockDaysAvailable() public view returns (uint256) {
         if (block.timestamp >= emissionEnd) return 0;
         uint256 d = (emissionEnd - block.timestamp) / 1 days;
         d = _min(d, MAX_LOCK_DAYS);
+        if (d < MIN_LOCK_DAYS) return 0;
         return d;
     }
     /// @notice Indicative pure-staker APR (bps) for a given lock duration, from current interest flow.
@@ -2471,8 +2490,13 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
         // Execution damps a residual denominator; the published rate must too.
         aprBps = ML.mulDiv(_dampPure(base, tbp), 10_000 - RESERVE_FACTOR_BPS, 10_000);
     }
-    /// @notice Emission a claim in this block would pay `user_`, plus any credit deferred under
-    ///         a breach (`_rewardDeferred`: emission or pure yield, paid by the reward settle).
+    /// @notice Emission credit of `user_`: the un-settled window plus any credit deferred
+    ///         (`_rewardDeferred`: emission or pure yield, paid by the reward settle). A settle in
+    ///         this block pays it unless the settle defers: under a hard breach, while the
+    ///         position's own loss (the debt its stake and the reserve cannot cover) is uncovered,
+    ///         when a loss this transaction's own maintenance sweep records first leaves the book
+    ///         short, or always when the settle runs inside a borrower sweep (`maintStep`), whoever
+    ///         called it (docs/KNOWN_ISSUES.md). A deferred credit stays owed and stays quoted here.
     /// @param user_ any position
     /// @return emission and deferred credit in BZPX
     function pendingRewards(address user_) external view returns (uint256) {
@@ -2481,7 +2505,7 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
     /// @dev SINGLE SOURCE. Every view that publishes an entitlement routes through these two, so
     ///      the aggregate report and the standalone getters are structurally unable to disagree.
     ///      Both project the un-settled slice, so a quote read in a block equals what a claim in
-    ///      that same block pays.
+    ///      that same block pays when the settle does not defer (see `pendingRewards`).
     function _pendingReward(address user_) internal view returns (uint256) {
         UserInfo storage u = _users[user_];
         uint256 deferred = _rewardDeferred[user_];   // EMIS-DEFER credit, paid by the same settle
@@ -2529,7 +2553,7 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
     /// @return effectiveStake     max(staked − debt, 0)
     /// @return maxBorrowAvailable same as `maxBorrowOf`
     /// @return health             same as `healthFactor`
-    /// @return daysLeft           same as `daysToLiquidation`
+    /// @return daysLeft           same as `daysToLiquidation` (whole days, rounded down)
     /// @return stakingRewards     same as `pendingRewards`
     /// @return pureYield          same as `pendingPureYield`
     /// @return rateBps            current annual borrow rate
@@ -2559,7 +2583,8 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
         stakingRewards = _pendingReward(user_);
         pureYield      = _pendingPure(u);
     }
-    /// @notice The global book in one call.
+    /// @notice The global book in one call. Reads the totals as last written; interest accrued
+    ///         since the last transaction is not projected (docs/KNOWN_ISSUES.md).
     /// @return totalStaked_               global stake, net of all interest charged so far
     /// @return totalDebt_                 Σ debt
     /// @return totalBoostedEffective_     emission denominator

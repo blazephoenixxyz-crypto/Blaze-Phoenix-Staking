@@ -441,6 +441,9 @@ maxBorrow = (staked − currentDebt) × MAX_LTV / 100
 ```
 
 `MAX_LTV = 50%`. Borrowing is on *effective* stake (net of existing debt).
+The cap is measured on the net stake before the borrow (staked − debt), so the
+total a position reaches depends on how the borrowing is sliced; a single
+borrow from zero debt reaches the most.
 
 ### 5.2 Interest rate model
 
@@ -670,7 +673,9 @@ is written to storage before the token transfer.
 
 A minimum of `MIN_DEPOSIT_BLOCKS = 10` blocks must pass between a deposit (or
 a repayment that clears debt) and a withdrawal, claim, or lock operation. This
-prevents same-transaction or same-block flash-loan attacks.
+prevents same-transaction or same-block flash-loan attacks. The flash-loan
+delay restarts whenever a position's debt returns to zero: on a full `repay`
+and on a liquidation that leaves a remainder.
 
 ### 7.5 Single-writer boost accounting
 
@@ -732,9 +737,11 @@ payout = equity × pot / claims        (iff pot < claims)
 ```
 
 where `pot` is the contract's raw balance and `claims` is the sum of remaining net
-equities. The fraction is **exit-order invariant**: each exit removes `payout` from
-the pot and `equity` from the claims, so `pot/claims` is unchanged for everyone who
-follows — no advantage to racing the exit queue. In solvent operation `pot ≥ claims`,
+equities. The fraction is **exit-order invariant** on a book whose pot does not increase
+between exits (neither `absorbBadDebt` nor `fundEmission`): each exit removes `payout` from the pot and `equity` from the claims, so
+`pot/claims` is unchanged for everyone who follows — no advantage to racing the exit queue.
+`absorbBadDebt` and `fundEmission` both stay open in an emergency, and either raises the
+pot that later exits divide, so a pot increase between two exits pays the later one more. In solvent operation `pot ≥ claims`,
 the scale factor is ≥ 1, and every exit pays full equity exactly as before.
 
 Accrued-but-unpaid rewards, including any emission deferred under a breach, are

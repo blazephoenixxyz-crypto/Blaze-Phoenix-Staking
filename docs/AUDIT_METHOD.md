@@ -63,8 +63,10 @@ refusal geometry enumerated in the boundary suite before their happy path is dec
 
 A static census of `src/BlazePhoenixStaking.sol` at `cedd80d` counted **25 refusal selectors across
 62 `revert` sites**; two selectors were named by no test, and now have watchers
-(`test/GuardWatchers.t.sol`). Re-run on the current tree: 28 selectors across 69 `revert` sites,
-each named by at least one test. This is a census, not an instrument: it proves a selector is
+(`test/GuardWatchers.t.sol`). Re-run on the current tree, every refusal selector in
+`src/BlazePhoenixStaking.sol` is named by at least one test under `test/`. Counts move with every
+change; list the selectors with `grep -oE 'revert [A-Z][A-Za-z_]*' src/BlazePhoenixStaking.sol`
+rather than trusting a number written here. This is a census, not an instrument: it proves a selector is
 *named* somewhere, not that the discriminating variable is *reachable* at that site, and not that
 the refusal is *distance-sensitive*. Reachability is argued per mutant, in the register.
 

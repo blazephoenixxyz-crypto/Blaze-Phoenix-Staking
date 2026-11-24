@@ -11,7 +11,10 @@ const logs = process.argv.slice(2);
 if (logs.length === 0) { console.error("usage: report.mjs <forge -vv log>..."); process.exit(2); }
 
 const S = [], R = [], Q = [], F = []; let total = 0, fails = 0;
+const bounds = new Set();   // MC_ACTIONS of each log: the replay line below names one bound
 for (const f of logs) {
+  let qRun = Q.length;   // each T line closes one run; check its bound on its own
+  let tail = [S.length, R.length, F.length];   // records seen since the last T line
   for (const raw of readFileSync(f, "utf8").split("\n")) {
     const line = raw.trim();
     const c = line.split("\t");
@@ -19,9 +22,21 @@ for (const f of logs) {
     else if (c[0] === "R") R.push({ k: +c[1], j: +c[2], i: +c[3], r: BigInt(c[4]) });
     else if (c[0] === "Q") Q.push({ k: +c[1], j: +c[2], seed: c[3], n: +c[4], settled: +c[5], maxDiff: BigInt(c[6]), maxDiffAt: +c[7], maxD: BigInt(c[8]), maxDAt: +c[9], bit1: +c[10], maxR: BigInt(c[11]), maxRAt: +c[12], minR: BigInt(c[13]), loss: BigInt(c[14]), emg: +c[15], span: +c[16] });
     else if (c[0] === "F") F.push(line);
-    else if (c[0] === "T") { total += +c[1]; fails += +c[2]; }
+    else if (c[0] === "T") {
+      total += +c[1]; fails += +c[2];
+      const n = Q.length - qRun, a = +c[1];
+      if (n > 0) {
+        if (a % n !== 0) { console.error(`${f}: ${a} actions over ${n} sequences is not one MC_ACTIONS bound`); process.exit(2); }
+        bounds.add(a / n);
+      }
+      qRun = Q.length; tail = [S.length, R.length, F.length];
+    }
   }
+  const open = Q.length - qRun + S.length - tail[0] + R.length - tail[1] + F.length - tail[2];
+  if (open > 0) { console.error(`${f}: ${open} records (S/R/Q/F) with no closing T line (interrupted run?)`); process.exit(2); }
 }
+if (bounds.size === 0) { console.error("no complete run in the logs"); process.exit(2); }
+if (bounds.size > 1) { console.error(`logs ran with different MC_ACTIONS (${[...bounds].join(", ")}); pass the logs of one run`); process.exit(2); }
 
 const dist = (arr, key) => {
   if (arr.length === 0) return { n: 0 };
@@ -37,6 +52,8 @@ const aboveDust = S.filter(x => BigInt(x.diff) > 10_000_000_000n).length;
 const bit1 = S.filter(x => x.bits & 2).length, bit0 = S.filter(x => x.bits & 1).length;
 const seqs = Q.length, emg = Q.filter(q => q.emg).length, loss = Q.filter(q => q.loss > 0n).length;
 const batches = [...new Set(Q.map(q => q.k))].sort((a, b) => a - b);
+const perBatch = Math.max(...batches.map(k => Q.filter(q => q.k === k).length), ...Q.map(q => q.j + 1));   // MC_SEQS of the run; a filtered replay still reaches its j
+const actionsPer = [...bounds][0];                                                 // MC_ACTIONS of the run, one per log (checked above)
 const actors = dist(Q, "n"), spans = dist(Q, "span");
 const settledTotal = Q.reduce((a, q) => a + q.settled, 0);
 const seedsTable = batches.map(k => {
@@ -63,7 +80,9 @@ Logs read: ${logs.map(l => `\`${l.split("/").pop()}\``).join(", ")}. Batches ${b
 | actions where bit 0 of auditInvariants was raised (only after an injected loss) | ${bit0} of ${S.length} |
 | actions where bit 1 (soft solvency signal) was raised | ${bit1} of ${S.length} |
 
-### Distributions (wei; the maximiser's case replays with \`MC_BATCH=k MC_SEQ=j\`)
+### Distributions (wei)
+
+The maximiser's case \`(k, j, i)\` replays with the run's loop bounds set, since the in-suite defaults run batch 0 only, with 3 sequences: \`MC_FIRST_BATCH=k MC_BATCHES=1 MC_SEQS=${perBatch} MC_ACTIONS=${actionsPer} MC_BATCH=k MC_SEQ=j forge test --match-contract MonteCarloWalk -vv\` (this run: k = ${batches[0]}..${batches[batches.length - 1]}, ${perBatch} sequences x ${actionsPer} actions).
 
 | invariant | distribution |
 |---|---|

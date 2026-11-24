@@ -114,7 +114,8 @@ contract ViewsAreTheActionsFuzzTest is Base {
             return;
         }
         assertLe(nowTs + maxD * 1 days, end, "the longest lock ends inside the programme");
-        if (maxD < 2555) assertGt(nowTs + (maxD + 1) * 1 days, end, "one day more would outlast the close");
+        if (maxD == 0) assertGt(nowTs + 90 days, end, "no lock is available: the shortest accepted lock would outlast the close");
+        else if (maxD < 2555) assertGt(nowTs + (maxD + 1) * 1 days, end, "one day more would outlast the close");
 
         if (maxD >= 90) {
             uint256 snap = vm.snapshotState();

@@ -18,7 +18,12 @@ rules, scope and awards are in [`SECURITY.md`](../SECURITY.md) and at
   Emission and pure yield deferred under a breach stay owed to their position and are paid by
   that position's first settlement after the breach clears. The deferred credit has one quote,
   `pendingRewards`, whichever channel it came from; `pendingPureYield` quotes the un-settled
-  share only, and the two sum to what a claim pays. Documented in `README.md` (section 1),
+  share only, and the two sum to what a claim pays when the settle does not defer. The settle
+  defers instead of paying under a hard breach, while the position's own loss (the debt its stake
+  and the reserve cannot cover) is uncovered, when a loss the claim's own maintenance sweep
+  records first leaves the book short, and always when the settle runs inside a borrower sweep
+  (`maintStep`), whoever called it; the quote does not say which, and the credit stays owed to
+  the position. Documented in `README.md` (section 1),
   `docs/WHITEPAPER.md` (section 2.1) and `src/BlazePhoenixStaking.sol` (contract header and the
   EMIS-DEFER comment in `_settlePendingRewards`).
 - **An emergency exit forfeits unpaid rewards.** `emergencyWithdraw` returns net equity, closes the
@@ -47,7 +52,9 @@ rules, scope and awards are in [`SECURITY.md`](../SECURITY.md) and at
   (`Staking__StaleEquity`) while interest already debited from the book has not reached its
   positions. `syncEquity(user)`, permissionless and callable only in an emergency, attributes one
   position; the exit attributes the exiter's own. Once every borrower is attributed the exits go
-  through, and what each is paid does not depend on the order of the exits. On a sound book the
+  through, and what each is paid does not depend on the order of the exits on a book that is not
+  recapitalised between them: `absorbBadDebt` stays open in an emergency, and a contribution from
+  its caller raises the pot that later exits divide. On a sound book the
   exit pays net equity in full and does not wait. Documented in `src/BlazePhoenixStaking.sol`
   (`emergencyWithdraw`, `syncEquity`, `_attribute`) and
   `test/hardening/AttributionRefreshesEquity.t.sol`
@@ -60,9 +67,10 @@ rules, scope and awards are in [`SECURITY.md`](../SECURITY.md) and at
   settles every position it reaches, a seized one included, and credits the emission to the
   position instead of paying it: a later step of the same window can still book a loss, and
   LOSS-FIRST puts every loss on the books before anything leaves at par in that transaction. The
-  credit stays owed (a term of `owed()`), `pendingRewards` quotes it, and the position's next
-  settlement outside that window pays it, `claimRewards` included; a position seized in full keeps
-  its credit. Like any unpaid emission, `emergencyWithdraw` forfeits it. Documented in
+  credit stays owed (a term of `owed()`), `pendingRewards` quotes it, and the position's first
+  settlement outside that window that does not defer pays it, `claimRewards` included: under a
+  hard breach, or while the position's own loss is uncovered, that settlement defers again (the
+  deferral conditions above). A position seized in full keeps its credit. Like any unpaid emission, `emergencyWithdraw` forfeits it. Documented in
   `docs/WHITEPAPER.md` (sections 3.1 and 3.2), `src/BlazePhoenixStaking.sol`
   (`_settlePendingRewards`, `maintStep`) and `test/hardening/MaintenanceBeforePayment.t.sol`.
 - **Batch lock pokes take a list of any length.** `pokeExpiredLocks` takes a list that the caller
@@ -79,8 +87,15 @@ rules, scope and awards are in [`SECURITY.md`](../SECURITY.md) and at
   `cancelEmergency`).
 - **`effectiveStakeOf` reads stored state.** It returns net stake as last written and does not
   project interest accrued since the position was last touched; `maxBorrowOf` is the projected
-  limit that `borrow` accepts. Documented in `src/BlazePhoenixStaking.sol` (NatSpec of
-  `effectiveStakeOf` and `maxBorrowOf`).
+  limit that `borrow` accepts, and it reads 0 while `borrow` is closed (paused, in an
+  emergency, or under a hard breach). It does not model the maintenance sweep that `borrow`
+  runs first (`_autoMaintain`, LOSS-FIRST): when that sweep books another position's loss and
+  leaves the book short, a `borrow` in the same block reverts with `Staking__InvariantBreached`
+  although `maxBorrowOf` read a positive amount. `utilizationRate`, `currentInterestRateBps` and
+  `getGlobalStats` read the book's totals the same way: as last written, without the interest
+  accrued since the last transaction. Documented in `src/BlazePhoenixStaking.sol` (NatSpec of
+  `effectiveStakeOf`, `maxBorrowOf`, `utilizationRate`, `currentInterestRateBps` and
+  `getGlobalStats`).
 - **Interest is priced at the rate its window starts with.** The interest index accrues in O(1):
   the window since the last update of the book is charged at the rate its starting utilisation
   reads, with no integral of the curve across the window. A book that transacts often follows the
