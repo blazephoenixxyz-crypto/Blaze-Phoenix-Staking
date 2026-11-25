@@ -891,8 +891,8 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
         external nonReentrant whenNotPaused whenNotEmergency conserves
     {
         if (amount_ == 0) revert Staking__ZeroAmount();
-        if (amount_ < MIN_ACTION_AMOUNT) revert Staking__BelowMinimum();
         _checkLockBounds(lockDays_);
+        if (amount_ < MIN_ACTION_AMOUNT) revert Staking__BelowMinimum();
 
         UserInfo storage u = _users[msg.sender];
         if (u.staked + amount_ > MAX_STAKE_PER_WALLET) revert Staking__CapExceeded();
