@@ -226,6 +226,11 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
     // it would let a large holder stop emission for everyone still staked simply by leaving.
     // Whatever is not emitted stays in `rewardReserve` and is recoverable once the programme ends.
     uint256 public  constant MIN_EMISSION_WEIGHT  = 1_000e18;
+    // Smallest amount a single `deposit` (new stake or top-up) or `borrow` may move. Exits are
+    // never gated by it: `repay`, `withdraw` and `liquidate` accept any non-zero amount, so a
+    // position can always be closed. It bounds the call, not the balance: a stake below it can
+    // still result from a partial withdrawal, interest charged to the stake or a liquidation.
+    uint256 public  constant MIN_ACTION_AMOUNT    = 1_000e18;
 
     uint256 public  constant MAX_LTV              = 50;
     uint256 public  constant LIQ_THRESHOLD        = 95;
@@ -447,6 +452,7 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
     error Staking__EmissionNotEnded();
     error Staking__StaleEquity();
     error Staking__PaidIntoBreach();
+    error Staking__BelowMinimum();
 
     // ── Guards ────────────────────────────────────────────────────────────────────────────
     /// @dev PER-TRANSACTION value conservation (not absolute). Snapshots both sides of the
@@ -886,6 +892,7 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
     {
         if (amount_ == 0) revert Staking__ZeroAmount();
         _checkLockBounds(lockDays_);
+        if (amount_ < MIN_ACTION_AMOUNT) revert Staking__BelowMinimum();
 
         UserInfo storage u = _users[msg.sender];
         if (u.staked + amount_ > MAX_STAKE_PER_WALLET) revert Staking__CapExceeded();
@@ -961,6 +968,7 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
         external nonReentrant whenNotPaused whenNotEmergency conserves
     {
         if (amount_ == 0) revert Staking__ZeroAmount();
+        if (amount_ < MIN_ACTION_AMOUNT) revert Staking__BelowMinimum();
 
         _updateGlobal();
         _autoMaintain(msg.sender);   // LOSS-FIRST
@@ -2348,6 +2356,7 @@ contract BlazePhoenixStaking is AccessControl, Pausable, ReentrancyGuard {
         maxB = (paused() || _hardBreach()) ? 0 : _min(
             _sub0(ML.mulDiv(_sub0(s, debt), MAX_LTV, 100), debt),
             _sub0(ML.mulDiv(ts, MAX_PROTOCOL_UTIL_WAD, WAD), totalDebt));
+        if (maxB < MIN_ACTION_AMOUNT) maxB = 0;   // a room below the minimum is no room `borrow` accepts
         if (debt == 0) return (maxB, WAD, type(uint256).max);
         if (debt >= s) return (maxB, 0, 0);
         h = ML.mulDiv(s - debt, WAD, s);

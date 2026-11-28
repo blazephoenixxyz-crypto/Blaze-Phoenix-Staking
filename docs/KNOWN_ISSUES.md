@@ -85,6 +85,15 @@ rules, scope and awards are in [`SECURITY.md`](../SECURITY.md) and at
   holder to use these powers as designed are out of scope. Documented in `README.md` (sections 1
   and 4) and `src/BlazePhoenixStaking.sol` (NatSpec of `pause`, `declareEmergency` and
   `cancelEmergency`).
+- **A deposit or a borrow moves at least `MIN_ACTION_AMOUNT` (1,000 BZPX).** The minimum bounds
+  the call, not the balance: a stake below it can still result from a partial withdrawal, from
+  interest charged to the stake or from a liquidation, and `repay`, `withdraw` and `liquidate`
+  accept any non-zero amount so that a position can always be closed. Two consequences follow. A
+  wallet whose room below `MAX_STAKE_PER_WALLET` is under the minimum cannot top up further. At
+  the 50% LTV, a first borrow needs a net stake of at least 2,000 BZPX. `maxBorrowOf` publishes
+  0 whenever the room it computes is below the minimum. `remainingStakeCapacity` stays a distance
+  to the cap and does not apply the minimum. Documented in `src/BlazePhoenixStaking.sol` (comment
+  on `MIN_ACTION_AMOUNT`).
 - **`effectiveStakeOf` reads stored state.** It returns net stake as last written and does not
   project interest accrued since the position was last touched; `maxBorrowOf` is the projected
   limit that `borrow` accepts, and it reads 0 while `borrow` is closed (paused, in an
